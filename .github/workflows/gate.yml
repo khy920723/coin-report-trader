@@ -1,0 +1,162 @@
+name: gate
+
+# Runs with the workflow file from the base branch. It never checks out or runs code from the pull request.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+# One run at a time per pull request, so a later event sees what an earlier run recorded.
+concurrency:
+  group: gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Base branch, review label, owner approval and title
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTION: ${{ github.event.action }}
+          LABEL_EVENT: ${{ github.event.label.name }}
+          OLD_BASE: ${{ github.event.changes.base.ref.from }}
+          REVIEW_LABEL: qa-reviewed
+          # One regular expression per line, matched without regard to case against every changed path.
+          # A pull request that touches one of these needs the review label.
+          REVIEW_PATHS: |
+            ^src/[^/]+/trading(/|\.py$)
+            ^pyproject\.toml$
+            ^uv\.lock$
+            ^uv\.toml$
+            ^\.python-version$
+            ^requirements[^/]*\.txt$
+            ^packaging/
+            ^[^/]+\.spec$
+            ^scripts/
+            ^\.claude/
+            (^|/)CLAUDE\.md$
+            ^\.github/
+            ^conftest\.py$
+            ^(pytest\.ini|tox\.ini|setup\.cfg|\.?ruff\.toml)$
+          # A pull request that touches one of these needs the owner's approval, recorded in APPROVED.
+          # Empty until the live-trading lock exists.
+          APPROVAL_PATHS: ""
+          # One "PR_NUMBER:HEAD_SHA" per line, added by the conductor after the owner approves.
+          APPROVED: ""
+        run: |
+          set -euo pipefail
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          # 1. Only pull requests into the default branch are handled. A base change since the last reopen makes
+          #    every earlier result stale, even when the run for that 'edited' event was replaced in the queue.
+          last_event="$(gh api "repos/$REPO/issues/$PR/events" --paginate \
+            --jq '.[] | select(.event == "base_ref_changed" or .event == "automatic_base_change_succeeded" or .event == "reopened") | "\(.created_at) \(.event)"' \
+            | sort | tail -n 1)"
+          if { [ "$ACTION" = "edited" ] && [ -n "$OLD_BASE" ]; } || { [ -n "$last_event" ] && [ "${last_event#* }" != "reopened" ]; }; then
+            if [ "$(gh api "repos/$REPO/pulls/$PR" --jq '.state')" = "open" ]; then
+              gh api -X POST "repos/$REPO/issues/$PR/comments" \
+                -f body="The base branch of this pull request was changed, so earlier check results no longer apply. It is closed. Reopen it to run every check again." >/dev/null || true
+              gh api -X PATCH "repos/$REPO/pulls/$PR" -f state=closed >/dev/null
+            fi
+            fail "The base branch was changed. The pull request was closed; reopen it to run every check again."
+          fi
+          if [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
+            fail "Only pull requests into the default branch are merged."
+          fi
+
+          # 2. Record a review first, so a later failure in this run cannot lose it.
+          #    HEAD_SHA is the head at the moment the label was added. The record is trusted only
+          #    when this workflow's token wrote it.
+          if [ "$ACTION" = "labeled" ] && [ "$LABEL_EVENT" = "$REVIEW_LABEL" ]; then
+            gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" -f state=success -f context="qa-reviewed-at-this-commit" \
+              -f description="The review label was added at this commit." >/dev/null
+          fi
+          if [ "$ACTION" = "synchronize" ]; then
+            # Tidying only. The decision below does not depend on it.
+            gh api -X DELETE "repos/$REPO/issues/$PR/labels/$REVIEW_LABEL" >/dev/null 2>&1 || true
+          fi
+
+          # 3. Changed paths of exactly this head commit against the default branch.
+          #    Objects are fetched and compared; nothing from the pull request is checked out or run.
+          work="$RUNNER_TEMP/gate-repo"
+          git init -q "$work"
+          git -C "$work" fetch -q --no-tags "https://github.com/$REPO.git" \
+            "+refs/heads/$DEFAULT_BRANCH:refs/gate/base" "+refs/pull/$PR/head:refs/gate/head"
+          if [ "$(git -C "$work" rev-parse refs/gate/head)" != "$HEAD_SHA" ]; then
+            fail "The pull request head moved while this check ran. A newer run decides."
+          fi
+          git -C "$work" -c core.quotepath=false diff --name-only --no-renames -z \
+            refs/gate/base...refs/gate/head > "$work/changed.z"
+
+          matches() {
+            local path="$1" patterns="$2" re
+            while IFS= read -r re; do
+              re="${re//[[:space:]]/}"
+              if [ -z "$re" ]; then continue; fi
+              if [[ "$path" =~ $re ]]; then return 0; fi
+            done <<< "$patterns"
+            return 1
+          }
+
+          needs_review=0
+          needs_approval=0
+          shopt -s nocasematch
+          while IFS= read -r -d '' f; do
+            if [ -z "$f" ]; then continue; fi
+            if matches "$f" "$APPROVAL_PATHS"; then needs_approval=1; fi
+            if matches "$f" "$REVIEW_PATHS"; then needs_review=1; fi
+          done < "$work/changed.z"
+          shopt -u nocasematch
+
+          # 4. Current labels, review record and title. The title is read here and never printed.
+          labels="$(gh api "repos/$REPO/issues/$PR/labels" --paginate --jq '.[].name')"
+          reviewed="$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses" --paginate \
+            --jq '.[] | select(.context == "qa-reviewed-at-this-commit" and .state == "success" and .creator.login == "github-actions[bot]") | .id')"
+          allowed_mail='^([0-9]+\+)?[A-Za-z0-9-]+(\[bot\])?@users\.noreply\.github\.com$|^noreply@github\.com$|^noreply@anthropic\.com$|^git@github\.com$'
+          title="$(gh api "repos/$REPO/pulls/$PR" --jq '.title')"
+          title_addrs="$(grep -oE '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' <<< "$title" || true)"
+          title_bad=0
+          while IFS= read -r addr; do
+            if [ -z "$addr" ]; then continue; fi
+            if ! [[ "$addr" =~ $allowed_mail ]]; then title_bad=1; fi
+          done <<< "$title_addrs"
+
+          # 5. Decide.
+          bad=0
+          if [ "$title_bad" = 1 ]; then
+            echo "::error::The pull request title contains an e-mail address. The title becomes the commit message on the default branch."
+            bad=1
+          fi
+          if [ "$needs_approval" = 1 ]; then
+            if grep -qxF "$PR:$HEAD_SHA" <<< "$APPROVED"; then
+              echo "Owner approval is recorded for this commit."
+            else
+              echo "::error::This pull request changes a path that needs the owner's approval. It is not merged automatically."
+              bad=1
+            fi
+          fi
+          if [ "$needs_review" = 1 ]; then
+            if grep -qxF "$REVIEW_LABEL" <<< "$labels" && [ -n "$reviewed" ]; then
+              echo "The review label was added at this commit."
+            else
+              echo "::error::This pull request changes a path that needs a review. The quality session adds the '$REVIEW_LABEL' label after reviewing the current commit. If the label is already present, remove it and add it again."
+              bad=1
+            fi
+          fi
+          if [ "$needs_review" = 0 ] && [ "$needs_approval" = 0 ]; then
+            echo "No sensitive path is changed."
+          fi
+          exit "$bad"

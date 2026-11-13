@@ -1,0 +1,128 @@
+name: checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy:
+    # Commit metadata and messages must not expose a personal e-mail address.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Commit e-mails must be noreply addresses
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          allowed='^([0-9]+\+)?[A-Za-z0-9-]+(\[bot\])?@users\.noreply\.github\.com$|^noreply@github\.com$|^noreply@anthropic\.com$|^git@github\.com$'
+          # The checkout is the test merge commit: ^1 is the base tip, ^2 is the pull request head.
+          if [ "$(git rev-parse HEAD^2)" != "$HEAD_SHA" ]; then
+            echo "::error::Unexpected checkout; cannot list the pull request commits."
+            exit 1
+          fi
+          shas="$(git rev-list HEAD^1..HEAD^2)"
+          bad=0
+          for sha in $shas; do
+            for e in "$(git log -1 --format=%ae "$sha")" "$(git log -1 --format=%ce "$sha")"; do
+              if ! [[ "$e" =~ $allowed ]]; then
+                echo "::error::Commit ${sha:0:7} has an author or committer e-mail that is not a noreply address."
+                bad=1
+              fi
+            done
+            msg="$(git log -1 --format=%B "$sha")"
+            addrs="$(grep -oE '[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}' <<< "$msg" || true)"
+            while IFS= read -r addr; do
+              if [ -z "$addr" ]; then continue; fi
+              if ! [[ "$addr" =~ $allowed ]]; then
+                echo "::error::Commit ${sha:0:7} has an e-mail address in its message that is not a noreply address."
+                bad=1
+              fi
+            done <<< "$addrs"
+          done
+          exit "$bad"
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check for Python project
+        id: project
+        shell: bash
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pyproject.toml not found yet; skipping lint and tests."
+          fi
+
+      - name: Install Qt runtime libraries
+        if: steps.project.outputs.exists == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libgl1 libegl1 libdbus-1-3 libxkbcommon0 libfontconfig1
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: steps.project.outputs.exists == 'true'
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          ignore-nothing-to-cache: true
+
+      - name: Install dependencies
+        if: steps.project.outputs.exists == 'true'
+        run: uv sync --locked
+
+      - name: Lint
+        if: steps.project.outputs.exists == 'true'
+        run: uv run ruff check .
+
+      - name: Test
+        if: steps.project.outputs.exists == 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -q
+
+  structure:
+    # Project-owned checks (structure, privacy scan, lock checks) run through one entry point.
+    # The scripts use the Python standard library only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for the entry point
+        id: entry
+        shell: bash
+        run: |
+          if [ -f scripts/checks/run_all.py ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::scripts/checks/run_all.py not found yet; skipping."
+          fi
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: steps.entry.outputs.exists == 'true'
+        with:
+          python-version: "3.13"
+
+      - name: Run project checks
+        if: steps.entry.outputs.exists == 'true'
+        run: uv run --no-project python scripts/checks/run_all.py

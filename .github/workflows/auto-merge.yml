@@ -1,0 +1,43 @@
+name: auto-merge
+
+# Runs with the workflow file from the base branch. It never checks out or runs code from the pull request.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    # Only non-draft pull requests from this repository's claude/ branches into the default branch.
+    # Forks never qualify.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'claude/') &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Enable auto-merge (squash) once the required checks pass
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          enabled="$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest -q '.autoMergeRequest != null')"
+          if [ "$enabled" = "true" ]; then
+            echo "Auto-merge is already enabled for #$PR."
+          elif gh pr merge "$PR" --repo "$REPO" --auto --squash --match-head-commit "$HEAD_SHA"; then
+            echo "Auto-merge is enabled for #$PR."
+          else
+            # The requirements may already be met, and then auto-merge cannot be enabled.
+            # A plain merge with this token still obeys branch protection, so it only
+            # succeeds when every required check is green for this exact commit.
+            gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$HEAD_SHA"
+          fi
