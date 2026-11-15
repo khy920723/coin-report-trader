@@ -291,6 +291,7 @@ AI가 봉 통계와 웹 검색을 함께 읽고 코인마다 최종 판단 하�
 - `claude/` 브랜치에서 main으로 연 PR은 필수 검사 privacy, test, structure, gate, windows를 통과하면 자동으로 스쿼시 병합된다. 초안 PR은 병합되지 않는다.
 - 아래 경로를 건드리는 PR은 품질·빌드 세션이 검토하고 `qa-reviewed` 라벨을 붙인 뒤에만 병합된다. 표시는 약속이고, 다른 세션이 붙이는 것을 GitHub이 막아 주지는 않는다.
   - 거래 코드: `src/<패키지>/trading/`
+  - 앱 코드와 시험: `src/`, `tests/`
   - 의존성 파일: `pyproject.toml`, `uv.lock` 등
   - 패키징: `packaging/`
   - `scripts/`
