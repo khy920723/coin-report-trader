@@ -1,0 +1,29 @@
+Coin Report Trader 오픈소스 고지
+Open source notices
+
+[이 프로그램 / This program]
+이 프로그램의 코드에는 라이선스를 두지 않습니다. 코드는 보여 주기 위해 공개하며, 사용·수정·재배포할
+권리를 주지 않습니다. 투자 자문이 아니며, AI 판단은 틀릴 수 있습니다.
+The code of this program is published for viewing only and is not licensed for use,
+modification or redistribution. This is not investment advice; AI judgments can be wrong.
+
+[Qt for Python (PySide6-Essentials, Shiboken6) @PYSIDE6_VERSION@ / Qt @PYSIDE6_VERSION@]
+이 프로그램은 위 라이브러리를 GNU LGPL 버전 3으로 사용합니다. 라이브러리 파일은
+_internal\PySide6\와 _internal\shiboken6\에 있으며 호환되는 버전으로 바꿔 넣을 수 있습니다.
+This program uses the libraries above under the GNU Lesser General Public License version 3.
+The library files are in _internal\PySide6\ and _internal\shiboken6\ and can be replaced
+with compatible versions.
+
+라이선스 원문 / License texts:
+  _internal\licenses\LGPL-3.0.txt
+  _internal\licenses\GPL-3.0.txt
+소스 코드 / Source code (tag v@PYSIDE6_VERSION@, unmodified):
+  https://code.qt.io/cgit/pyside/pyside-setup.git/
+  https://github.com/qt/qt5/tree/v@PYSIDE6_VERSION@
+
+[그 밖의 구성 요소 / Other components]
+Python 런타임(SQLite 포함)과 PyInstaller 부트로더의 라이선스는 _internal\licenses\ 폴더에 있고,
+번들에 든 제3자 구성 요소의 목록은 _internal\licenses\components.txt에 있습니다.
+The licenses of the Python runtime (including SQLite) and the PyInstaller bootloader are in
+_internal\licenses\. The list of bundled third-party components is in
+_internal\licenses\components.txt.
