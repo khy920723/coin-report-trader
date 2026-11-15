@@ -78,7 +78,7 @@ def display_path(
     env = os.environ if env is None else env
     platform = sys.platform if platform is None else platform
     flavor = _flavor(platform)
-    target = flavor(str(path))
+    target = flavor(_as_text(path, flavor))
     for prefix, token in _prefixes(env, platform):
         try:
             relative = target.relative_to(flavor(prefix))
@@ -102,6 +102,13 @@ def display_text(
     return text
 
 
+def _as_text(path: Path | str, flavor: type[PurePath]) -> str:
+    # Windows에서 linux 규칙의 Path를 `str()`로 바꾸면 역슬래시가 된다. 그 platform의 구분자를 쓴다.
+    if flavor is PurePosixPath and isinstance(path, PurePath):
+        return path.as_posix()
+    return str(path)
+
+
 def _flavor(platform: str) -> type[PurePath]:
     return PureWindowsPath if platform == "win32" else PurePosixPath
 
@@ -117,7 +124,7 @@ def _prefixes(env: Mapping[str, str], platform: str) -> list[tuple[str, str]]:
         base = env.get("XDG_DATA_HOME", "")
         if base and PurePosixPath(base).is_absolute():
             result.append((base, _XDG_DATA_HOME_TOKEN))
-    result.append((str(_home(env)), _HOME_TOKEN))
+    result.append((_home_text(env), _HOME_TOKEN))
     return result
 
 
@@ -134,5 +141,9 @@ def _base_dir(env: Mapping[str, str], platform: str) -> Path:
 
 
 def _home(env: Mapping[str, str]) -> Path:
-    home = env.get("HOME")
-    return Path(home) if home else Path.home()
+    return Path(_home_text(env))
+
+
+def _home_text(env: Mapping[str, str]) -> str:
+    """`env`의 `HOME` 글자 그대로. 없을 때만 실행 중인 OS의 집 폴더."""
+    return env.get("HOME") or str(Path.home())

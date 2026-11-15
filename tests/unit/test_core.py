@@ -80,7 +80,9 @@ def test_core_imports_only_stdlib_and_itself() -> None:
     for path in sorted(CORE_DIR.glob("*.py")):
         for name in _imported_modules(path):
             top = name.split(".")[0]
-            ok = top in stdlib or name == "coin_report_trader.core" or name.startswith(
-                "coin_report_trader.core."
+            ok = (
+                top in stdlib
+                or name == "coin_report_trader.core"
+                or name.startswith("coin_report_trader.core.")
             )
             assert ok, f"{path.name} imports {name}"

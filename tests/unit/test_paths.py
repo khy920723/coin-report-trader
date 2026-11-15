@@ -134,7 +134,8 @@ def test_display_linux_shortens_xdg_then_home_then_last_name() -> None:
 
 def test_display_linux_home_default_root() -> None:
     root = resolve_app_paths({"HOME": "/srv/h"}, "linux").root
-    assert display_path(str(root), {"HOME": "/srv/h"}, "linux") == f"~/.local/share/{APP}"
+    # Path를 그대로 넘긴다. Windows에서 str()은 역슬래시가 되어 linux 규칙의 경로가 아니다.
+    assert display_path(root, {"HOME": "/srv/h"}, "linux") == f"~/.local/share/{APP}"
 
 
 def test_display_does_not_match_a_longer_folder_name() -> None:
@@ -168,3 +169,21 @@ def test_display_text_shortens_paths_inside_messages() -> None:
 
 def test_display_text_leaves_a_root_home_alone() -> None:
     assert display_text("a/b/c", {"HOME": "/"}, "linux") == "a/b/c"
+
+
+def test_display_follows_the_platform_rules_not_the_running_os() -> None:
+    # Windows에서 linux 규칙의 경로를 Path로 만들면 PureWindowsPath처럼 다뤄진다.
+    env = {"XDG_DATA_HOME": "/srv/u", "HOME": "/srv/h"}
+    assert display_path(PureWindowsPath("/srv/h/a"), env, "linux") == "~/a"
+    assert display_path(PureWindowsPath(f"/srv/u/{APP}"), env, "linux") == f"$XDG_DATA_HOME/{APP}"
+    # 반대로 Linux에서 만든 win32 규칙의 경로(`D:\...` 뒤에 `/`가 섞인 글자)도 같은 결과다.
+    root = resolve_app_paths({"LOCALAPPDATA": WIN_BASE}, "win32").root
+    assert display_path(root, {"LOCALAPPDATA": WIN_BASE}, "win32") == f"%LOCALAPPDATA%\\{APP}"
+
+
+def test_home_text_is_used_as_given_whatever_the_running_os() -> None:
+    env = {"HOME": "/srv/h"}
+    assert display_text("x /srv/h/a y", env, "linux") == "x ~/a y"
+    assert display_path("/srv/h/.local/share/coin-report-trader", env, "linux") == (
+        "~/.local/share/coin-report-trader"
+    )
