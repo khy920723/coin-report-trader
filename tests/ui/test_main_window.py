@@ -70,6 +70,10 @@ def test_only_first_setup_shows_advice_notice(window):
         if screen_id is ScreenId.FIRST_SETUP:
             assert notice is not None
             assert notice.text() == ADVICE_NOTICE
+            # 명세 2절 4번: 투자 자문 문구는 빈 화면 문구 밑에 있다.
+            body = widget.findChild(QLabel, "screenBody")
+            layout = widget.layout()
+            assert layout.indexOf(body) < layout.indexOf(notice)
         else:
             assert notice is None
 
