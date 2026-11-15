@@ -1,11 +1,14 @@
 """`--self-test` 점검과 보고서 시험. 실제 사용자 폴더를 쓰지 않는다."""
 
+import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 import coin_report_trader
@@ -56,7 +59,10 @@ def test_full_run_passes_and_writes_the_report(
     assert lines[3].startswith("Python: 3.13.")
     assert lines[4].startswith("OS: ")
     assert lines[5].startswith("점검 시각(UTC): ")
-    items = [line for line in lines if line.startswith("[")]
+    # 명세 3.8: 머리 여섯 줄 + 항목 다섯 + 결과 한 줄. 빈 줄은 없다.
+    assert len(lines) == 6 + 5 + 1
+    assert "" not in lines
+    items = lines[6:11]
     assert [line.split(":")[0] for line in items] == [f"[통과] {key}" for key in KEYS]
     assert lines[-1] == "결과: 통과 (5/5)"
     # 경로는 줄인 형태로만 쓴다.
@@ -125,7 +131,16 @@ def test_format_report_counts_and_orders_items() -> None:
     now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
     lines = st.format_report(results, now).splitlines()
     assert "점검 시각(UTC): 2026-01-02T03:04:05Z" in lines
-    assert lines[-4:] == ["[통과] a: x", "[실패] b: y", "", "결과: 실패 (1/2)"]
+    assert lines[-3:] == ["[통과] a: x", "[실패] b: y", "결과: 실패 (1/2)"]
+    assert len(lines) == 6 + 2 + 1
+
+
+def test_format_report_puts_each_item_on_one_line() -> None:
+    results = [st.CheckResult("a", False, "first\nsecond\r\nthird"), st.CheckResult("b", True, "")]
+    lines = st.format_report(results).splitlines()
+    assert lines[6] == "[실패] a: first second third"
+    assert lines[7] == "[통과] b: "
+    assert lines[-1] == "결과: 실패 (1/2)"
 
 
 def test_default_checks_follow_the_spec_order() -> None:
@@ -299,3 +314,116 @@ def test_notice_check_fails_when_something_is_missing(
 def test_frozen_report_says_exe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     assert "실행 형태: exe" in st.format_report([st.CheckResult("a", True, "x")]).splitlines()
+
+
+# --- 오류 문구에서 경로가 새지 않는다 ---------------------------------------------------
+
+
+def _forms(path: Path) -> list[str]:
+    """보고서에 남으면 안 되는 경로의 꼴."""
+    text = str(path)
+    return [text, path.as_posix(), text.replace("\\", "\\\\"), repr(text)[1:-1]]
+
+
+def test_permission_error_under_the_data_folder_leaves_no_path(
+    env: SimpleNamespace, offscreen_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = env.data_home / "coin-report-trader" / "data" / "app.db"
+
+    def denied() -> str:
+        raise PermissionError(13, "Permission denied", str(secret))
+
+    monkeypatch.setattr(st, "check_sqlite", denied)
+    assert st.run_self_test() == 1
+    text = _report(env)
+    for form in _forms(env.data_home) + _forms(secret):
+        assert form not in text
+    assert f"[실패] sqlite: PermissionError: Permission denied ({ROOT_TOKEN}" in text
+    assert text.splitlines()[-1] == "결과: 실패 (4/5)"
+
+
+def test_oserror_while_importing_leaves_no_path(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = env.data_home / "coin-report-trader" / "x.py"
+    real = st.importlib.import_module
+
+    def fake(name: str, package: str | None = None) -> object:
+        if name == "coin_report_trader.core.screens":
+            raise PermissionError(13, "Permission denied", str(secret))
+        return real(name, package)
+
+    monkeypatch.setattr(st.importlib, "import_module", fake)
+    with pytest.raises(st.CheckFailed) as caught:
+        st.check_imports()
+    for form in _forms(secret) + _forms(env.data_home):
+        assert form not in str(caught.value)
+    assert "coin_report_trader.core.screens (PermissionError: Permission denied (" in str(
+        caught.value
+    )
+
+
+def test_a_failure_while_describing_does_not_stop_the_next_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(_exc: BaseException) -> str:
+        raise RuntimeError("cannot describe")
+
+    def fails() -> str:
+        raise ValueError("x")
+
+    monkeypatch.setattr(st, "describe_error", broken)
+    results = st.run_checks([st.Check("a", fails), st.Check("b", lambda: "ok")])
+    assert [(r.key, r.ok) for r in results] == [("a", False), ("b", True)]
+    assert results[0].detail == "ValueError"
+
+
+def test_an_unknown_home_folder_does_not_stop_the_checks(
+    env: SimpleNamespace, offscreen_app: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(cls: type[Path]) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(refuse))
+    monkeypatch.setattr(st, "check_notice", lambda: 1 / 0)
+    results = st.run_checks(st.default_checks())
+    assert [r.key for r in results] == KEYS
+    assert [r.ok for r in results] == [True, True, True, True, False]
+    assert results[3].detail.startswith(ROOT_TOKEN)
+
+
+# --- QApplication이 없는 프로세스(exe가 CI에서 타는 경로) ------------------------------------
+
+
+def test_self_test_in_a_fresh_process_without_qt_platform(tmp_path: Path) -> None:
+    data_home = tmp_path / "share"
+    data_home.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    child_env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+    child_env["LOCALAPPDATA" if sys.platform == "win32" else "XDG_DATA_HOME"] = str(data_home)
+    result = subprocess.run(
+        [sys.executable, "-m", "coin_report_trader", "--self-test"],
+        cwd=cwd,
+        env=child_env,
+        timeout=120,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout.decode("utf-8", "replace")
+    raw = (cwd / st.REPORT_FILE_NAME).read_bytes()
+    assert raw.startswith(BOM)
+    lines = raw.decode("utf-8-sig").splitlines()
+    assert any(line.startswith("[통과] qt: ") and "offscreen" in line for line in lines)
+    assert lines[-1] == "결과: 통과 (5/5)"
+    assert str(tmp_path) not in "\n".join(lines)
+
+
+def test_the_real_pyside6_plugin_folders_hold_the_offscreen_plugin(
+    offscreen_app: QApplication,
+) -> None:
+    found = st.find_offscreen_plugin(st._qt_plugin_dirs(QCoreApplication.libraryPaths()))
+    assert found is not None
+    assert "offscreen" in found.name
+    assert found.is_file()
