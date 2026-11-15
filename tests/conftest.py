@@ -366,19 +366,22 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         del config.stash[_PATCH]
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """A12 시험을 맨 끝으로 옮긴다(앞에서 돈 시험의 기록을 본다)."""
-    last = [item for item in items if _scenario(item) == LAST_SCENARIO]
-    if last:
-        items[:] = [item for item in items if _scenario(item) != LAST_SCENARIO] + last
-
-
 def pytest_collection_finish(session: pytest.Session) -> None:
+    """수집 중의 막힌 시도를 보고, 시나리오를 적고, A12 시험을 맨 끝으로 옮긴다.
+
+    순서는 여기서 옮긴다. `pytest_collection_modifyitems`에서 옮기면 `--ff`, `--nf`처럼 그 뒤에
+    순서를 바꾸는 플러그인이 A12를 앞으로 되돌릴 수 있다. 이 훅은 모든 정렬과 `-k` 등의 선택이
+    끝난 뒤에 불리고, 실행은 `session.items`의 순서를 따른다.
+    """
     attempts = GUARD.take_attempts()
     if attempts:
         raise pytest.UsageError("수집 중 " + GUARD.report(attempts))
+    items = session.items
+    last = [item for item in items if _scenario(item) == LAST_SCENARIO]
+    if last:
+        items[:] = [item for item in items if _scenario(item) != LAST_SCENARIO] + last
     GUARD.scenarios.clear()
-    for item in session.items:  # -k 등으로 고른 뒤의 목록
+    for item in items:
         scenario = _scenario(item)
         if scenario is not None:
             GUARD.scenarios.setdefault(scenario, []).append(item.nodeid)

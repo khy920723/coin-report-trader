@@ -1,8 +1,11 @@
 """항목 4. 개인정보: 저장소의 글 파일에 개인 이메일 주소나 사용자 폴더 경로가 없다.
 
 - 대상: `git ls-files`의 파일(아직 커밋하지 않은 새 파일도 넣는다. `.gitignore`가 빼는 것은 뺀다)
-  중 글 파일. `legacy/`, `packaging/licenses/`, `.github/`는 보지 않는다. 커밋 이메일은 privacy
-  검사(`.github/workflows/checks.yml`)가 본다.
+  중 글 파일. BOM이 있으면 그 인코딩(UTF-8, UTF-16, UTF-32)으로 풀고, 없으면 UTF-8로 풀되 풀리지
+  않는 바이트는 바꿔 넣고 그대로 본다(cp949 같은 파일도 ASCII 글자는 남는다). BOM 없이 NUL이 있는
+  파일만 이진으로 보고 건너뛴다. 볼 파일이 하나도 없으면 실패로 적는다. `legacy/`,
+  `packaging/licenses/`, `.github/`는 보지 않는다. 커밋 이메일은 privacy 검사
+  (`.github/workflows/checks.yml`)가 본다.
 - 이메일: privacy 검사의 허용 목록(`checks.yml`의 `allowed=`를 읽는다)과 `example.com` 주소는
   허용한다.
 - 경로: `C:\\Users\\<이름>`, `/home/<이름>`, `/Users/<이름>` 꼴. `<이름>`이나 `$USER`처럼 글자나
@@ -10,6 +13,8 @@
 - 찾은 값은 출력하지 않는다(공개 기록에 다시 남지 않게). 파일, 줄, 종류만 쓴다.
 """
 
+import codecs
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -29,6 +34,16 @@ USER_DIRS = (
     re.compile(r"(?<![\w.-])[A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]+" + _NAME),
     re.compile(r"(?<![\w.~-])/(?:home|Users)/" + _NAME),
 )
+# 바깥에서 넘어온 git 환경 변수(훅 등)가 다른 저장소를 가리키지 않게 지운다.
+GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+# 긴 BOM(UTF-32)을 먼저 본다. UTF-32 LE의 BOM은 UTF-16 LE의 BOM으로 시작한다.
+BOMS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
 _ALLOWED_LINE = re.compile(r"""^\s*allowed='(?P<pattern>[^']+)'\s*$""", re.MULTILINE)
 
 
@@ -40,17 +55,21 @@ def check(root: Path) -> list[str]:
     if files is None:
         return ["git ls-files를 실행하지 못했다(git 저장소가 아니거나 git이 없다)"]
     problems = []
+    checked = 0
     for name in files:
         if name.startswith(EXCLUDED_PREFIXES):
             continue
         text = _read_text(root / name)
         if text is None:
             continue
+        checked += 1
         for number, line in enumerate(text.splitlines(), start=1):
             if any(not _is_allowed_email(m.group(), allowed) for m in EMAIL.finditer(line)):
                 problems.append(f"{name}:{number}: 허용 목록 밖의 이메일 주소")
             if any(pattern.search(line) for pattern in USER_DIRS):
                 problems.append(f"{name}:{number}: 사용자 폴더 경로")
+    if checked == 0:
+        problems.append("git ls-files가 내놓은 파일 가운데 검사할 글 파일이 하나도 없다")
     return problems
 
 
@@ -78,8 +97,9 @@ def _is_allowed_email(address: str, allowed: re.Pattern[str]) -> bool:
 def _listed_files(root: Path) -> list[str] | None:
     command = ["git", "-C", str(root), "ls-files", "-z"]
     command += ["--cached", "--others", "--exclude-standard"]
+    env = {key: value for key, value in os.environ.items() if key not in GIT_VARIABLES}
     try:
-        result = subprocess.run(command, capture_output=True, check=True, timeout=60)
+        result = subprocess.run(command, capture_output=True, check=True, timeout=60, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     names = result.stdout.decode("utf-8", "replace").split("\0")
@@ -87,14 +107,14 @@ def _listed_files(root: Path) -> list[str] | None:
 
 
 def _read_text(path: Path) -> str | None:
-    """글 파일이면 내용, 아니면(없음, 이진, UTF-8 아님) None."""
+    """글 파일이면 내용, 아니면(없음, BOM 없이 NUL이 든 이진 파일) None."""
     try:
         data = path.read_bytes()
     except OSError:
         return None  # 지웠지만 아직 커밋하지 않은 파일 등
-    if b"\0" in data[:8192]:
+    for bom, encoding in BOMS:
+        if data.startswith(bom):
+            return data.decode(encoding, errors="replace")
+    if b"\0" in data:
         return None
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
+    return data.decode("utf-8", errors="replace")

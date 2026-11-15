@@ -11,6 +11,7 @@
 | 루트 `__init__.py` | 표준 라이브러리 |
 
 어느 폴더든 같은 폴더 안의 모듈(상대 import 포함)과 루트의 `__version__`은 import해도 된다.
+루트에서는 `app`도 `__version__`만 가져온다(표의 "위 전부"는 위 줄의 폴더들이다).
 표에 없는 폴더나 루트의 다른 모듈은 실패로 적는다(새 폴더는 그 마일스톤 명세가 표에 더한다).
 """
 
@@ -52,8 +53,9 @@ def check(root: Path) -> list[str]:
             problems.append(f"{shown}: 명세 3.3절의 표에 없는 자리다")
             continue
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=shown)
-        except (OSError, UnicodeDecodeError, SyntaxError) as exc:
+            # 바이트로 넘겨 ast가 BOM과 인코딩 선언을 직접 읽게 한다.
+            tree = ast.parse(path.read_bytes(), filename=shown)
+        except (OSError, SyntaxError, ValueError) as exc:
             problems.append(f"{shown}: 읽지 못했다({type(exc).__name__})")
             continue
         module = _module_name(path.relative_to(package_dir))
@@ -122,7 +124,7 @@ def _problem(owner: str, target: str, in_function: bool) -> str | None:
         return f"{target}: 명세 3.3절이 허용하지 않는 외부 패키지다"
     if kind == "root":
         name = target.split(".")[1] if target.count(".") >= 1 else ""
-        if name in ROOT_NAMES or owner == "app":  # app은 위 전부를 import해도 된다
+        if name in ROOT_NAMES:
             return None
         return f"{target}: 루트 {PACKAGE}에서는 __version__만 가져온다"
     if kind == owner:

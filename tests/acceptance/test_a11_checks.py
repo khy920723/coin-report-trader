@@ -81,6 +81,11 @@ def _append(path: Path, text: str) -> None:
         stream.write(text)
 
 
+def _line_number(path: Path, text: str) -> int:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return lines.index(text) + 1
+
+
 def _fake_personal_address() -> str:
     return "kim.min" + "su" + "@" + "personal-mail" + ".net"
 
@@ -101,11 +106,13 @@ def test_a11_untouched_copy_passes(make_copy: Callable[[str], Path]) -> None:
 def test_a11_ui_importing_storage_fails(make_copy: Callable[[str], Path]) -> None:
     copy = make_copy("ui-imports-storage")
     target = "src/coin_report_trader/ui/screens.py"
-    _append(copy / target, "\nfrom coin_report_trader.storage import database  # 위반 예\n")
+    violation = "from coin_report_trader.storage import database  # 위반 예"
+    _append(copy / target, f"\n{violation}\n")
+    line = _line_number(copy / target, violation)
     code, output = _run_all(copy)
     assert code == 1, output
     assert _status(output)["import 방향"] == "실패"
-    assert target in output
+    assert f"{target}:{line}:" in output
     assert [item for item, status in _status(output).items() if status == "실패"] == ["import 방향"]
 
 
@@ -191,3 +198,89 @@ def test_a11_pytest_collecting_legacy_fails(make_copy: Callable[[str], Path]) ->
     code, output = _run_all(copy)
     assert code == 1, output
     assert _status(output)["legacy 제외"] == "실패"
+
+
+@pytest.mark.scenario("A11")
+def test_a11_app_importing_the_whole_root_package_fails(make_copy: Callable[[str], Path]) -> None:
+    # 명세 3.3절: 어느 폴더든 루트에서는 `__version__`만 가져온다(app도 같다).
+    copy = make_copy("app-imports-root")
+    target = "src/coin_report_trader/app/application.py"
+    violation = "import coin_report_trader  # 위반 예"
+    _append(copy / target, f"\n{violation}\n")
+    line = _line_number(copy / target, violation)
+    code, output = _run_all(copy)
+    assert code == 1, output
+    assert _status(output)["import 방향"] == "실패"
+    assert f"{target}:{line}:" in output
+
+
+@pytest.mark.scenario("A11")
+@pytest.mark.parametrize("encoding", ["cp949", "utf-16"])
+def test_a11_user_folder_path_in_a_non_utf8_text_file_fails(
+    make_copy: Callable[[str], Path], encoding: str
+) -> None:
+    copy = make_copy(f"user-dir-{encoding}")
+    name = f"notes-{encoding}.txt"
+    # utf-16은 BOM을 붙여 쓴다. cp949는 한글 바이트가 UTF-8로 풀리지 않는다.
+    text = f"메모: 내려받은 파일은 {_fake_user_dir()}에 있다\n"
+    (copy / name).write_bytes(text.encode(encoding))
+    code, output = _run_all(copy)
+    assert code == 1, output
+    assert _status(output)["개인정보"] == "실패"
+    assert f"{name}:1:" in output
+
+
+@pytest.mark.scenario("A11")
+def test_a11_pytest_ini_that_overrides_pyproject_fails(make_copy: Callable[[str], Path]) -> None:
+    copy = make_copy("pytest-ini")
+    (copy / "pytest.ini").write_text("", encoding="utf-8")
+    code, output = _run_all(copy)
+    assert code == 1, output
+    assert _status(output)["legacy 제외"] == "실패"
+    assert "pytest.ini" in output
+
+
+@pytest.mark.scenario("A11")
+def test_a11_no_listed_file_fails(make_copy: Callable[[str], Path]) -> None:
+    # .gitignore가 모든 파일을 빼면 git ls-files가 아무것도 내놓지 않는다. 통과로 보지 않는다.
+    copy = make_copy("nothing-listed")
+    _append(copy / ".gitignore", "\n*\n")
+    code, output = _run_all(copy)
+    assert code == 1, output
+    assert _status(output)["개인정보"] == "실패"
+
+
+@pytest.mark.scenario("A11")
+@pytest.mark.parametrize(
+    ("spec_name", "source"),
+    [
+        ("coin-report-trader.spec", "exe = EXE(pyz)\n"),
+        ("coin-report-trader.spec", "opts = {}\nexe = EXE(pyz, **opts)\n"),
+        ("coin-report-trader.spec", "exe = EXE(pyz, name=make_name())\n"),
+        ("coin-report-trader.spec", "coll = COLLECT(name='coin-report-trader')\n"),
+        ("up" + "bit-trader.spec", "exe = EXE(pyz, name='coin-report-trader')\n"),
+    ],
+    ids=["no-name", "kwargs", "not-a-literal", "no-exe", "file-name"],
+)
+def test_a11_spec_without_a_checkable_exe_name_fails(
+    make_copy: Callable[[str], Path], spec_name: str, source: str
+) -> None:
+    copy = make_copy("spec")
+    (copy / "packaging").mkdir(exist_ok=True)
+    (copy / "packaging" / spec_name).write_text(source, encoding="utf-8")
+    code, output = _run_all(copy)
+    assert code == 1, output
+    assert _status(output)["상표"] == "실패"
+    assert f"packaging/{spec_name}" in output
+
+
+@pytest.mark.scenario("A11")
+def test_a11_good_spec_and_bom_sources_pass(make_copy: Callable[[str], Path]) -> None:
+    copy = make_copy("good-spec-and-bom")
+    (copy / "packaging").mkdir(exist_ok=True)
+    spec = "APP = 'coin-report-trader'\nexe = EXE(pyz, name=APP)\ncoll = COLLECT(exe, name=APP)\n"
+    (copy / "packaging" / "coin-report-trader.spec").write_bytes(b"\xef\xbb\xbf" + spec.encode())
+    module = copy / "src" / "coin_report_trader" / "core" / "constants.py"
+    module.write_bytes(b"\xef\xbb\xbf" + module.read_bytes())
+    code, output = _run_all(copy)
+    assert code == 0, output
