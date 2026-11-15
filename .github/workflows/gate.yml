@@ -37,6 +37,8 @@ jobs:
           # A pull request that touches one of these needs the review label.
           REVIEW_PATHS: |
             ^src/[^/]+/trading(/|\.py$)
+            ^src/
+            ^tests/
             ^pyproject\.toml$
             ^uv\.lock$
             ^uv\.toml$
