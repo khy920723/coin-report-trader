@@ -181,3 +181,55 @@ def test_an_unusable_data_location_fails_before_any_log(
     with pytest.raises(OSError):  # noqa: PT011
         run_gui([])
     assert entry.main([]) == 1
+
+
+def test_closing_the_window_ends_the_program(env: Any) -> None:
+    """명세 2절 6번: 창을 닫으면 프로그램이 끝난다. `quit()`을 부르지 않는다."""
+    fired = {"safety": False}
+    safety = QTimer()
+    safety.setSingleShot(True)
+    safety.timeout.connect(lambda: (fired.update(safety=True), env.app.quit()))
+    safety.start(10_000)
+    seen: dict[str, Any] = {}
+
+    def close_the_window() -> None:
+        try:
+            windows = [w for w in QApplication.topLevelWidgets() if w.objectName() == "mainWindow"]
+            visible = [w for w in windows if w.isVisible()]
+            seen["visible"] = len(visible)
+            for window in visible:
+                window.close()
+        except Exception as exc:
+            seen["error"] = repr(exc)
+            env.app.quit()
+
+    QTimer.singleShot(0, close_the_window)
+    code = run_gui([])
+    safety.stop()
+    assert "error" not in seen, seen["error"]
+    assert seen["visible"] == 1
+    assert fired["safety"] is False, "창을 닫았는데 프로그램이 끝나지 않아 안전 타이머가 울렸다"
+    assert code == 0
+    assert "종료: 코드 0" in _log_text(env)
+
+
+def test_run_gui_makes_the_last_closed_window_quit_the_program(env: Any) -> None:
+    env.app.setQuitOnLastWindowClosed(False)
+    seen = _quit_after_look(env.app, lambda: {"quit": QApplication.quitOnLastWindowClosed()})
+    assert run_gui([]) == 0
+    assert _finish(seen)["quit"] is True
+
+
+def test_an_oserror_is_logged_without_the_path(env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = env.root / "data" / "app.db"
+
+    def denied(path: Path) -> object:
+        raise PermissionError(13, "Permission denied", str(secret))
+
+    monkeypatch.setattr(application, "open_database", denied)
+    with pytest.raises(PermissionError):
+        run_gui([])
+    log = _log_text(env)
+    assert f"오류: PermissionError: Permission denied ({ROOT_TOKEN}" in log
+    for form in (str(env.data_home), env.data_home.as_posix(), repr(str(secret))[1:-1]):
+        assert form not in log

@@ -10,6 +10,7 @@
 
 import contextlib
 import importlib
+import importlib.util
 import os
 import pkgutil
 import struct
@@ -20,9 +21,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import coin_report_trader
+from coin_report_trader import __version__
 from coin_report_trader.config.paths import (
     AppPathError,
+    describe_error,
     display_path,
     display_text,
     resolve_app_paths,
@@ -69,7 +71,7 @@ def check_imports() -> str:
         try:
             importlib.import_module(name)
         except Exception as exc:
-            failures.append(f"{name} ({type(exc).__name__}: {display_text(str(exc))})")
+            failures.append(f"{name} ({_describe(exc)})")
     if failures:
         raise CheckFailed("import 실패: " + "; ".join(failures))
     import sqlite3
@@ -98,7 +100,7 @@ def check_qt() -> str:
         if QApplication.platformName() != "offscreen":
             raise CheckFailed(f"Qt 플랫폼이 offscreen이 아닙니다: {QApplication.platformName()}")
 
-    window = create_main_window(UiContext(coin_report_trader.__version__, "~"))
+    window = create_main_window(UiContext(__version__, "~"))
     try:
         app.processEvents()
         if window.objectName() != "mainWindow":
@@ -197,13 +199,27 @@ def run_checks(checks: Sequence[Check]) -> list[CheckResult]:
         try:
             detail = check.run()
         except CheckFailed as exc:
-            results.append(CheckResult(check.key, False, display_text(str(exc))))
+            results.append(CheckResult(check.key, False, _describe_failure(exc)))
         except (Exception, SystemExit) as exc:
-            detail = f"{type(exc).__name__}: {display_text(str(exc))}"
-            results.append(CheckResult(check.key, False, detail))
+            results.append(CheckResult(check.key, False, _describe(exc)))
         else:
             results.append(CheckResult(check.key, True, detail))
     return results
+
+
+def _describe(exc: BaseException) -> str:
+    """오류 설명(경로는 줄인 것만). 설명을 만들다 난 오류가 다음 점검을 막지 않게 한다."""
+    try:
+        return describe_error(exc)
+    except Exception:
+        return type(exc).__name__
+
+
+def _describe_failure(exc: CheckFailed) -> str:
+    try:
+        return display_text(str(exc))
+    except Exception:
+        return type(exc).__name__
 
 
 def format_report(results: Sequence[CheckResult], now: datetime | None = None) -> str:
@@ -212,16 +228,18 @@ def format_report(results: Sequence[CheckResult], now: datetime | None = None) -
     version = sys.version_info
     lines = [
         REPORT_TITLE,
-        f"버전: {coin_report_trader.__version__}",
+        f"버전: {__version__}",
         f"실행 형태: {'exe' if getattr(sys, 'frozen', False) else '소스'}",
         f"Python: {version.major}.{version.minor}.{version.micro} ({8 * struct.calcsize('P')}bit)",
         f"OS: {_os_description()}",
         f"점검 시각(UTC): {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
-        "",
     ]
-    lines += [f"[{'통과' if r.ok else '실패'}] {r.key}: {r.detail}" for r in results]
+    # 항목마다 한 줄이 되게 설명 속 줄바꿈은 공백으로 바꾼다.
+    for r in results:
+        detail = " ".join(r.detail.splitlines())
+        lines.append(f"[{'통과' if r.ok else '실패'}] {r.key}: {detail}")
     verdict = "통과" if passed == len(results) else "실패"
-    lines += ["", f"결과: {verdict} ({passed}/{len(results)})"]
+    lines.append(f"결과: {verdict} ({passed}/{len(results)})")
     return "\n".join(lines) + "\n"
 
 
@@ -262,10 +280,11 @@ def _qt_plugin_dirs(library_paths: Iterable[str]) -> list[str]:
 
 def _package_module_names() -> list[str]:
     names = [PACKAGE, *(f"{PACKAGE}.{name}" for name in SUBPACKAGES)]
+    # 루트 패키지는 이름으로 import하지 않고 spec에서 폴더를 얻는다(exe에서도 같은 값이 나온다).
+    spec = importlib.util.find_spec(PACKAGE)
+    locations = list(spec.submodule_search_locations or ()) if spec else []
     # import 실패는 check_imports가 이름별로 잡으므로 여기서는 찾기 오류를 무시한다.
-    for info in pkgutil.walk_packages(
-        coin_report_trader.__path__, f"{PACKAGE}.", onerror=lambda _: None
-    ):
+    for info in pkgutil.walk_packages(locations, f"{PACKAGE}.", onerror=lambda _: None):
         if info.name not in names:
             names.append(info.name)
     return names

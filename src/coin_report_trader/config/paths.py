@@ -91,15 +91,56 @@ def display_path(
 def display_text(
     text: str, env: Mapping[str, str] | None = None, platform: str | None = None
 ) -> str:
-    """오류 문구 안에 든 자료 폴더와 집 폴더의 앞부분을 줄인다."""
+    """오류 문구 안에 든 자료 폴더와 집 폴더의 앞부분을 줄인다.
+
+    Windows 규칙(`win32`)에서는 대소문자를 가리지 않고, 접두어 끝의 구분자를 뗀 뒤 견주며,
+    구분자 자리는 역슬래시 하나, 역슬래시 둘(`str(OSError)`의 꼴), `/`를 모두 맞춘다.
+    """
     env = os.environ if env is None else env
     platform = sys.platform if platform is None else platform
+    windows = platform == "win32"
+    flags = re.IGNORECASE if windows else 0
+    chars = "\\/" if windows else "/"
+    separator = f"[{re.escape(chars)}]+"
+    shortened = []
+    for prefix, token in _prefixes(env, platform):
+        # 앞뒤 구분자를 뗀 이름들을 구분자 패턴으로 잇는다.
+        names = [re.escape(name) for name in re.split(separator, prefix.strip(chars))]
+        pattern = (separator if prefix[0] in chars else "") + separator.join(names)
+        shortened.append((pattern, token, len(prefix.rstrip(chars))))
     # 긴 접두어부터 바꿔야 `~`가 더 구체적인 줄임을 가리지 않는다.
-    for prefix, token in sorted(_prefixes(env, platform), key=lambda p: len(p[0]), reverse=True):
-        if len(prefix) > 1:
-            # 이름이 더 이어지는 다른 폴더(`/srv/u2`)는 바꾸지 않는다.
-            text = re.sub(re.escape(prefix) + r"(?![\w.-])", lambda _, t=token: t, text)
+    for pattern, token, _ in sorted(shortened, key=lambda item: item[2], reverse=True):
+        # 이름이 더 이어지는 다른 폴더(`/srv/u2`)는 바꾸지 않는다.
+        text = re.sub(pattern + r"(?![\w.-])", lambda _, t=token: t, text, flags=flags)
     return text
+
+
+def describe_error(
+    exc: BaseException, env: Mapping[str, str] | None = None, platform: str | None = None
+) -> str:
+    """보고서와 로그에 쓰는 오류 설명. 경로가 새지 않게 줄인 것만 쓴다.
+
+    `OSError`는 `str(exc)`에 파일 이름이 통째로(Windows에서는 역슬래시가 두 번 든 꼴로) 들어가므로
+    종류와 `strerror`를 쓰고 `filename`, `filename2`는 `display_path`로 줄인 값만 덧붙인다.
+    """
+    name = type(exc).__name__
+    if not isinstance(exc, OSError) or not exc.strerror:
+        return f"{name}: {display_text(str(exc), env, platform)}"
+    text = f"{name}: {exc.strerror}"
+    files = [
+        display_path(
+            os.fsdecode(f) if isinstance(f, bytes | os.PathLike) else str(f), env, platform
+        )
+        for f in (exc.filename, exc.filename2)
+        if f is not None
+    ]
+    return f"{text} ({', '.join(files)})" if files else text
+
+
+def _filename_text(filename: object) -> str:
+    if isinstance(filename, bytes | os.PathLike):
+        return os.fsdecode(filename)
+    return str(filename)
 
 
 def _as_text(path: Path | str, flavor: type[PurePath]) -> str:
@@ -114,17 +155,22 @@ def _flavor(platform: str) -> type[PurePath]:
 
 
 def _prefixes(env: Mapping[str, str], platform: str) -> list[tuple[str, str]]:
-    """(줄일 앞부분, 대신 쓸 글) 목록. 앞에 있는 것이 먼저 맞는다."""
-    result: list[tuple[str, str]] = []
+    """(줄일 앞부분, 대신 쓸 글) 목록. 앞에 있는 것이 먼저 맞는다.
+
+    집 폴더를 정할 수 없거나 절대 경로가 아닌 값, 루트 폴더(`/`, `C:\\`)는 넣지 않는다.
+    """
+    candidates = []
     if platform == "win32":
-        base = env.get("LOCALAPPDATA", "")
-        if base and PureWindowsPath(base).is_absolute():
-            result.append((base, _LOCALAPPDATA_TOKEN))
+        candidates.append((env.get("LOCALAPPDATA", ""), _LOCALAPPDATA_TOKEN))
     else:
-        base = env.get("XDG_DATA_HOME", "")
-        if base and PurePosixPath(base).is_absolute():
-            result.append((base, _XDG_DATA_HOME_TOKEN))
-    result.append((_home_text(env), _HOME_TOKEN))
+        candidates.append((env.get("XDG_DATA_HOME", ""), _XDG_DATA_HOME_TOKEN))
+    candidates.append((_home_text(env), _HOME_TOKEN))
+    flavor = _flavor(platform)
+    result = []
+    for prefix, token in candidates:
+        path = flavor(prefix)
+        if prefix and path.is_absolute() and path.parent != path:
+            result.append((prefix, token))
     return result
 
 
@@ -137,13 +183,18 @@ def _base_dir(env: Mapping[str, str], platform: str) -> Path:
     base = env.get("XDG_DATA_HOME", "")
     if base and PurePosixPath(base).is_absolute():
         return Path(base)
-    return _home(env) / ".local" / "share"
-
-
-def _home(env: Mapping[str, str]) -> Path:
-    return Path(_home_text(env))
+    home = _home_text(env)
+    if not home:
+        raise AppPathError("집 폴더를 정할 수 없습니다")
+    return Path(home) / ".local" / "share"
 
 
 def _home_text(env: Mapping[str, str]) -> str:
-    """`env`의 `HOME` 글자 그대로. 없을 때만 실행 중인 OS의 집 폴더."""
-    return env.get("HOME") or str(Path.home())
+    """`env`의 `HOME` 글자 그대로. 없을 때만 실행 중인 OS의 집 폴더. 정할 수 없으면 빈 글."""
+    home = env.get("HOME")
+    if home:
+        return home
+    try:
+        return str(Path.home())
+    except (RuntimeError, OSError, KeyError):
+        return ""
