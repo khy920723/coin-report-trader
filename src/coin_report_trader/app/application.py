@@ -7,7 +7,12 @@ from collections.abc import Sequence
 
 from coin_report_trader import __version__
 from coin_report_trader.app.logging_setup import configure_logging, remove_log_handler
-from coin_report_trader.config.paths import AppPaths, display_path, display_text, resolve_app_paths
+from coin_report_trader.config.paths import (
+    AppPaths,
+    describe_error,
+    display_path,
+    resolve_app_paths,
+)
 from coin_report_trader.core import APP_ID, StorageError, UiContext
 from coin_report_trader.storage.database import SCHEMA_VERSION, open_database, schema_version
 
@@ -30,7 +35,7 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
         code = _run_window(paths, argv)
         return code
     except Exception as exc:
-        log.error("오류: %s: %s", type(exc).__name__, display_text(str(exc)))
+        log.error("오류: %s", describe_error(exc))
         raise
     finally:
         log.info("종료: 코드 %s", code)
@@ -57,6 +62,7 @@ def _run_window(paths: AppPaths, argv: Sequence[str] | None) -> int:
         program = sys.argv[0] if sys.argv and sys.argv[0] else APP_ID
         app = QApplication([program, *(argv or ())])
     assert isinstance(app, QApplication)
+    app.setQuitOnLastWindowClosed(True)  # 창을 닫으면 프로그램이 끝난다.
     app.setApplicationName(APP_ID)
     app.setApplicationVersion(__version__)
     window = create_main_window(UiContext(__version__, display_path(paths.root)))
