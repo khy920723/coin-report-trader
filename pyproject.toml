@@ -1,0 +1,58 @@
+[project]
+name = "coin-report-trader"
+version = "0.0.1"
+description = "AI 보고서로 판단하는 원화 코인 자동매매 Windows 프로그램 (개인 프로젝트, 투자 자문 아님)"
+requires-python = ">=3.13,<3.14"
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+]
+# 런타임 의존성은 PySide6-Essentials 하나다. 6.13 이상은 쓰지 않는다.
+dependencies = [
+    "PySide6-Essentials>=6.12,<6.13",
+]
+
+[project.gui-scripts]
+coin-report-trader = "coin_report_trader.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2",
+    "pytest-qt>=4.5",
+    "ruff>=0.17",
+    "pyinstaller>=6.22,<6.23",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+# 빌드(Windows)와 CI·클라우드 세션(Linux)에서 쓸 휠이 반드시 있어야 잠금이 성공한다.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.build-backend]
+module-name = "coin_report_trader"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+# legacy/ 아래 시험은 모으지 않는다.
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+xfail_strict = true
+qt_api = "pyside6"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+# legacy/는 빌드와 검사에 연결하지 않는다.
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
+# 한국어 문구의 가운뎃점(·) 같은 문자를 일부러 쓰므로 혼동 문자 검사는 끈다.
+ignore = ["RUF001", "RUF002", "RUF003"]
