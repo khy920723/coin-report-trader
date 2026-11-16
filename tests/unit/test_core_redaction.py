@@ -291,6 +291,59 @@ def test_shorten_path_changes_only_the_user_name(text: str, expected: str) -> No
     assert redact(text, env={}) == expected
 
 
+# 만든 사용자 이름. Windows 사용자 이름에는 공백(둘 이상도), 괄호, `&`, `!`, `#`, `'`가 들 수 있다.
+HARD_NAMES = [
+    "Kim (Work)",
+    "A&B",
+    "u1(2)",
+    "u1!",
+    "u1#a",
+    "John  Smith",  # 공백 둘
+    "O'Brien",
+    "Kim (Work Stuff) Lee",
+    "a (b) (c)",
+    "r&d  team (z9)",
+    "u1.tmp-3",
+    "김민수 (회사)",
+]
+
+
+@pytest.mark.parametrize("name", HARD_NAMES)
+@pytest.mark.parametrize("separator", ["\\", "/", "\\\\"])
+def test_shorten_path_removes_the_whole_windows_user_name(name: str, separator: str) -> None:
+    path = windows_user_dir(name, separator=separator)
+    shown = shorten_path(f"열지 못함 '{path}{separator}x'", {})
+    assert shown == f"열지 못함 '~{separator}x'"
+    # 이름의 어떤 조각도 글에 남지 않는다.
+    for piece in name.replace("(", " ").replace(")", " ").replace("&", " ").split():
+        assert piece not in shown
+
+
+@pytest.mark.parametrize("name", HARD_NAMES)
+def test_shorten_path_removes_the_whole_unix_user_name(name: str) -> None:
+    for make in (unix_home, mac_home):
+        shown = shorten_path(f"cannot open {make(name)}/x.db now", {})
+        assert shown == "cannot open ~/x.db now"
+
+
+def test_shorten_path_keeps_a_closing_quote_and_a_paren_that_is_not_part_of_the_name() -> None:
+    # 따옴표나 괄호로 이름을 닫고 말이 이어지는 꼴은 뒤의 글까지 이름으로 먹지 않는다.
+    assert shorten_path(f"cannot stat {unix_home('u1')} (I/O error)", {}) == (
+        "cannot stat ~ (I/O error)"
+    )
+    assert shorten_path(f"'{unix_home('u1')}' and ({unix_home('u2')})", {}) == "'~' and (~)"
+    assert shorten_path(f"'{unix_home('u1')}' and '{unix_home('u2')}'", {}) == "'~' and '~'"
+    assert shorten_path(f'"{unix_home("u1")}" and "{unix_home("u2")}"', {}) == '"~" and "~"'
+    # 이름 끝의 `)`와 `'`는 짝이 맞을 때만 이름의 일부다.
+    assert shorten_path(f"{unix_home('u1')}) and {unix_home('u2')}'", {}) == "~) and ~'"
+
+
+def test_shorten_path_stops_the_name_at_characters_a_windows_name_cannot_have() -> None:
+    for stop in (",", ";", "=", ":", "|", "?", "*", "<", ">", "[", "]", "+", "@"):
+        text = f"{unix_home('u1')} done{stop} then a/b"
+        assert shorten_path(text, {}) == f"~ done{stop} then a/b"
+
+
 @pytest.mark.parametrize(
     "text",
     [
