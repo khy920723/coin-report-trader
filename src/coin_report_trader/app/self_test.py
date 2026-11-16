@@ -30,7 +30,7 @@ from coin_report_trader.config.paths import (
     resolve_app_paths,
 )
 from coin_report_trader.core import SCREEN_TITLES, WINDOW_TITLE, ScreenId, UiContext
-from coin_report_trader.storage.database import SCHEMA_VERSION, open_database, schema_version
+from coin_report_trader.storage.database import migrate, open_database, schema_version
 
 REPORT_FILE_NAME = "self-test-report.txt"
 REPORT_TITLE = "Coin Report Trader 자체 점검 (--self-test)"
@@ -128,22 +128,38 @@ def check_qt() -> str:
 
 
 def check_sqlite() -> str:
-    """임시 폴더의 DB를 열어 WAL, synchronous, 스키마 번호를 본다. 실제 DB는 건드리지 않는다."""
+    """임시 폴더의 DB를 열고 `migrate`한 뒤 WAL, synchronous, 스키마 번호, 표를 본다.
+
+    실제 DB는 건드리지 않는다.
+    """
     import sqlite3
 
     with tempfile.TemporaryDirectory(prefix="crt-self-test-", ignore_cleanup_errors=True) as tmp:
         conn = open_database(Path(tmp) / "self-test.db")
         try:
+            migrate(conn)
             (mode,) = conn.execute("PRAGMA journal_mode").fetchone()
             (synchronous,) = conn.execute("PRAGMA synchronous").fetchone()
             version = schema_version(conn)
+            tables = {
+                name
+                for (name,) in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
         finally:
             conn.close()
     if str(mode).lower() != "wal" or synchronous != 2:
         raise CheckFailed(f"DB 설정이 맞지 않습니다: journal={mode}, synchronous={synchronous}")
-    if version != SCHEMA_VERSION:
-        raise CheckFailed(f"스키마 번호가 {version}입니다(기대 {SCHEMA_VERSION})")
-    return f"SQLite {sqlite3.sqlite_version}, wal, synchronous 2, 스키마 번호 {version} (임시 DB)"
+    if version != 1:
+        raise CheckFailed(f"스키마 번호가 {version}입니다(기대 1)")
+    if tables != {"settings", "candles", "alerts"}:
+        raise CheckFailed(f"표가 맞지 않습니다: {sorted(tables)}")
+    return (
+        f"SQLite {sqlite3.sqlite_version}, wal, synchronous 2, 스키마 번호 {version}, "
+        f"표 {len(tables)}개 (임시 DB)"
+    )
 
 
 def check_paths() -> str:

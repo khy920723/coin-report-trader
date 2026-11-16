@@ -126,7 +126,7 @@ def _make_newer_database(env: Any) -> None:
     paths.ensure()
     conn = open_database(paths.database_file)
     try:
-        conn.execute("PRAGMA user_version=1")
+        conn.execute("PRAGMA user_version=2")
     finally:
         conn.close()
 
