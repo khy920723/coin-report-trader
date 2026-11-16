@@ -443,3 +443,89 @@ def test_shorten_path_defaults_to_the_process_environment(
     monkeypatch.setenv("HOME", "/srv/process-home")
     assert shorten_path("/srv/process-home/x") == "~/x"
     assert redact("/srv/process-home/x") == "~/x"
+
+
+# --- USERPROFILE과 사용자 폴더 안쪽의 경로가 먼저(M1 명세 3.10 "환경 변수의 값") ---------------
+
+
+def _profile(name: str = "u1", *, separator: str = "\\") -> dict[str, str]:
+    return {"USERPROFILE": windows_user_dir(name, separator=separator)}
+
+
+def test_userprofile_paths_become_a_tilde() -> None:
+    env = _profile()
+    base = windows_user_dir("u1")
+    assert shorten_path(f"{base}\\app\\a.db", env) == "~\\app\\a.db"
+    assert shorten_path(base, env) == "~"
+    assert shorten_path(f"열기 실패: {base}", env) == "열기 실패: ~"
+    assert shorten_path(f"{base}/app/a.db", _profile(separator="/")) == "~/app/a.db"
+
+
+def test_userprofile_value_outside_the_users_folder_is_replaced_too() -> None:
+    assert shorten_path("D:\\Profiles\\p1\\x", {"USERPROFILE": "D:\\Profiles\\p1"}) == "~\\x"
+    assert shorten_path("d:/profiles/P1/x", {"USERPROFILE": "D:\\Profiles\\p1"}) == "~/x"
+
+
+@pytest.mark.parametrize("tail", [" Work", "(old)", " 의 파일 Work", "\u3000Work", "'s"])
+def test_userprofile_followed_by_a_folder_name_shortens_the_whole_name(tail: str) -> None:
+    env = _profile()
+    text = f"{windows_user_dir('u1')}{tail}\\file.txt"
+    assert shorten_path(text, env) == "~\\file.txt"
+    assert redact(text, env=env) == "~\\file.txt"
+
+
+def test_userprofile_example_names_of_the_spec() -> None:
+    env = {"USERPROFILE": windows_user_dir("u1")}
+    assert shorten_path(windows_user_dir("u1") + " Work\\file", env) == "~\\file"
+    assert shorten_path(windows_user_dir("u1") + "(old)\\file", env) == "~\\file"
+    # 값 바로 뒤가 구분자이거나 글 끝이면 지금처럼 값을 `~`로 바꾼다.
+    assert shorten_path(windows_user_dir("u1") + "\\file", env) == "~\\file"
+    assert shorten_path(windows_user_dir("u1"), env) == "~"
+    # 이어지는 글이 구분자까지 이어지지 않으면 값만 바꾼다.
+    assert shorten_path(windows_user_dir("u1") + " Work", env) == "~ Work"
+    assert shorten_path(windows_user_dir("u1") + " \\file", env) == "~ \\file"
+    assert shorten_path(windows_user_dir("u1") + ", 다음", env) == "~, 다음"
+
+
+def test_userprofile_followed_by_letters_is_not_replaced_by_value() -> None:
+    env = _profile()
+    # 다른 계정의 폴더 이름의 앞부분이다. 이름 찾기가 그 이름 전체를 줄인다.
+    assert shorten_path(windows_user_dir("u1x") + "\\f", env) == "~\\f"
+    assert shorten_path(windows_user_dir("u1-b") + "\\f", env) == "~\\f"
+    assert shorten_path(windows_user_dir("u1.b"), env) == "~"
+
+
+def test_userprofile_longest_value_goes_first() -> None:
+    env = {
+        "USERPROFILE": windows_user_dir("u1"),
+        "LOCALAPPDATA": windows_user_dir("u1") + "\\AppData\\Local",
+    }
+    text = windows_user_dir("u1") + "\\AppData\\Local\\app and " + windows_user_dir("u1") + "\\x"
+    assert shorten_path(text, env) == "%LOCALAPPDATA%\\app and ~\\x"
+
+
+def test_userprofile_is_case_insensitive_like_a_windows_path() -> None:
+    env = _profile("U1")
+    assert shorten_path(windows_user_dir("u1") + "\\f", env) == "~\\f"
+
+
+@pytest.mark.parametrize("tail", [" Work", "(old)", " 의 파일 Work"])
+def test_home_followed_by_a_folder_name_shortens_the_whole_name(tail: str) -> None:
+    env = {"HOME": unix_home("u1")}
+    assert shorten_path(f"{unix_home('u1')}{tail}/file", env) == "~/file"
+    assert shorten_path(f"{unix_home('u1')}/file", env) == "~/file"
+    assert shorten_path(unix_home("u1"), env) == "~"
+    assert shorten_path(f"{unix_home('u1')}{tail}", env) == f"~{tail}"
+    env = {"HOME": mac_home("u1")}
+    assert shorten_path(f"{mac_home('u1')}{tail}/file", env) == "~/file"
+
+
+def test_home_outside_the_users_folder_is_still_replaced_by_value() -> None:
+    # 이름 찾기가 걸리지 않는 곳이어서 값을 그대로 `~`로 바꾼다.
+    assert shorten_path("/srv/h Work/file", {"HOME": "/srv/h"}) == "~ Work/file"
+
+
+def test_the_continuation_rule_does_not_apply_to_the_other_variables() -> None:
+    env = {"LOCALAPPDATA": "D:\\AppData\\Local", "XDG_DATA_HOME": "/srv/u"}
+    assert shorten_path("D:\\AppData\\Local Work\\f", env) == "%LOCALAPPDATA% Work\\f"
+    assert shorten_path("/srv/u Work/f", env) == "$XDG_DATA_HOME Work/f"
