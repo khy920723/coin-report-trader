@@ -5,6 +5,7 @@
 """
 
 import sys
+import unicodedata
 
 import pytest
 
@@ -313,10 +314,13 @@ HARD_NAMES = [
     "Kims'",
     "'Kim",
     "u1 ((a))",
-    # ASCII 공백이 아닌 공백 문자(전각 공백, NBSP, 가는 공백)가 든 이름
+    # ASCII 공백이 아닌 공백 문자(전각 공백, NBSP, 가는 공백 등 유니코드 Zs)가 든 이름
     "김\u3000민수",
     "a\u00a0b",
     "a\u2009b",
+    "a\u202fb",
+    "a\u1680b",
+    "a\u205fb",
 ]
 
 
@@ -338,7 +342,24 @@ def test_shorten_path_removes_the_whole_unix_user_name(name: str) -> None:
         assert shown == "cannot open ~/x.db now"
 
 
-@pytest.mark.parametrize("separator", ["\t", "\n", "\r\n", "\f", "\v"])
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "\t",
+        "\n",
+        "\r\n",
+        "\r",
+        "\f",
+        "\v",
+        "\x1c",
+        "\x1d",
+        "\x1e",
+        "\x1f",
+        "\x85",
+        "\u2028",
+        "\u2029",
+    ],
+)
 def test_shorten_path_does_not_take_a_tab_or_a_line_break_as_part_of_a_name(
     separator: str,
 ) -> None:
@@ -351,6 +372,19 @@ def test_shorten_path_does_not_take_a_tab_or_a_line_break_as_part_of_a_name(
 def test_shorten_path_joins_words_with_any_other_whitespace(gap: str) -> None:
     assert shorten_path(f"{unix_home('Kim' + gap + 'Lee')}/x", {}) == "~/x"
     assert shorten_path(f"{windows_user_dir('Kim' + gap + 'Lee')}\\x", {}) == "~\\x"
+
+
+def test_shorten_path_takes_exactly_the_space_separators_as_part_of_a_name() -> None:
+    # 공백 분류(Zs)의 글자는 낱말을 잇고, 그 밖의 공백(제어 글자, 줄·문단 구분)은 이름을 끝낸다.
+    for code in range(0x3100):
+        char = chr(code)
+        if not char.isspace():
+            continue
+        shown = shorten_path(f"{unix_home('u1')}{char}a/b", {})
+        if unicodedata.category(char) == "Zs":
+            assert shown == "~/b", hex(code)
+        else:
+            assert shown == f"~{char}a/b", hex(code)
 
 
 def test_shorten_path_keeps_quoted_paths_that_end_at_the_name() -> None:
