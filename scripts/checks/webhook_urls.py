@@ -3,7 +3,8 @@
 - 대상: 개인정보 항목(`personal_info.py`)과 같은 파일 목록과 같은 읽는 법이다(`git ls-files`,
   커밋하지 않은 새 파일 포함, BOM을 보고 풀기). `legacy/`와 `packaging/licenses/`만 뺀다.
   `.github/`도 본다. 볼 파일이 하나도 없으면 실패로 적는다.
-- 꼴: 호스트(`discord.com`, `discordapp.com`, 앞에 `canary.`나 `ptb.`), 경로 `/api/webhooks/`나
+- 꼴: 호스트(`discord.com`, `discordapp.com`, 앞에 `canary.`나 `ptb.`. 호스트 바로 앞에 글자·숫자·
+  `.`·`-`가 오면 다른 호스트라서 잡지 않는다), 경로 `/api/webhooks/`나
   `/api/v숫자/webhooks/`, 숫자로만 된 번호(17자에서 20자), `/`, 영문·숫자·`-`·`_`·`.`로 된
   60자 이상의 토큰. 대소문자는 가리지 않고, JSON에서 이스케이프한 `\\/`도 본다. 앞의 `https://`는
   있어도 없어도 잡는다(토큰이 드러나는 것이 문제이므로). 뒤에 무엇이 이어지든 잡는다.
@@ -21,7 +22,9 @@ TITLE = "웹후크 주소"
 EXCLUDED_PREFIXES = ("legacy/", "packaging/licenses/")
 
 _SLASH = r"(?:\\?/)"
-_HOST = r"(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com"
+# 호스트 바로 앞에 글자, 숫자, `.`, `-`가 오면 다른 호스트(이름이 `discord.com`으로 끝나는 것, 다른
+# 하위 도메인)이므로 잡지 않는다. `canary.`와 `ptb.`는 호스트에 든다.
+_HOST = r"(?<![A-Za-z0-9.-])(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com"
 WEBHOOK = re.compile(
     _HOST
     + _SLASH

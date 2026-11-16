@@ -157,8 +157,9 @@ def _fake_webhook(
         _fake_webhook(scheme=""),  # 앞의 https://가 없어도 토큰이 드러난다
         _fake_webhook().replace("/", "\\/"),  # JSON에서 이스케이프한 꼴
         _fake_webhook() + "?wait=true",
+        '"' + _fake_webhook(scheme="") + '"',  # 따옴표로 싼 꼴
     ],
-    ids=["plain", "canary-v10", "ptb-discordapp", "upper", "no-scheme", "json", "query"],
+    ids=["plain", "canary-v10", "ptb-discordapp", "upper", "no-scheme", "json", "query", "quoted"],
 )
 def test_m1_webhook_url_in_a_text_file_fails(
     make_copy: Callable[[str], Path], written: str
@@ -192,10 +193,24 @@ def test_m1_webhook_url_in_a_test_file_and_a_workflow_fails(
         _fake_webhook(token="a" * 59),  # 토큰이 60자보다 짧다
         _fake_webhook(number="1" * 16),  # 번호가 17자보다 짧다
         _fake_webhook(host="example.com"),
+        _fake_webhook(host="not" + "discord.com"),  # 앞에 글자가 붙은 호스트
+        _fake_webhook(host="x-" + "discord.com"),  # `-`로 이어진 호스트
+        _fake_webhook(host="evil." + "discord.com"),  # 다른 하위 도메인
+        _fake_webhook(host="evil." + "discordapp.com", scheme=""),
         _fake_webhook(path="api/webhook"),
         "https://" + "discord.com/api/webhooks/<번호>/<토큰>",  # 자리표시
     ],
-    ids=["short-token", "short-number", "other-host", "other-path", "placeholder"],
+    ids=[
+        "short-token",
+        "short-number",
+        "other-host",
+        "prefixed-host",
+        "dashed-host",
+        "other-subdomain",
+        "other-subdomain-no-scheme",
+        "other-path",
+        "placeholder",
+    ],
 )
 def test_m1_text_that_is_not_a_webhook_url_passes(
     make_copy: Callable[[str], Path], written: str
