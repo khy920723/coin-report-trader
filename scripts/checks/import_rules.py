@@ -1,17 +1,21 @@
-"""항목 3. import 방향: `src/coin_report_trader/`의 `.py`를 `ast`로 읽어 명세 3.3절의 표와 맞춘다.
+"""항목 3. import 방향: `src/coin_report_trader/`의 `.py`를 `ast`로 읽어 M1 명세 3.3절 표와 맞춘다.
 
 | 폴더 | import해도 되는 것 |
 |---|---|
 | `core` | 표준 라이브러리 |
-| `config`, `storage` | `core`, 표준 라이브러리 |
+| `stats`, `storage`, `config` | `core`, 표준 라이브러리 |
+| `trading`, `notify` | `core`, 표준 라이브러리, `httpx`, `certifi` |
+| `vault` | `core`, 표준 라이브러리, `keyring` |
 | `ui` | `core`, PySide6, 표준 라이브러리 |
-| `trading` | `core`, 표준 라이브러리 |
-| `app` | 위 전부 |
-| `__main__.py` | 표준 라이브러리. `app`은 함수 안에서만 |
-| 루트 `__init__.py` | 표준 라이브러리 |
+| `app` | 위 전부(외부 패키지는 PySide6, `httpx`, `certifi`, `keyring`) |
+| `__main__.py` | 표준 라이브러리. `app`은 함수 안에서만(M0 명세 3.3) |
+| 루트 `__init__.py` | 표준 라이브러리(M0 명세 3.3) |
 
 어느 폴더든 같은 폴더 안의 모듈(상대 import 포함)과 루트의 `__version__`은 import해도 된다.
 루트에서는 `app`도 `__version__`만 가져온다(표의 "위 전부"는 위 줄의 폴더들이다).
+폴더끼리 잇는 것은 `app`뿐이다. `trading`을 import하는 것은 `app`뿐이고, `stats`, `storage`,
+`vault`, `notify`도 서로 import하지 않는다(표에서 그 폴더들은 `core` 말고 다른 폴더를 받지
+않는다).
 표에 없는 폴더나 루트의 다른 모듈은 실패로 적는다(새 폴더는 그 마일스톤 명세가 표에 더한다).
 """
 
@@ -24,16 +28,24 @@ TITLE = "import 방향"
 PACKAGE = "coin_report_trader"
 STDLIB = "표준 라이브러리"
 PYSIDE = "PySide6"
-FOLDERS = ("core", "config", "storage", "ui", "trading", "app")
+HTTPX = "httpx"
+CERTIFI = "certifi"
+KEYRING = "keyring"
+# 표가 허용하는 외부 패키지(최상위 이름).
+EXTERNALS = (PYSIDE, HTTPX, CERTIFI, KEYRING)
+FOLDERS = ("core", "stats", "storage", "config", "trading", "notify", "vault", "ui", "app")
 
 # 폴더(또는 루트 파일) → import해도 되는 것. 패키지 안의 것은 폴더 이름으로 적는다.
 ALLOWED: dict[str, frozenset[str]] = {
     "core": frozenset({STDLIB}),
-    "config": frozenset({STDLIB, "core"}),
+    "stats": frozenset({STDLIB, "core"}),
     "storage": frozenset({STDLIB, "core"}),
+    "config": frozenset({STDLIB, "core"}),
+    "trading": frozenset({STDLIB, "core", HTTPX, CERTIFI}),
+    "notify": frozenset({STDLIB, "core", HTTPX, CERTIFI}),
+    "vault": frozenset({STDLIB, "core", KEYRING}),
     "ui": frozenset({STDLIB, "core", PYSIDE}),
-    "trading": frozenset({STDLIB, "core"}),
-    "app": frozenset({STDLIB, PYSIDE, "core", "config", "storage", "ui", "trading", "app"}),
+    "app": frozenset({STDLIB, *EXTERNALS, *FOLDERS}),
     "__main__": frozenset({STDLIB, "app"}),
     "__init__": frozenset({STDLIB}),
 }
@@ -137,15 +149,15 @@ def _problem(owner: str, target: str, in_function: bool) -> str | None:
 
 
 def _kind(target: str) -> str | None:
-    """가져오는 것의 칸: 표준 라이브러리, PySide6, 패키지의 폴더 이름, "root", 또는 None(그 밖)."""
+    """가져오는 것의 칸: 표준 라이브러리, 허용된 외부 패키지, 폴더 이름, "root", 또는 None."""
     parts = target.split(".")
     top = parts[0]
     if top == PACKAGE:
         if len(parts) >= 2 and parts[1] in FOLDERS:
             return parts[1]
         return "root"
-    if top == PYSIDE:
-        return PYSIDE
+    if top in EXTERNALS:
+        return top
     if top in sys.stdlib_module_names:
         return STDLIB
     return None
@@ -158,4 +170,4 @@ def _owner_text(owner: str) -> str:
 
 
 def _kind_text(kind: str) -> str:
-    return kind if kind in (STDLIB, PYSIDE) else f"{kind}/"
+    return kind if kind in (STDLIB, *EXTERNALS) else f"{kind}/"
