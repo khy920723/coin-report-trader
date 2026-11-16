@@ -8,9 +8,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: Microsoft :: Windows :: Windows 10",
 ]
-# 런타임 의존성은 PySide6-Essentials 하나다. 6.13 이상은 쓰지 않는다.
+# 런타임 의존성은 넷이다(M1 명세 3.12). PySide6-Essentials는 6.13 이상을 쓰지 않는다.
+# httpx는 공개 시세와 디스코드, certifi는 인증서 묶음, keyring은 Windows 자격 증명 보관소에 쓴다.
 dependencies = [
     "PySide6-Essentials>=6.12,<6.13",
+    "httpx>=0.28,<0.29",
+    "certifi>=2026.1",
+    "keyring>=25.7,<26",
 ]
 
 [project.gui-scripts]
@@ -42,6 +46,8 @@ module-name = "coin_report_trader"
 minversion = "9.0"
 # legacy/ 아래 시험은 모으지 않는다.
 testpaths = ["tests"]
+# 시험이 tests/fakes/를 `import fakes.…`로 받는다(M1 명세 3.12, 3.13).
+pythonpath = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
 xfail_strict = true
 qt_api = "pyside6"
