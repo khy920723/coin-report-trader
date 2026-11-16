@@ -6,11 +6,17 @@
 # 라이선스 고지: exe 옆에 NOTICE.txt(LGPL-3.0 4(a)의 눈에 띄는 고지)를 두고, 원문과 목록은
 # dist/coin-report-trader/_internal/licenses/ 아래에 넣는다. 대상은 번들에 든 제3자 것이다:
 #   PySide6·Qt(LGPL-3.0과 GPL-3.0 원문), Python 런타임(그 안의 외부 소프트웨어 고지 포함),
-#   PyInstaller 부트로더와 런타임 훅. 이 저장소의 코드는 라이선스를 두지 않으므로 앱의 LICENSE는 없다.
-# 런타임 패키지의 라이선스 파일은 *.dist-info 폴더째 들어간다.
+#   PyInstaller 부트로더와 런타임 훅, 그 밖에 번들에 든 Python 패키지(httpx, certifi, keyring과 그것들이
+#   끌어오는 것. 패키지마다 licenses/<이름>/에 제 라이선스 파일을 둔다). 이 저장소의 코드는 라이선스를
+#   두지 않으므로 앱의 LICENSE는 없다.
+# 런타임 패키지의 *.dist-info 폴더도 그대로 들어간다.
+# 번들에 든 패키지는 Analysis의 결과(모듈과 바이너리)에서 정한다. 그래서 운영체제마다 실제로 든 것만
+# 적힌다. components.txt의 글은 빌드 로그에도 그대로 찍힌다.
 #
 # 빌드를 멈추는 경우: GPL로만 제공되는 Qt 모듈이 번들에 들어감, 개발·빌드 전용 패키지가 번들에
-# 들어감, (Windows) Python·패키지 밖에서 가져온 바이너리가 섞임, 고지가 가리키는 파일이 없음.
+# 들어감, (Windows) Python·패키지 밖에서 가져온 바이너리가 섞임, 미리 넣은 모듈(REQUIRED_MODULES)이
+# 번들에 없음, 번들에 든 패키지의 라이선스 이름이나 파일을 메타데이터에서 찾지 못함, 고지가 가리키는
+# 파일이 없음.
 
 import importlib.metadata
 import re
@@ -29,6 +35,17 @@ SRC = ROOT / "src"
 PACKAGING = ROOT / "packaging"
 LICENSES = "licenses"
 VERSION_TOKEN = "@PYSIDE6_VERSION@"
+CERTIFI_VERSION_TOKEN = "@CERTIFI_VERSION@"
+CERTIFI_LICENSE_TOKEN = "@CERTIFI_LICENSE@"
+CERTIFI_SOURCE_TOKEN = "@CERTIFI_SOURCE@"
+
+# 앱이 아직 import하지 않는 런타임 패키지(M1 명세 4절 5번). 미리 넣고, 번들에 들었는지 확인한다.
+REQUIRED_MODULES = ["httpx", "certifi", "keyring", "keyring.backends.Windows"]
+if sys.platform == "win32":
+    # keyring의 Windows 백엔드가 쓰는 자격 증명 API(pywin32-ctypes)
+    REQUIRED_MODULES.append("win32ctypes.pywin32.win32cred")
+# 따로 적는 배포판: 앱 자신, PySide6·Qt(LGPL 고지), PyInstaller(부트로더·런타임 훅)
+OWN_LINES = {APP_NAME, "pyside6-essentials", "shiboken6", "pyinstaller", "pyinstaller-hooks-contrib"}
 
 # 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 Qt 모듈의 바이너리 이름. 하나라도 번들에 들어가면
 # 배포 전체가 GPL 조건을 따라야 하므로 빌드를 멈춘다. Qt 6.12의 라이선스 목록에 모듈 페이지 기준
@@ -135,11 +152,81 @@ def python_license_files():
 
 
 def license_name(distribution):
+    """PySide6·PyInstaller 줄의 라이선스 글(M0 그대로): License-Expression, License 순."""
     metadata = importlib.metadata.metadata(distribution)
     return metadata.get("License-Expression") or metadata.get("License") or "dist-info 참고"
 
 
-def components_text(pyside_version):
+def package_license_name(distribution):
+    """새로 든 패키지의 라이선스 이름: License-Expression, 한 줄의 License, 분류자 순. 없으면 None."""
+    metadata = importlib.metadata.metadata(distribution)
+    expression = (metadata.get("License-Expression") or "").strip()
+    if expression:
+        return expression
+    text = (metadata.get("License") or "").strip()
+    if text and "\n" not in text and len(text) <= 80:
+        return text
+    prefix = "License :: OSI Approved :: "
+    names = [c.removeprefix(prefix) for c in metadata.get_all("Classifier") or [] if c.startswith(prefix)]
+    return " / ".join(names) or (text.splitlines()[0] if text else None)
+
+
+def source_url(distribution):
+    """메타데이터에 적힌 소스 주소(Project-URL의 Source류, 없으면 Homepage류). 없으면 None."""
+    metadata = importlib.metadata.metadata(distribution)
+    urls = {}
+    for entry in metadata.get_all("Project-URL") or []:
+        label, _, url = entry.partition(",")
+        urls[label.strip().lower()] = url.strip()
+    for label in ("source", "source code", "repository", "homepage", "home"):
+        if urls.get(label):
+            return urls[label]
+    return (metadata.get("Home-page") or "").strip() or None
+
+
+def bundled_distributions(toc_entries, owners):
+    """번들의 모듈과 바이너리를 설치한 배포판의 정규화 이름. 표준 라이브러리는 owners에 없다."""
+    found = set()
+    for dest, _source, _kind in toc_entries:
+        top = dest.replace("\\", "/").split("/")[0].split(".")[0]
+        found |= {canonical(d) for d in owners.get(top, [])}
+    return found
+
+
+def dist_license_files(distribution):
+    """배포판의 *.dist-info 안에 든 라이선스 파일(License-File 메타데이터와 LICENSE·COPYING·NOTICE 이름)."""
+    dist = importlib.metadata.distribution(distribution)
+    declared = {Path(name).name for name in dist.metadata.get_all("License-File") or []}
+    names = ("LICENSE", "LICENCE", "COPYING", "NOTICE", "AUTHORS")
+    found = {}
+    for file in dist.files or []:
+        if not any(part.endswith(".dist-info") for part in file.parts):
+            continue
+        if file.name in declared or file.name.upper().startswith(names):
+            found.setdefault(file.name, Path(dist.locate_file(file)))
+    return [found[name] for name in sorted(found)]
+
+
+def third_party_licenses(distributions):
+    """OWN_LINES 밖의 번들 배포판마다 (이름, 버전, 라이선스 이름, 라이선스 파일들, 소스 주소, 폴더)."""
+    entries = []
+    unknown = []
+    for name in sorted(distributions - OWN_LINES):
+        dist = importlib.metadata.distribution(name)
+        files = dist_license_files(name)
+        license = package_license_name(name)
+        if not files or not license:
+            unknown.append(f"{name}(라이선스 {'이름' if not license else '파일'}을 메타데이터에서 찾지 못함)")
+            continue
+        entries.append(
+            (dist.metadata["Name"], dist.version, license, files, source_url(name), f"{LICENSES}/{name}")
+        )
+    if unknown:
+        raise SystemExit("라이선스를 알 수 없는 패키지가 번들에 들어갔습니다: " + ", ".join(unknown))
+    return entries
+
+
+def components_text(pyside_version, packages):
     """_internal/licenses/components.txt: 번들에 든 제3자 구성 요소의 목록."""
     python = ".".join(str(part) for part in sys.version_info[:3])
     tools = [(name, importlib.metadata.version(name)) for name in ("pyinstaller", "pyinstaller-hooks-contrib")]
@@ -147,12 +234,16 @@ def components_text(pyside_version):
         "Coin Report Trader: 번들에 든 제3자 구성 요소 / Bundled third-party components",
         "",
         f"- Python {python} (PSF-2.0, 안의 외부 소프트웨어 고지 포함): licenses/python/",
-        f"- SQLite (Python의 sqlite3, public domain)",
+        "- SQLite (Python의 sqlite3, public domain)",
     ]
-    for name in runtime_closure():
+    for name in ("PySide6-Essentials", "shiboken6"):
         version = importlib.metadata.version(name)
         lines.append(f"- {name} {version} ({license_name(name)}): licenses/LGPL-3.0.txt, licenses/GPL-3.0.txt, *.dist-info")
     lines.append(f"- Qt {pyside_version} (PySide6-Essentials에 들어 있다, LGPL-3.0으로 사용)")
+    for display, version, license, files, url, folder in packages:
+        shown = ", ".join(f"{folder}/{path.name}" for path in files)
+        source = f" 소스: {url}" if url else ""
+        lines.append(f"- {display} {version} ({license}): {shown}{source}")
     for name, version in tools:
         lines.append(f"- {name} {version} (부트로더·런타임 훅, {license_name(name)}): licenses/{name}/")
     return "\n".join(lines) + "\n"
@@ -179,7 +270,8 @@ a = Analysis(
     binaries=[],
     datas=datas,
     # --self-test가 앱 모듈을 모두 import해 보므로, 동적으로만 쓰이는 모듈도 빠짐없이 넣는다.
-    hiddenimports=collect_submodules(PACKAGE),
+    # 앱이 아직 import하지 않는 런타임 패키지도 미리 넣는다(REQUIRED_MODULES).
+    hiddenimports=collect_submodules(PACKAGE) + REQUIRED_MODULES,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -226,6 +318,15 @@ dev_only = foreign_modules(
 if dev_only:
     raise SystemExit("개발·빌드 전용 패키지가 번들에 들어갔습니다: " + ", ".join(dev_only))
 
+bundled_modules = {module_name for module_name, _source, _kind in a.pure}
+absent = [name for name in REQUIRED_MODULES if name not in bundled_modules]
+if absent:
+    raise SystemExit("미리 넣은 모듈이 번들에 없습니다: " + ", ".join(absent))
+
+packages = third_party_licenses(
+    bundled_distributions((*a.pure, *a.binaries), importlib.metadata.packages_distributions())
+)
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -260,15 +361,33 @@ dist_dir = Path(coll.name)
 contents = dist_dir / (exe.contents_directory or ".")
 pyside_version = importlib.metadata.version("PySide6-Essentials")
 
+# 번들에 든 Python 패키지마다 제 라이선스 파일을 licenses/<이름>/에 둔다.
+for _display, _version, _license, files, _url, folder in packages:
+    (contents / folder).mkdir(parents=True, exist_ok=True)
+    for path in files:
+        shutil.copy2(path, contents / folder / path.name)
+
 # LGPL-3.0 4(a): 사본마다 Qt를 LGPL로 쓴다는 고지를 exe 옆에 눈에 띄게 둔다.
-notice = (PACKAGING / "NOTICE.txt").read_text(encoding="utf-8").replace(VERSION_TOKEN, pyside_version)
+# MPL-2.0 3.2(a): 실행 형태를 나눌 때 소스 코드를 얻는 길을 알린다(certifi의 인증서 묶음).
+tokens = {
+    VERSION_TOKEN: pyside_version,
+    CERTIFI_VERSION_TOKEN: importlib.metadata.version("certifi"),
+    CERTIFI_LICENSE_TOKEN: package_license_name("certifi") or "",
+    CERTIFI_SOURCE_TOKEN: source_url("certifi") or "",
+}
+if not all(tokens.values()):
+    raise SystemExit("NOTICE.txt를 채울 값을 메타데이터에서 찾지 못했습니다.")
+notice = (PACKAGING / "NOTICE.txt").read_text(encoding="utf-8")
+for token, value in tokens.items():
+    notice = notice.replace(token, value)
 if "@" in notice:
     raise SystemExit("NOTICE.txt에 채우지 못한 자리표시가 남았습니다.")
+components = components_text(pyside_version, packages)
+# 빌드 로그에서 번들에 든 구성 요소를 확인할 수 있게 그대로 찍는다.
+print("----- components.txt -----\n" + components + "----- components.txt 끝 -----", flush=True)
 # Windows 메모장에서도 한글이 깨지지 않게 BOM을 붙이고 줄바꿈은 CRLF로 쓴다.
 (dist_dir / "NOTICE.txt").write_text(notice, encoding="utf-8-sig", newline="\r\n")
-(contents / LICENSES / "components.txt").write_text(
-    components_text(pyside_version), encoding="utf-8-sig", newline="\r\n"
-)
+(contents / LICENSES / "components.txt").write_text(components, encoding="utf-8-sig", newline="\r\n")
 
 # NOTICE.txt가 가리키는 파일이 실제로 들어갔는지 확인한다.
 missing = [
@@ -281,6 +400,8 @@ missing = [
         f"{LICENSES}/pyinstaller",
         "PySide6",
         "shiboken6",
+        "certifi/cacert.pem",
+        *(f"{folder}/{path.name}" for *_rest, files, _url, folder in packages for path in files),
     )
     if not (contents / relative).exists()
 ]
