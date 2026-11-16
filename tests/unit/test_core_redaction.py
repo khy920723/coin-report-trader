@@ -313,6 +313,10 @@ HARD_NAMES = [
     "Kims'",
     "'Kim",
     "u1 ((a))",
+    # ASCII 공백이 아닌 공백 문자(전각 공백, NBSP, 가는 공백)가 든 이름
+    "김\u3000민수",
+    "a\u00a0b",
+    "a\u2009b",
 ]
 
 
@@ -332,6 +336,21 @@ def test_shorten_path_removes_the_whole_unix_user_name(name: str) -> None:
     for make in (unix_home, mac_home):
         shown = shorten_path(f"cannot open {make(name)}/x.db now", {})
         assert shown == "cannot open ~/x.db now"
+
+
+@pytest.mark.parametrize("separator", ["\t", "\n", "\r\n", "\f", "\v"])
+def test_shorten_path_does_not_take_a_tab_or_a_line_break_as_part_of_a_name(
+    separator: str,
+) -> None:
+    assert shorten_path(f"{unix_home('u1')}{separator}col/x", {}) == f"~{separator}col/x"
+    windows = f"{windows_user_dir('u1')}{separator}col\\x"
+    assert shorten_path(windows, {}) == f"~{separator}col\\x"
+
+
+@pytest.mark.parametrize("gap", ["\u3000", "\u00a0", "\u2009", " ", "   "])
+def test_shorten_path_joins_words_with_any_other_whitespace(gap: str) -> None:
+    assert shorten_path(f"{unix_home('Kim' + gap + 'Lee')}/x", {}) == "~/x"
+    assert shorten_path(f"{windows_user_dir('Kim' + gap + 'Lee')}\\x", {}) == "~\\x"
 
 
 def test_shorten_path_keeps_quoted_paths_that_end_at_the_name() -> None:
