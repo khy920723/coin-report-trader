@@ -39,12 +39,14 @@ def is_webhook_url(text: str) -> bool:
 
 # 경로의 사용자 이름. 구분자(`/`, `\`) 바로 앞까지가 이름이면 이름 전체를 가린다.
 # Windows 사용자 이름에는 공백(둘 이상도), `(`, `)`, `&`, `!`, `#`, `'` 같은 글자가 들 수 있다.
-# - 낱말: 공백과 Windows 사용자 이름에 쓸 수 없는 글자(`" / \ [ ] : ; | = , + * ? < > @`)가
-#   아닌 글자.
-# - 이름: 공백 문자로 이은 낱말들 바로 뒤에 구분자가 올 때. 아니면 한 낱말(`[\w.-]`)만
-#   이름으로 보고 뒤의 글은 그대로 둔다. 낱말 사이의 공백은 ASCII 공백만이 아니라 전각 공백,
-#   NBSP, 가는 공백 같은 공백 문자(유니코드 Zs) 하나 이상이다. 탭, 줄바꿈(`\n`, `\r`, U+0085,
-#   U+2028, U+2029), 그 밖의 제어 글자는 이름에 들지 않는다.
+# - 낱말(`_CHUNK`): 공백 문자(`\s`)와 Windows 사용자 이름에 쓸 수 없는 글자
+#   (`" / \ [ ] : ; | = , + * ? < > @`)만 뺀 글자들이다. 공백 문자가 아닌 제어 글자(U+0007,
+#   U+001B, U+007F 등)는 낱말에 들고, 이름 뒤에 구분자가 이어지면 이름에 든다.
+# - 낱말 사이(`_GAP`): 탭과 줄바꿈(`\n`, `\r`, U+0085, U+2028, U+2029 등)이 아닌 공백 문자
+#   하나 이상이다. ASCII 공백, NBSP, 전각 공백, 가는 공백이 든다.
+# - 이름: 낱말들을 `_GAP`으로 이은 것 바로 뒤에 구분자가 올 때 그 전체다. 아니면 첫 낱말의
+#   맨 앞에서 `[\w.-]`가 이어지는 데까지만(첫 글자는 `[^\W]`) 이름으로 보고 뒤의 글은 그대로
+#   둔다. 제어 글자는 낱말 사이(`_GAP`)와 이 끝 규칙에서만 이름에 들지 않는다.
 _CHUNK = r"[^\s\\/\"\[\]:;|=,+*?<>@]+"
 _GAP = r"[^\S\t\n\v\f\r\x1c-\x1f\x85\u2028\u2029]+"
 _NAME = r"(?:" + _CHUNK + r"(?:" + _GAP + _CHUNK + r")*(?=[\\/])|[^\W][\w.-]*)"
@@ -60,11 +62,25 @@ _ENV_PREFIXES: Final = (
     ("LOCALAPPDATA", "%LOCALAPPDATA%"),
     ("XDG_DATA_HOME", "$XDG_DATA_HOME"),
     ("HOME", "~"),
+    ("USERPROFILE", "~"),
 )
+# 사용자 폴더의 값. 값 바로 뒤에 폴더 이름이 이어지는 글(`_CONTINUATION`)이 구분자까지 이어지면
+# 그 값만 `~`로 바꾸지 않고 위의 이름 찾기가 이어진 이름 전체를 한 번에 줄이게 한다.
+_USER_FOLDER_VARIABLES: Final = frozenset({"HOME", "USERPROFILE"})
+# 값이 `Users`(`/home`) 바로 아래의 사용자 폴더 자체일 때만 이름 찾기가 그 뒤를 이어받는다. 다른
+# 곳(예: `/srv/h`)이면 이름 찾기가 걸리지 않으므로 지금처럼 값을 `~`로 바꾼다.
+_IS_USERS_CHILD = re.compile(
+    r"(?:[A-Za-z]:[\\/]+Users|[\\/]+(?:home|Users))[\\/]+[^\\/]+[\\/]*", re.IGNORECASE
+)
+_CONTINUATION = r"(?:" + _GAP + r")?" + _CHUNK + r"(?:" + _GAP + _CHUNK + r")*[\\/]"
 
 
-def _prefix_pattern(prefix: str) -> re.Pattern[str] | None:
-    """환경 변수 값(절대 경로)을 글 속에서 찾는 식. 상대 경로와 루트 폴더는 쓰지 않는다."""
+def _prefix_pattern(prefix: str, *, user_folder: bool = False) -> re.Pattern[str] | None:
+    """환경 변수 값(절대 경로)을 글 속에서 찾는 식. 상대 경로와 루트 폴더는 쓰지 않는다.
+
+    `user_folder`이면(값이 `Users`나 `/home` 바로 아래의 사용자 폴더) 값 바로 뒤에 폴더 이름이
+    구분자까지 이어지는 글은 찾지 않는다.
+    """
     windows_like = _WINDOWS_LIKE.match(prefix) is not None
     names = [name for name in _SEPARATORS.split(prefix) if name]
     if not names or not (windows_like or prefix[0] in "\\/"):
@@ -74,21 +90,25 @@ def _prefix_pattern(prefix: str) -> re.Pattern[str] | None:
     body = r"[\\/]+".join(re.escape(name) for name in names)
     if prefix[0] in "\\/":
         body = r"[\\/]+" + body
-    return re.compile(_BEFORE + body + _AFTER, re.IGNORECASE if windows_like else 0)
+    after = _AFTER + (r"(?!" + _CONTINUATION + r")" if user_folder else "")
+    return re.compile(_BEFORE + body + after, re.IGNORECASE if windows_like else 0)
 
 
 def shorten_path(text: str, env: Mapping[str, str] | None = None) -> str:
     """글 속의 경로에서 사용자 이름이 드러나는 앞부분을 줄인다.
 
     `LOCALAPPDATA` 아래는 `%LOCALAPPDATA%`로, `XDG_DATA_HOME` 아래는 `$XDG_DATA_HOME`으로,
-    `HOME` 아래는 `~`로 바꾼다. 그 밖에 드라이브 문자 다음 `Users` 폴더, `/home`, `/Users`
-    바로 아래의 사용자 이름도 `~`로 바꾼다. `env`를 빼면 현재 프로세스의 환경 변수를 쓴다.
+    `HOME`과 `USERPROFILE` 아래는 `~`로 바꾼다. 그 두 값 바로 뒤에 다른 폴더 이름이 구분자까지
+    이어지면(`{값} Work\\{파일}`) 값만 `~`로 바꾸지 않고, 아래의 이름 찾기가 이어진 이름 전체를
+    `~` 하나로 줄인다. 그 밖에 드라이브 문자 다음 `Users` 폴더, `/home`, `/Users` 바로 아래의
+    사용자 이름도 `~`로 바꾼다. `env`를 빼면 현재 프로세스의 환경 변수를 쓴다.
     """
     env = os.environ if env is None else env
     found = []
     for name, token in _ENV_PREFIXES:
         value = env.get(name, "")
-        pattern = _prefix_pattern(value) if value else None
+        user_folder = name in _USER_FOLDER_VARIABLES and _IS_USERS_CHILD.fullmatch(value)
+        pattern = _prefix_pattern(value, user_folder=bool(user_folder))
         if pattern is not None:
             found.append((len(value.rstrip("\\/")), pattern, token))
     # 긴 값부터 바꿔야 `~`가 더 구체적인 줄임을 가리지 않는다.

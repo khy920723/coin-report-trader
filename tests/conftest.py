@@ -1,4 +1,4 @@
-"""시험 공통 설정(M0 명세 3.5절, 4절 5번).
+"""시험 공통 설정(M0 명세 3.5절, 4절 5번, M1 명세 3.13).
 
 - 자료 폴더: autouse 픽스처가 모든 시험에서 `LOCALAPPDATA`(Windows)와 `XDG_DATA_HOME`(Linux)를
   그 시험의 `tmp_path`로 바꾼다. 실제 사용자 폴더를 쓰는 시험은 없다. 시험이 이 값을 다시 바꿔도
@@ -18,11 +18,22 @@
     감싼다.
   - 한계: 자식 프로세스, Python `socket`을 거치지 않는 확장 모듈(앱은 QtNetwork를 쓰지 않는다),
     원래 함수를 일부러 되돌리는 코드는 막지 못한다.
-- 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세 7절의 번호를 붙인다. A12 시험은 수집한
-  시험의 맨 끝으로 옮겨, 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
+- keyring 장치(M1 명세 3.13): `pytest_configure`에서 걸고 `pytest_unconfigure`에서 푼다.
+  - 막는 것: keyring 패키지의 모듈 함수 `get_password`, `set_password`, `delete_password`,
+    `get_credential`(`keyring`과 `keyring.core`의 이름 모두)과, keyring 패키지에 정의된 백엔드
+    클래스(`keyring.backend.KeyringBackend`와 그 하위 클래스. 장치를 건 뒤에 생기는 하위 클래스도
+    포함)의 같은 네 메서드.
+  - 막지 않는 것: 백엔드의 종류를 읽는 `keyring.get_keyring()`(과 `set_keyring`), keyring의 클래스를
+    물려받지 않은 시험 안의 객체.
+  - 부르면 `KeyringBlocked`(AssertionError의 하위)를 낸다. 네트워크 차단처럼 부를 때마다 기록하고,
+    시험의 정리 단계에서 기록이 남아 있으면 그 시험을 실패로 만든다(예외가 삼켜졌어도). 일부러
+    부르는 시험은 `keyring_guard.expect_blocked()`로 감싼다.
+- 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12 시험은 수집한 시험의
+  맨 끝으로 옮겨, 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
 
-`--import-mode=importlib`이고 `pythonpath`가 없어서 시험 파일은 이 파일을 import하지 못한다.
-시험은 `network_guard` 픽스처로 차단 장치를 받는다.
+시험은 `network_guard`, `keyring_guard` 픽스처로 두 장치를 받는다. `pythonpath = ["tests"]`(M1 명세
+3.12)로 시험 파일이 `tests/` 아래 모듈을 import할 수는 있지만, 이 파일은 pytest가 따로 읽어 들이는
+설정 파일이므로 import하지 않고 픽스처로 받는다.
 """
 
 import ipaddress
@@ -51,6 +62,10 @@ _DEFAULT_PROXY_PORTS = {"http": 80, "https": 443, "socks": 1080, "socks5": 1080,
 
 class RealNetworkBlocked(AssertionError):
     """시험이 실제 네트워크로 나가려 했다."""
+
+
+class KeyringBlocked(AssertionError):
+    """시험이 keyring의 값 읽기·쓰기·지우기를 불렀다(M1 명세 3.13)."""
 
 
 # --- 자료 폴더 -------------------------------------------------------------------------------
@@ -342,7 +357,119 @@ class NetworkGuard:
         self._set(patch, proactor, "sendto", sendto)
 
 
+# --- keyring 장치 ---------------------------------------------------------------------------
+
+KEYRING_FUNCTIONS = ("get_password", "set_password", "delete_password", "get_credential")
+
+
+class KeyringGuard:
+    """keyring의 값 읽기·쓰기·지우기를 막는 장치. 시험은 `keyring_guard` 픽스처로 받는다."""
+
+    Blocked = KeyringBlocked
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._attempts: list[str] = []
+        self._installed: dict[tuple[object, str], object] = {}
+        self.guarded_classes: set[type] = set()
+        # 시험(nodeid)마다 정리 단계에서 본 막힌 호출 수.
+        self.blocked_by_test: dict[str, int] = {}
+
+    def take_attempts(self) -> list[str]:
+        with self._lock:
+            taken = list(self._attempts)
+            self._attempts.clear()
+        return taken
+
+    @contextmanager
+    def expect_blocked(self) -> Iterator[list[str]]:
+        """안에서 막힌 호출을 기대한 것으로 보고 기록에서 뺀다. 하나도 없으면 AssertionError."""
+        with self._lock:
+            start = len(self._attempts)
+        caught: list[str] = []
+        try:
+            yield caught
+        finally:
+            with self._lock:
+                caught.extend(self._attempts[start:])
+                del self._attempts[start:]
+        if not caught:
+            raise AssertionError("expect_blocked() 안에서 막힌 keyring 호출이 없었다")
+
+    @staticmethod
+    def report(attempts: list[str]) -> str:
+        lines = [f"- {item}" for item in attempts[:_REPORT_LIMIT]]
+        if len(attempts) > _REPORT_LIMIT:
+            lines.append(f"- 외 {len(attempts) - _REPORT_LIMIT}건")
+        return (
+            f"keyring 호출을 {len(attempts)}번 막았다(예외가 삼켜졌어도 실패로 본다. 일부러 부르는 "
+            "시험은 keyring_guard.expect_blocked()로 감싼다):\n" + "\n".join(lines)
+        )
+
+    def _blocker(self, where: str, name: str) -> Any:
+        guard = self
+
+        def blocked(*args: Any, **kwargs: Any) -> Any:
+            message = f"keyring의 {where}.{name}을 막았다(시험은 가짜 SecretStore를 쓴다)"
+            with guard._lock:
+                guard._attempts.append(message)
+            raise KeyringBlocked(message)
+
+        blocked.__name__ = name
+        blocked.__qualname__ = f"{where}.{name}"
+        return blocked
+
+    def _set(self, patch: pytest.MonkeyPatch, owner: object, name: str, wrapper: Any) -> None:
+        patch.setattr(owner, name, wrapper)
+        self._installed[(owner, name)] = wrapper
+
+    def _guard_class(self, patch: pytest.MonkeyPatch, cls: type) -> None:
+        """그 클래스가 스스로 정의한 네 메서드를 막는다(물려받은 것은 부모에서 막힌다)."""
+        for name in KEYRING_FUNCTIONS:
+            if name in vars(cls):
+                self._set(patch, cls, name, self._blocker(cls.__qualname__, name))
+        self.guarded_classes.add(cls)
+
+    def is_installed(self) -> bool:
+        return bool(self._installed) and all(
+            getattr(owner, name, None) is wrapper
+            for (owner, name), wrapper in self._installed.items()
+        )
+
+    def install(self, patch: pytest.MonkeyPatch) -> None:
+        """장치를 건다. `patch.undo()`로 풀린다."""
+        import keyring
+        import keyring.backend
+        import keyring.core
+
+        self._installed.clear()
+        self.guarded_classes.clear()
+        for module in (keyring, keyring.core):
+            for name in KEYRING_FUNCTIONS:
+                self._set(patch, module, name, self._blocker(module.__name__, name))
+
+        base = keyring.backend.KeyringBackend
+        pending = [base]
+        while pending:
+            cls = pending.pop()
+            self._guard_class(patch, cls)
+            pending.extend(cls.__subclasses__())
+
+        # 장치를 건 뒤에 생기는 하위 클래스(늦게 import한 백엔드 모듈이나 시험이 만든 것)도 막는다.
+        # 메타클래스가 클래스마다 `set_password`를 감싸 다시 넣으므로 그 뒤에 막는다.
+        meta = type(base)
+        original_init = meta.__init__
+        guard = self
+
+        def init(cls: type, *args: Any, **kwargs: Any) -> None:
+            original_init(cls, *args, **kwargs)
+            guard._guard_class(patch, cls)
+
+        patch.setattr(meta, "__init__", init)
+
+
 GUARD = NetworkGuard()
+KEYRING_GUARD = KeyringGuard()
 _PATCH = pytest.StashKey[pytest.MonkeyPatch]()
 
 
@@ -352,10 +479,17 @@ def network_guard() -> NetworkGuard:
     return GUARD
 
 
+@pytest.fixture
+def keyring_guard() -> KeyringGuard:
+    """이 세션의 keyring 장치."""
+    return KEYRING_GUARD
+
+
 def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line("markers", f"{SCENARIO_MARKER}(id): 명세 7절의 수용 시나리오 번호")
+    config.addinivalue_line("markers", f"{SCENARIO_MARKER}(id): 명세의 수용 시나리오 번호")
     patch = pytest.MonkeyPatch()
     GUARD.install(patch)
+    KEYRING_GUARD.install(patch)
     config.stash[_PATCH] = patch
 
 
@@ -376,6 +510,9 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     attempts = GUARD.take_attempts()
     if attempts:
         raise pytest.UsageError("수집 중 " + GUARD.report(attempts))
+    keyring_attempts = KEYRING_GUARD.take_attempts()
+    if keyring_attempts:
+        raise pytest.UsageError("수집 중 " + KEYRING_GUARD.report(keyring_attempts))
     items = session.items
     last = [item for item in items if _scenario(item) == LAST_SCENARIO]
     if last:
@@ -395,8 +532,16 @@ def _scenario(item: pytest.Item) -> str | None:
 def _guard_problem() -> str | None:
     if not GUARD.is_installed():
         return "실제 네트워크 차단이 풀려 있다(socket 함수를 되돌린 코드가 있다)"
+    if not KEYRING_GUARD.is_installed():
+        return "keyring 장치가 풀려 있다(keyring 함수를 되돌린 코드가 있다)"
+    problems = []
     attempts = GUARD.take_attempts()
-    return GUARD.report(attempts) if attempts else None
+    if attempts:
+        problems.append(GUARD.report(attempts))
+    keyring_attempts = KEYRING_GUARD.take_attempts()
+    if keyring_attempts:
+        problems.append(KEYRING_GUARD.report(keyring_attempts))
+    return "\n".join(problems) or None
 
 
 @pytest.hookimpl(wrapper=True)
@@ -414,16 +559,27 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
     finally:
         # 정리 단계는 함수·모듈·세션 범위 픽스처의 정리까지 담는다.
         installed = GUARD.is_installed()
+        keyring_installed = KEYRING_GUARD.is_installed()
         attempts = GUARD.take_attempts()
+        keyring_attempts = KEYRING_GUARD.take_attempts()
         GUARD.blocked_by_test[item.nodeid] = len(attempts)
+        KEYRING_GUARD.blocked_by_test[item.nodeid] = len(keyring_attempts)
         if not installed:
             pytest.fail("실제 네트워크 차단이 풀려 있다", pytrace=False)
+        if not keyring_installed:
+            pytest.fail("keyring 장치가 풀려 있다", pytrace=False)
+        problems = []
         if attempts:
-            pytest.fail(GUARD.report(attempts), pytrace=False)
+            problems.append(GUARD.report(attempts))
+        if keyring_attempts:
+            problems.append(KEYRING_GUARD.report(keyring_attempts))
+        if problems:
+            pytest.fail("\n".join(problems), pytrace=False)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    attempts = GUARD.take_attempts()
-    if attempts:
-        sys.stderr.write(f"\n세션 끝: {GUARD.report(attempts)}\n")
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    for guard in (GUARD, KEYRING_GUARD):
+        attempts = guard.take_attempts()
+        if attempts:
+            sys.stderr.write(f"\n세션 끝: {guard.report(attempts)}\n")
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
