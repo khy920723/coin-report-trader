@@ -268,6 +268,30 @@ def test_shorten_path_replaces_user_names_in_known_places(text: str, expected: s
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # 이름만 `~`로 바뀌고, 이름 뒤의 글과 집 폴더가 아닌 다른 경로는 그대로 남는다.
+        (f"open {unix_home('u1')} failed, retry /tmp/x", "open ~ failed, retry /tmp/x"),
+        (f"users: {unix_home('u1')} and {unix_home('u2')}", "users: ~ and ~"),
+        (f"path={unix_home('u1')} count=3 dir=/opt/app", "path=~ count=3 dir=/opt/app"),
+        (f"{windows_user_dir('u1', separator='/')}, then /var/log/x", "~, then /var/log/x"),
+        (
+            f"{windows_user_dir('u1')} failed, retry D:\\\\tmp\\\\x",
+            "~ failed, retry D:\\\\tmp\\\\x",
+        ),
+        (f"{mac_home('u1')} and then /opt/app/y", "~ and then /opt/app/y"),
+        (f"[{unix_home('u1')}] ok; {unix_home('u2')} done", "[~] ok; ~ done"),
+        (f"{unix_home('u1')}/a.db copied to /var/b.db", "~/a.db copied to /var/b.db"),
+        # 공백이 든 이름은 바로 뒤에 구분자가 올 때만 이름으로 본다.
+        (f"{windows_user_dir('John Smith')}\\x failed, retry /tmp/x", "~\\x failed, retry /tmp/x"),
+    ],
+)
+def test_shorten_path_changes_only_the_user_name(text: str, expected: str) -> None:
+    assert shorten_path(text, {}) == expected
+    assert redact(text, env={}) == expected
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "/srv/" + "home" + "/alice/x",  # 앞에 폴더가 더 있다

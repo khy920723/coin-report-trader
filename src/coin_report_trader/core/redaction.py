@@ -37,8 +37,9 @@ def is_webhook_url(text: str) -> bool:
     return _WEBHOOK_URL.fullmatch(text.strip()) is not None
 
 
-# 경로의 사용자 이름: 바로 뒤에 구분자가 오면 공백이 든 이름도, 아니면 한 낱말을 이름으로 본다.
-_NAME = r"(?:[^\\/\r\n\"'<>|:*?]+(?=[\\/])|[^\W][\w.-]*)"
+# 경로의 사용자 이름: 공백이 든 이름(`John Smith`)은 공백 하나로 이은 낱말들 바로 뒤에 구분자가
+# 올 때만 이름으로 본다. 그 밖에는 한 낱말만 이름으로 보고, 뒤의 글은 그대로 둔다.
+_NAME = r"(?:[^\W][\w.-]*(?: [\w.-]+)+(?=[\\/])|[^\W][\w.-]*)"
 _BEFORE = r"(?<![\w.~-])"
 _WINDOWS_USERS = re.compile(_BEFORE + r"[A-Za-z]:[\\/]+Users[\\/]+" + _NAME, re.IGNORECASE)
 _UNIX_USERS = re.compile(_BEFORE + r"[\\/]+(?:home|Users)[\\/]+" + _NAME, re.IGNORECASE)
