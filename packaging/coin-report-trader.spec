@@ -383,8 +383,16 @@ for token, value in tokens.items():
 if "@" in notice:
     raise SystemExit("NOTICE.txt에 채우지 못한 자리표시가 남았습니다.")
 components = components_text(pyside_version, packages)
-# 빌드 로그에서 번들에 든 구성 요소를 확인할 수 있게 그대로 찍는다.
-print("----- components.txt -----\n" + components + "----- components.txt 끝 -----", flush=True)
+# 빌드 로그에서 번들에 든 구성 요소를 확인할 수 있게 그대로 찍는다. Windows의 표준 출력은 cp1252
+# 같은 기본 인코딩이라 한글을 쓰지 못하므로 UTF-8 바이트로 쓴다.
+log_text = "----- components.txt -----\n" + components + "----- components.txt 끝 -----\n"
+sys.stdout.flush()
+stdout_bytes = getattr(sys.stdout, "buffer", None)
+if stdout_bytes is not None:
+    stdout_bytes.write(log_text.encode("utf-8"))
+    stdout_bytes.flush()
+else:
+    print(log_text.encode("ascii", "backslashreplace").decode("ascii"), end="", flush=True)
 # Windows 메모장에서도 한글이 깨지지 않게 BOM을 붙이고 줄바꿈은 CRLF로 쓴다.
 (dist_dir / "NOTICE.txt").write_text(notice, encoding="utf-8-sig", newline="\r\n")
 (contents / LICENSES / "components.txt").write_text(components, encoding="utf-8-sig", newline="\r\n")
