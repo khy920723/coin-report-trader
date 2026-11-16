@@ -305,6 +305,14 @@ HARD_NAMES = [
     "r&d  team (z9)",
     "u1.tmp-3",
     "김민수 (회사)",
+    # 짝이 맞지 않는 괄호와 따옴표가 든 이름도 한 글자도 남지 않는다.
+    "A)B",
+    "Kim (Work",
+    "u1)",
+    "(u1",
+    "Kims'",
+    "'Kim",
+    "u1 ((a))",
 ]
 
 
@@ -326,15 +334,13 @@ def test_shorten_path_removes_the_whole_unix_user_name(name: str) -> None:
         assert shown == "cannot open ~/x.db now"
 
 
-def test_shorten_path_keeps_a_closing_quote_and_a_paren_that_is_not_part_of_the_name() -> None:
-    # 따옴표나 괄호로 이름을 닫고 말이 이어지는 꼴은 뒤의 글까지 이름으로 먹지 않는다.
-    assert shorten_path(f"cannot stat {unix_home('u1')} (I/O error)", {}) == (
-        "cannot stat ~ (I/O error)"
-    )
-    assert shorten_path(f"'{unix_home('u1')}' and ({unix_home('u2')})", {}) == "'~' and (~)"
-    assert shorten_path(f"'{unix_home('u1')}' and '{unix_home('u2')}'", {}) == "'~' and '~'"
+def test_shorten_path_keeps_quoted_paths_that_end_at_the_name() -> None:
+    # 따옴표로 싼 경로는 이름에서 끝나면(뒤에 구분자가 없으면) 따옴표 밖의 글을 먹지 않는다.
+    assert shorten_path(f"No such file: '{windows_user_dir('u1')}'", {}) == "No such file: '~'"
+    renamed = f"rename '{windows_user_dir('u1')}\\a' -> '{windows_user_dir('u1')}\\b'"
+    assert shorten_path(renamed, {}) == "rename '~\\a' -> '~\\b'"
+    assert shorten_path(f"'{unix_home('u1')}/a' and '{unix_home('u2')}/b'", {}) == "'~/a' and '~/b'"
     assert shorten_path(f'"{unix_home("u1")}" and "{unix_home("u2")}"', {}) == '"~" and "~"'
-    # 이름 끝의 `)`와 `'`는 짝이 맞을 때만 이름의 일부다.
     assert shorten_path(f"{unix_home('u1')}) and {unix_home('u2')}'", {}) == "~) and ~'"
 
 
