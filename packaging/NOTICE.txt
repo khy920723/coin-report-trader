@@ -21,6 +21,22 @@ with compatible versions.
   https://code.qt.io/cgit/pyside/pyside-setup.git/
   https://github.com/qt/qt5/tree/v@PYSIDE6_VERSION@
 
+[certifi @CERTIFI_VERSION@ (@CERTIFI_LICENSE@)]
+CA 인증서 묶음입니다. 고치지 않고 씁니다. 파일: _internal\certifi\
+라이선스 원문: _internal\licenses\certifi\
+CA certificate bundle, used unmodified. Files: _internal\certifi\
+License text: _internal\licenses\certifi\
+소스 코드 / Source code (version @CERTIFI_VERSION@): @CERTIFI_SOURCE@
+
+[그 밖의 Python 패키지 / Other Python packages]
+HTTP 통신(httpx 등), 인증서 묶음(certifi), 자격 증명 보관소(keyring 등)에 쓰는 Python 패키지가
+들어 있습니다. 패키지마다 이름, 버전, 라이선스와 소스 주소는 _internal\licenses\components.txt에,
+라이선스 원문은 _internal\licenses\<패키지 이름>\에 있습니다.
+Python packages for HTTP (httpx and others), the certificate bundle (certifi) and the credential
+store (keyring and others) are included. The name, version, license and source of each package are
+listed in _internal\licenses\components.txt, and the license texts are in
+_internal\licenses\<package name>\.
+
 [그 밖의 구성 요소 / Other components]
 Python 런타임(SQLite 포함)과 PyInstaller 부트로더의 라이선스는 _internal\licenses\ 폴더에 있고,
 번들에 든 제3자 구성 요소의 목록은 _internal\licenses\components.txt에 있습니다.
