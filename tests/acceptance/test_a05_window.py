@@ -19,6 +19,11 @@ OBJECT_NAMES = [
 ]
 
 
+# M1 명세 3.1: 처음 설정, 현황, 설정은 설계서대로 채운다. 이 가운데 현황은 17번이 채울 때까지
+# 빈 글 그대로이므로, 지금 빈 글이 빠진 자리는 처음 설정과 설정이다.
+FILLED_SCREENS = (ScreenId.FIRST_SETUP, ScreenId.SETTINGS)
+
+
 def _texts(widget) -> list[str]:
     return [label.text() for label in widget.findChildren(QLabel)]
 
@@ -38,7 +43,8 @@ def test_a5_window_has_five_empty_screens_in_order(qapp: QApplication) -> None:
             assert widget.objectName() == object_name
             texts = _texts(widget)
             assert title in texts
-            assert EMPTY_BODY in texts
+            # M1 명세 3.1: 처음 설정과 설정 자리는 설계서대로 채워져 빈 글이 없다.
+            assert (EMPTY_BODY in texts) is (screen_id not in FILLED_SCREENS)
             assert (ADVICE in texts) is (screen_id is ScreenId.FIRST_SETUP)
         assert current_screen(window) is ScreenId.FIRST_SETUP
     finally:

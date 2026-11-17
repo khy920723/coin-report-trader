@@ -283,6 +283,22 @@ def test_markets_and_settings_views() -> None:
     assert SettingsView() == SettingsView((), None, False)
 
 
+def test_markets_and_settings_view_added_fields() -> None:
+    blocked_until = datetime(2026, 1, 1, 1, 30, tzinfo=UTC)
+    assert MarketsView(LoadState.LOADING).blocked_until is None
+    assert SettingsView().state is LoadState.READY
+    # 새 필드는 맨 뒤에 기본값과 함께 있어, 위치 인자로 만든 값은 그대로 통과한다.
+    assert MarketsView(LoadState.READY, ()) == MarketsView(LoadState.READY, (), None, None)
+    assert SettingsView(("KRW-AAA",), 7, True) == SettingsView(
+        ("KRW-AAA",), 7, True, LoadState.READY
+    )
+    blocked = MarketsView(LoadState.FAILED, (), "일시 차단", blocked_until)
+    assert (blocked.error_name, blocked.blocked_until) == ("일시 차단", blocked_until)
+    failed = SettingsView(state=LoadState.FAILED)
+    assert (failed.coins, failed.retention_days, failed.first_setup_done) == ((), None, False)
+    assert failed.state is LoadState.FAILED
+
+
 def test_alert_views() -> None:
     detail = AlertDetail("봉 받기", "KRW-AAA", "네트워크 끊김", "내용", "다음에 다시 받습니다.")
     alert = AlertView(
