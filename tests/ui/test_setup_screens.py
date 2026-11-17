@@ -770,6 +770,42 @@ def test_settings_saved_message_shows_and_goes_away_and_survives_the_new_view(
     assert _shown_text(settings, "settingsMessage") is None
 
 
+@pytest.mark.parametrize(
+    "message",
+    [NOT_LISTED, "저장하지 못했습니다."],
+)
+def test_the_saved_timer_does_not_clear_a_later_warning(make_window, actions, monkeypatch, message):
+    monkeypatch.setattr(main_window_module, "SAVED_MESSAGE_MS", 50)
+    window = make_window(actions)
+    settings = _ready_settings(window)
+    timer = window._saved_timer
+    _choose_days(settings, "settings", 90)
+    _button(settings, "settingsSave").click()
+    window.apply(SaveResult("settings", ok=True, message="저장했습니다."))
+    assert timer.isActive()
+    # 시간 안에 다시 저장했는데 거절이나 실패가 왔다.
+    _button(settings, "settingsSave").click()
+    window.apply(SaveResult("settings", ok=False, message=message))
+    timer.timeout.emit()  # 앞 타이머의 만료가 늦게 와도
+    assert _shown_text(settings, "settingsMessage") == message
+    assert _tone(settings, "settingsMessage") == "warning"
+    assert not timer.isActive()
+
+
+def test_the_saved_timer_does_not_clear_a_warning_that_replaced_the_saved_text(
+    make_window, actions
+):
+    window = make_window(actions)
+    settings = _ready_settings(window)
+    _choose_days(settings, "settings", 90)
+    _button(settings, "settingsSave").click()
+    window.apply(SaveResult("settings", ok=True, message="저장했습니다."))
+    # 다시 저장하지 않고 거짓 결과가 먼저 와도(차례가 어긋나도) 경고 글은 남는다.
+    window.apply(SaveResult("settings", ok=False, message="저장하지 못했습니다."))
+    window._saved_timer.timeout.emit()
+    assert _shown_text(settings, "settingsMessage") == "저장하지 못했습니다."
+
+
 def test_settings_failed_save_shows_the_message_in_warning_color_and_keeps_the_values(
     make_window, actions
 ):

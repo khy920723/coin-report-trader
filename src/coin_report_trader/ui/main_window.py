@@ -80,6 +80,8 @@ class MainWindow(QMainWindow):
         self._markets_loading = False
         self._pending_saves: list[ScreenId] = []
         self._messages: dict[ScreenId, Message] = {}
+        self._saved_message: Message | None = None
+        """타이머가 지울 "저장했습니다." 글. 1 자리의 글이 이것일 때만 지운다."""
         self._showing: ScreenId | None = None
 
         self.setObjectName(WINDOW_NAME)
@@ -190,18 +192,25 @@ class MainWindow(QMainWindow):
         else:
             origin = ScreenId.SETTINGS if self._first_setup_done() else ScreenId.FIRST_SETUP
         self._messages.pop(origin, None)
+        self._saved_timer.stop()
+        self._saved_message = None
         if result.ok:
             if origin is ScreenId.FIRST_SETUP:
                 select_screen(self, ScreenId.STATUS)
             elif result.message:
-                self._messages[origin] = Message(result.message, Tone.NORMAL)
+                self._saved_message = Message(result.message, Tone.NORMAL)
+                self._messages[origin] = self._saved_message
                 self._saved_timer.start(SAVED_MESSAGE_MS)
         elif result.message:
             self._messages[origin] = Message(result.message, Tone.WARNING)
         self._update()
 
     def _clear_saved_message(self) -> None:
-        self._messages.pop(ScreenId.SETTINGS, None)
+        # 타이머를 켠 "저장했습니다." 글만 지운다. 1 자리가 그 사이 경고 글로 바뀌었으면 둔다.
+        shown = self._messages.get(ScreenId.SETTINGS)
+        if shown is not None and shown is self._saved_message:
+            del self._messages[ScreenId.SETTINGS]
+        self._saved_message = None
         self._update()
 
     # --- 사용자의 동작 ---
@@ -228,6 +237,9 @@ class MainWindow(QMainWindow):
         ):
             return
         self._messages.pop(origin, None)
+        if origin is ScreenId.SETTINGS:
+            self._saved_timer.stop()
+            self._saved_message = None
         self._pending_saves.append(origin)
         self._actions.save_settings(coins, days, first_setup=first_setup)
         self._update()
