@@ -147,6 +147,30 @@ def test_message_text(category_title: str) -> str:
     return f"{TEST_MESSAGE_PREFIX}입니다. 이 채널로 {category_title}이 옵니다."
 
 
+def kst_datetime_text(moment: datetime) -> str:
+    """`{날짜와 시각}`의 글: 한국 시간의 `YYYY-MM-DD HH:MM`(초는 넣지 않는다)."""
+    if moment.utcoffset() is None:
+        raise ValueError("시간대가 없는 시각은 글로 바꿀 수 없다")
+    local = moment.astimezone(KST)
+    return f"{local.year:04d}-{local.month:02d}-{local.day:02d} {local.hour:02d}:{local.minute:02d}"
+
+
+def kst_when_text(moment: datetime, now: datetime | None) -> str:
+    """지금 가까이의 때를 가리키는 `{시각}`의 글.
+
+    `moment`와 `now`의 한국 날짜가 같으면 `HH:MM`, 다르면 `YYYY-MM-DD HH:MM`이다.
+    `now`가 `None`이면 `HH:MM`이다. 시간대가 없는 값이 있으면 `ValueError`다.
+    """
+    time_text = kst_time_text(moment)
+    if now is None:
+        return time_text
+    if now.utcoffset() is None:
+        raise ValueError("시간대가 없는 시각은 글로 바꿀 수 없다")
+    if moment.astimezone(KST).date() == now.astimezone(KST).date():
+        return time_text
+    return kst_datetime_text(moment)
+
+
 def blocked_candles_text(time_text: str) -> str:
     """차단 중에 현황 화면의 "다시 시도"를 눌렀을 때(M1 명세 2의 3)."""
     return f"거래소가 잠시 요청을 막았습니다. {time_text} 뒤에 다시 받습니다."

@@ -19,9 +19,10 @@ OBJECT_NAMES = [
 ]
 
 
-# M1 명세 3.1: 처음 설정, 현황, 설정은 설계서대로 채운다. 이 가운데 현황은 17번이 채울 때까지
-# 빈 글 그대로이므로, 지금 빈 글이 빠진 자리는 처음 설정과 설정이다.
-FILLED_SCREENS = (ScreenId.FIRST_SETUP, ScreenId.SETTINGS)
+# M1 명세 3.1: 처음 설정, 현황, 설정은 설계서대로 채운다(17번 뒤). 보고서와 기록은 빈 글 그대로다.
+FILLED_SCREENS = (ScreenId.FIRST_SETUP, ScreenId.STATUS, ScreenId.SETTINGS)
+# 설계서 4.5: `actions` 없이 만든 창의 현황 자리는 "처음 설정 전"의 글 하나만 보인다.
+STATUS_BEFORE_SETUP = "처음 설정을 마치면 여기에 코인별 현황이 보입니다."
 
 
 def _texts(widget) -> list[str]:
@@ -43,8 +44,9 @@ def test_a5_window_has_five_empty_screens_in_order(qapp: QApplication) -> None:
             assert widget.objectName() == object_name
             texts = _texts(widget)
             assert title in texts
-            # M1 명세 3.1: 처음 설정과 설정 자리는 설계서대로 채워져 빈 글이 없다.
+            # M1 명세 3.1: 처음 설정, 현황, 설정 자리는 설계서대로 채워져 빈 글이 없다.
             assert (EMPTY_BODY in texts) is (screen_id not in FILLED_SCREENS)
+            assert (STATUS_BEFORE_SETUP in texts) is (screen_id is ScreenId.STATUS)
             assert (ADVICE in texts) is (screen_id is ScreenId.FIRST_SETUP)
         assert current_screen(window) is ScreenId.FIRST_SETUP
     finally:

@@ -61,3 +61,45 @@ def retention_shrink_body(saved_days: int, new_days: int) -> str:
         f"생긴 지 {new_days}일이 지난 알림이 바로 영구히 지워집니다. "
         "보고서, 판단, 주문, 체결, 외부 변동의 기록은 지워지지 않습니다."
     )
+
+
+# --- 현황 화면(설계서 4) ---
+STATUS_BEFORE_FIRST_SETUP: Final = "처음 설정을 마치면 여기에 코인별 현황이 보입니다."
+NO_CANDLES_YET: Final = "아직 받은 봉이 없습니다."
+LAST_CANDLE_INCOMPLETE: Final = "마지막 봉은 미완성입니다"
+INDICATOR_DISCLAIMER: Final = (
+    "지표는 계산 결과와 AI의 글을 보여 줄 뿐, 어느 쪽이 이득인지 보장하지 않습니다."
+)
+STATS_TITLE: Final = "기간별 봉 통계"
+STATS_COLUMNS: Final = (
+    "기간",
+    "봉 수",
+    "변화",
+    "최고가",
+    "최저가",
+    "최고가 대비",
+    "최대 낙폭",
+    "변동성",
+    "상승 봉 비율",
+)
+"""표의 머리 칸(설계서 4.2의 8, M1 명세 3.5의 화면 항목)."""
+
+
+def candles_failed_text(error_name: str | None) -> str:
+    """ "봉을 받지 못함" 줄(설계서 4.5)."""
+    return f"봉을 받지 못했습니다({error_name})." if error_name else "봉을 받지 못했습니다."
+
+
+def fetched_text(time_text: str) -> str:
+    """ "마지막으로 받은 때" 줄(설계서 4.2의 8)."""
+    return f"마지막으로 받은 때 {time_text}"
+
+
+def count_text(count: int) -> str:
+    """표의 봉 수 칸."""
+    return f"봉 {count}"
+
+
+def indicator_row_text(title: str, value: str) -> str:
+    """코인 칸의 지표 한 줄(설계서 4.3의 예: "1년 변화 +12.34%")."""
+    return f"{title} {value}"
