@@ -1,11 +1,12 @@
 """앱의 TLS 설정(`make_tls_context`)과 화면 글 상수의 시험."""
 
 import ssl
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from coin_report_trader.core import make_tls_context, texts
+from coin_report_trader.core import KST, make_tls_context, texts
 
 # 이 시험을 위해 만든 자체 서명 인증서(CA). 개인 키는 버렸다. 실제 서버를 믿는 데는 쓰지 않는다.
 TEST_CA_PEM = """\
@@ -195,12 +196,29 @@ def test_screen_texts() -> None:
         "코인 목록에 없는 코인이 있어 저장하지 않았습니다. 코인 목록을 다시 받은 뒤 저장하세요."
     )
     assert texts.CANDLES_LOADING == "봉을 받는 중입니다."
+    assert texts.MARKETS_LOADING == "코인 목록을 불러오는 중입니다."
+    assert texts.MARKETS_FAILED == (
+        "코인 목록을 받지 못했습니다. 네트워크를 확인한 뒤 다시 시도하세요."
+    )
+    assert texts.SETTINGS_UNREADABLE == "설정을 읽지 못했습니다. 60분마다 다시 읽습니다."
+    assert texts.SETTINGS_SAVED == "저장했습니다."
+    assert texts.SETTINGS_SAVE_FAILED == "저장하지 못했습니다."
     assert texts.blocked_candles_text("10:30") == (
         "거래소가 잠시 요청을 막았습니다. 10:30 뒤에 다시 받습니다."
     )
     assert texts.blocked_markets_text("10:30") == (
         "거래소가 잠시 요청을 막았습니다. 10:30 뒤에 다시 시도할 수 있습니다."
     )
+
+
+def test_kst_time_text() -> None:
+    assert texts.kst_time_text(datetime(2026, 1, 1, 1, 30, tzinfo=UTC)) == "10:30"
+    # 날짜를 넘겨도 한국 시간의 시와 분만 쓴다. 두 자리씩 채운다.
+    assert texts.kst_time_text(datetime(2026, 1, 1, 15, 5, tzinfo=UTC)) == "00:05"
+    # 다른 시간대의 값도 한국 시간으로 바꾼다.
+    assert texts.kst_time_text(datetime(2026, 1, 1, 10, 30, tzinfo=KST)) == "10:30"
+    with pytest.raises(ValueError, match="시간대"):
+        texts.kst_time_text(datetime(2026, 1, 1, 1, 30))
 
 
 def test_test_message_has_the_fixed_head_and_no_secrets() -> None:

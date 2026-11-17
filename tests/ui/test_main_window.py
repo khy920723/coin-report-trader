@@ -1,9 +1,9 @@
-"""명세 7절 A5: 창과 다섯 화면의 빈 자리."""
+"""창과 다섯 화면의 자리(M0 명세 7절 A5, M1 명세 3.1의 바뀐 약속)."""
 
 import os
 
 import pytest
-from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow
+from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QWidget
 
 from coin_report_trader.core import SCREEN_TITLES, WINDOW_TITLE, ScreenId, UiContext
 from coin_report_trader.ui import (
@@ -55,11 +55,23 @@ def test_five_screens_in_order_with_object_names(window):
         assert screen_widget(window, screen_id).objectName() == f"screen_{screen_id.value}"
 
 
-def test_each_screen_shows_title_and_empty_body(window):
+def test_each_screen_shows_its_title(window):
     for screen_id in ScreenId:
         widget = screen_widget(window, screen_id)
         assert _text(widget, "screenTitle") == SCREEN_TITLES[screen_id]
-        assert _text(widget, "screenBody") == EMPTY_BODY == "이 화면은 아직 비어 있습니다."
+
+
+def test_only_unfilled_screens_show_the_empty_body(window):
+    assert EMPTY_BODY == "이 화면은 아직 비어 있습니다."
+    for screen_id in ScreenId:
+        widget = screen_widget(window, screen_id)
+        body = widget.findChild(QLabel, "screenBody")
+        # M1 명세 3.1: 처음 설정과 설정은 채워져 빈 글이 없다. 현황, 보고서, 기록은 그대로다.
+        if screen_id in (ScreenId.FIRST_SETUP, ScreenId.SETTINGS):
+            assert body is None
+        else:
+            assert body is not None
+            assert body.text() == EMPTY_BODY
 
 
 def test_only_first_setup_shows_advice_notice(window):
@@ -70,10 +82,10 @@ def test_only_first_setup_shows_advice_notice(window):
         if screen_id is ScreenId.FIRST_SETUP:
             assert notice is not None
             assert notice.text() == ADVICE_NOTICE
-            # 명세 2절 4번: 투자 자문 문구는 빈 화면 문구 밑에 있다.
-            body = widget.findChild(QLabel, "screenBody")
-            layout = widget.layout()
-            assert layout.indexOf(body) < layout.indexOf(notice)
+            # 10 자리의 글은 가(투자 자문), 마, 바 순서다(설계서 10.2).
+            layout = widget.findChild(QWidget, "firstSetupNotices").layout()
+            names = [layout.itemAt(i).widget().objectName() for i in range(layout.count())]
+            assert names == ["screenNotice", "noticeDiscordOffline", "noticeDiscordNoAddress"]
         else:
             assert notice is None
 

@@ -50,6 +50,8 @@ class MarketsView:
     state: LoadState
     markets: tuple[Market, ...] = ()
     error_name: str | None = None
+    blocked_until: datetime | None = None
+    """일시 차단 중이면 다시 받을 수 있는 때(3.4의 "일시 차단 중" 묶음)."""
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,8 @@ class SettingsView:
     retention_days: int | None = None
     """7, 30, 90 가운데 하나. 고르기 전에는 `None`."""
     first_setup_done: bool = False
+    state: LoadState = LoadState.READY
+    """`READY`(읽었다)나 `FAILED`(켤 때 설정을 읽지 못했다). `FAILED`면 다른 세 필드는 뜻이 없다."""
 
 
 @dataclass(frozen=True)
