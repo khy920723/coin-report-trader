@@ -16,6 +16,7 @@ from coin_report_trader.core import (
     SAVE_TARGET_SETTINGS,
     SCREEN_TITLES,
     WINDOW_TITLE,
+    CoinView,
     LoadState,
     MarketsView,
     SaveResult,
@@ -31,17 +32,19 @@ from coin_report_trader.core.texts import (
     MARKETS_LOADING,
     SETTINGS_UNREADABLE,
     blocked_markets_text,
-    kst_time_text,
+    kst_when_text,
 )
 from coin_report_trader.ui.dialogs import ask_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
 from coin_report_trader.ui.screens import build_screen, screen_object_name
 from coin_report_trader.ui.settings_screen import SettingsScreen
 from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
+from coin_report_trader.ui.status_screen import StatusScreen
 from coin_report_trader.ui.texts import (
     LOADING_TEXT,
     RETENTION_SHRINK_TITLE,
     SETTINGS_BEFORE_FIRST_SETUP,
+    STATUS_BEFORE_FIRST_SETUP,
     retention_shrink_body,
 )
 
@@ -77,6 +80,7 @@ class MainWindow(QMainWindow):
         self._saved: SettingsView | None = None
         self._first_settings_handled = False
         self._markets: MarketsView | None = None
+        self._coin_views: dict[str, CoinView] = {}
         self._markets_loading = False
         self._pending_saves: list[ScreenId] = []
         self._messages: dict[ScreenId, Message] = {}
@@ -93,12 +97,15 @@ class MainWindow(QMainWindow):
         stack.setObjectName(STACK_NAME)
         self._first_setup = FirstSetupScreen()
         self._settings = SettingsScreen()
+        self._status = StatusScreen()
         for screen_id in ScreenId:
             nav.addItem(SCREEN_TITLES[screen_id])
             if screen_id is ScreenId.FIRST_SETUP:
                 stack.addWidget(self._first_setup)
             elif screen_id is ScreenId.SETTINGS:
                 stack.addWidget(self._settings)
+            elif screen_id is ScreenId.STATUS:
+                stack.addWidget(self._status)
             else:
                 stack.addWidget(build_screen(screen_id))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
@@ -129,6 +136,7 @@ class MainWindow(QMainWindow):
         )
         self._settings.save_requested.connect(self._on_save)
         self._settings.retry_requested.connect(self._retry_markets)
+        self._status.retry_requested.connect(self._retry_candles)
         stack.currentChanged.connect(self._on_screen_changed)
 
         self._update()
@@ -141,6 +149,8 @@ class MainWindow(QMainWindow):
             self._on_settings_view(update)
         elif isinstance(update, MarketsView):
             self._on_markets_view(update)
+        elif isinstance(update, CoinView):
+            self._on_coin_view(update)
         elif isinstance(update, SaveResult):
             self._on_save_result(update)
 
@@ -167,6 +177,9 @@ class MainWindow(QMainWindow):
         if old is None or key != (old.coins, old.retention_days, old.first_setup_done):
             self._first_setup.load_saved(view.coins, view.retention_days)
             self._settings.load_saved(view.coins, view.retention_days)
+        # 고른 코인에 없는 코인의 마지막 `CoinView`는 버린다(다시 고르면 새 값이 올 때까지
+        # "불러오는 중").
+        self._coin_views = {m: v for m, v in self._coin_views.items() if m in view.coins}
         if not self._first_settings_handled:
             self._first_settings_handled = True
             if view.first_setup_done:
@@ -182,6 +195,14 @@ class MainWindow(QMainWindow):
         if view.state is LoadState.READY:
             self._first_setup.set_markets(view.markets)
             self._settings.set_markets(view.markets)
+        self._update()
+
+    def _on_coin_view(self, view: CoinView) -> None:
+        # 첫 `SettingsView`가 온 뒤에는 고른 코인의 값만 받는다. 그 전에 온 것은 두었다가
+        # 그때 거른다.
+        if self._saved is not None and view.market not in self._saved.coins:
+            return
+        self._coin_views[view.market] = view
         self._update()
 
     def _on_save_result(self, result: SaveResult) -> None:
@@ -248,6 +269,13 @@ class MainWindow(QMainWindow):
         self._request_markets()
         self._update()
 
+    def _retry_candles(self) -> None:
+        # 첫 `SettingsView` 전, 처음 설정 전, 설정을 읽지 못했을 때는 단추가 보이지 않고
+        # 부르지 않는다.
+        if self._actions is None or self._phase is not Phase.READY or not self._first_setup_done():
+            return
+        self._actions.retry_candles()
+
     def _ask_confirm(self, title: str, body: str) -> bool:
         if self._confirm is not None:
             return self._confirm(title, body)
@@ -295,7 +323,7 @@ class MainWindow(QMainWindow):
     def _failed_text(view: MarketsView) -> str:
         if view.error_name == ERROR_BLOCKED and view.blocked_until is not None:
             try:
-                return blocked_markets_text(kst_time_text(view.blocked_until))
+                return blocked_markets_text(kst_when_text(view.blocked_until, view.as_of))
             except ValueError:
                 return MARKETS_FAILED
         return MARKETS_FAILED
@@ -316,6 +344,15 @@ class MainWindow(QMainWindow):
             return Message(SETTINGS_BEFORE_FIRST_SETUP)
         return self._messages.get(ScreenId.SETTINGS)
 
+    def _status_message(self) -> Message | None:
+        if self._phase is Phase.WAITING:
+            return Message(LOADING_TEXT)
+        if self._phase is Phase.UNREADABLE:
+            return Message(SETTINGS_UNREADABLE, Tone.WARNING)
+        if not self._first_setup_done():
+            return Message(STATUS_BEFORE_FIRST_SETUP)
+        return None
+
     def _update(self) -> None:
         showing = self._showing_picker()
         if showing is not None and showing != self._showing:
@@ -332,6 +369,11 @@ class MainWindow(QMainWindow):
         self._settings.render(
             phase=self._phase, done=done, picker=mode, message=self._settings_message()
         )
+        self._status.render(
+            message=self._status_message(),
+            coins=self._saved.coins if self._saved is not None else (),
+            views=self._coin_views,
+        )
 
 
 def create_main_window(context: UiContext) -> MainWindow:
@@ -347,7 +389,7 @@ def create_main_window(context: UiContext) -> MainWindow:
     - 자리의 순서: `screen_order(window)`. `ScreenId` 순서의 튜플이다.
     - 자리 위젯: `screen_widget(window, screen_id)`. `objectName`은 `screen_<ScreenId 값>`이다.
       다섯 자리 모두 제목 라벨 `screenTitle`(글은 `SCREEN_TITLES`)이 있다.
-      현황, 보고서, 기록 자리에는 빈 화면 문구 라벨 `screenBody`가 있다.
+      보고서, 기록 자리에는 빈 화면 문구 라벨 `screenBody`가 있다(처음 설정, 현황, 설정에는 없다).
     - 지금 보이는 자리: `current_screen(window)`. 켰을 때는 `ScreenId.FIRST_SETUP`이다.
       자리를 바꾸려면 `select_screen(window, screen_id)`나 `screenNav` 목록에서 고른다.
     - 경고 색: 글 라벨의 동적 속성 `tone`("normal" 또는 "warning")으로 알아본다
@@ -371,6 +413,27 @@ def create_main_window(context: UiContext) -> MainWindow:
 
     - 글 라벨: `settingsMessage`(1 자리), 단추: `settingsSave`("저장"), 묶음: `settingsForm`.
     - 코인 고르기와 보관 기간의 안쪽 이름은 앞이 `settings`다.
+
+    현황 자리(`screen_status`)의 `objectName`(`<m>`은 마켓 코드, 자세한 것은 `status_screen.py`):
+
+    - 글 하나만 보이는 모습(설정을 불러오는 중, 처음 설정 전, 설정을 읽지 못함): 라벨
+      `statusMessage`가 보이고 묶음 `statusContent`가 숨겨진다.
+      설정을 읽지 못함은 `tone`이 "warning"이다.
+    - 코인 칸: 묶음 `statusCoins` 안에 고른 코인마다 `statusCoin_<m>`(설정 목록 순서, 최대 셋).
+      그 안에 `statusCoinName_<m>`, 값 자리의 글 `statusCoinNote_<m>`(글이 없으면 숨김),
+      "다시 시도" `statusCoinRetry_<m>`(받지 못함과 일시 차단 중에만 보임), 지표 묶음
+      `statusCoinIndicator_<m>`과 줄 `statusCoinIndicatorRow_<m>_<0~6>`(글은 "이름 값"),
+      `statusCoinIncomplete_<m>`(미완성 봉 글), `statusCoinDisclaimer_<m>`(보장 아님 글).
+    - 기간별 봉 통계: 묶음 `statusStats`, 코인 고르기 `statusStatsCoin`(`QComboBox`), 표 자리의
+      글 `statusStatsNote`, 표 묶음 `statusStatsTable`(머리 `statusStatsHeader_<0~8>`, 칸
+      `statusStatsCell_<줄 0~4>_<칸 0~8>`), `statusStatsFetched`("마지막으로 받은 때" 줄),
+      `statusStatsIncomplete`, 표 아래의 하나뿐인 "다시 시도" `statusStatsRetry`.
+    - 흐리게 남긴 값(받기 실패, 일시 차단 중의 받아 둔 값)은 그 묶음(`statusStatsTable`,
+      `statusCoinIndicator_<m>`)의 `isEnabled()`가 거짓이다.
+      표의 줄과 지표 항목을 그리지 않는 모습은
+      그 묶음이 숨겨져 있다(`isHidden()`).
+    - 현황 자리의 "다시 시도"는 `retry_candles()`를 부른다. 처음 설정을 마치고 설정을 읽은 뒤에만
+      불리고, 그 밖의 때에는 단추가 보이지 않는다.
     """
     return MainWindow(context)
 

@@ -221,6 +221,34 @@ def test_kst_time_text() -> None:
         texts.kst_time_text(datetime(2026, 1, 1, 1, 30))
 
 
+def test_kst_datetime_text() -> None:
+    assert texts.kst_datetime_text(datetime(2026, 1, 2, 1, 30, tzinfo=UTC)) == "2026-01-02 10:30"
+    # 날짜는 한국 시간으로 바뀐다. 초는 넣지 않는다.
+    assert (
+        texts.kst_datetime_text(datetime(2026, 1, 1, 15, 5, 59, tzinfo=UTC)) == "2026-01-02 00:05"
+    )
+    assert texts.kst_datetime_text(datetime(2026, 3, 4, 10, 30, tzinfo=KST)) == "2026-03-04 10:30"
+    with pytest.raises(ValueError, match="시간대"):
+        texts.kst_datetime_text(datetime(2026, 1, 2, 1, 30))
+
+
+def test_kst_when_text() -> None:
+    now = datetime(2026, 1, 1, 14, 50, tzinfo=UTC)  # 한국 23:50
+    # 한국 날짜가 같으면 시와 분, 다르면 날짜와 시각이다.
+    assert texts.kst_when_text(datetime(2026, 1, 1, 14, 55, tzinfo=UTC), now) == "23:55"
+    assert texts.kst_when_text(datetime(2026, 1, 1, 15, 20, tzinfo=UTC), now) == "2026-01-02 00:20"
+    # 기준이 없으면 시와 분이다.
+    assert texts.kst_when_text(datetime(2026, 1, 1, 15, 20, tzinfo=UTC), None) == "00:20"
+    # 이미 지난 날(어제)도 날짜가 붙는다.
+    assert (
+        texts.kst_when_text(datetime(2025, 12, 31, 14, 55, tzinfo=UTC), now) == "2025-12-31 23:55"
+    )
+    with pytest.raises(ValueError, match="시간대"):
+        texts.kst_when_text(datetime(2026, 1, 1, 15, 20), now)
+    with pytest.raises(ValueError, match="시간대"):
+        texts.kst_when_text(datetime(2026, 1, 1, 15, 20, tzinfo=UTC), datetime(2026, 1, 1))
+
+
 def test_test_message_has_the_fixed_head_and_no_secrets() -> None:
     assert texts.TEST_MESSAGE_PREFIX == "[Coin Report Trader] 확인용 글"
     message = texts.test_message_text("오류 알림")

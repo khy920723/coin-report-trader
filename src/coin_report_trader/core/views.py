@@ -43,6 +43,8 @@ class CoinView:
     """마지막 받기가 실패했으면 그 오류 이름."""
     blocked_until: datetime | None = None
     """일시 차단 중이면 다시 받는 때."""
+    as_of: datetime | None = None
+    """조립이 이 값을 만든 때(`Clock.now()`). 화면은 "오늘"의 기준으로만 쓴다. 없으면 `None`."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,8 @@ class MarketsView:
     error_name: str | None = None
     blocked_until: datetime | None = None
     """일시 차단 중이면 다시 받을 수 있는 때(3.4의 "일시 차단 중" 묶음)."""
+    as_of: datetime | None = None
+    """조립이 이 값을 만든 때(`Clock.now()`). `CoinView.as_of`와 같다."""
 
 
 @dataclass(frozen=True)

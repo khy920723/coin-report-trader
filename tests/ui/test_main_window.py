@@ -66,8 +66,8 @@ def test_only_unfilled_screens_show_the_empty_body(window):
     for screen_id in ScreenId:
         widget = screen_widget(window, screen_id)
         body = widget.findChild(QLabel, "screenBody")
-        # M1 명세 3.1: 처음 설정과 설정은 채워져 빈 글이 없다. 현황, 보고서, 기록은 그대로다.
-        if screen_id in (ScreenId.FIRST_SETUP, ScreenId.SETTINGS):
+        # M1 명세 3.1: 처음 설정, 현황, 설정은 채워져 빈 글이 없다. 보고서, 기록은 그대로다.
+        if screen_id in (ScreenId.FIRST_SETUP, ScreenId.STATUS, ScreenId.SETTINGS):
             assert body is None
         else:
             assert body is not None
