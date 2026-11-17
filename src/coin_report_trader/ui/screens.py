@@ -1,16 +1,25 @@
-"""다섯 화면의 빈 자리를 만든다."""
+"""화면 자리의 공통 부분과, 아직 내용이 없는 자리(현황, 보고서, 기록)의 빈 글."""
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from coin_report_trader.core import SCREEN_TITLES, ScreenId
-
-EMPTY_BODY = "이 화면은 아직 비어 있습니다."
-ADVICE_NOTICE = "이 프로그램은 투자 자문이 아닙니다. AI 판단은 틀릴 수 있습니다."
+from coin_report_trader.ui.texts import ADVICE_NOTICE, EMPTY_BODY
+from coin_report_trader.ui.widgets import make_label
 
 TITLE_NAME = "screenTitle"
 BODY_NAME = "screenBody"
 NOTICE_NAME = "screenNotice"
+
+__all__ = [
+    "ADVICE_NOTICE",
+    "BODY_NAME",
+    "EMPTY_BODY",
+    "NOTICE_NAME",
+    "TITLE_NAME",
+    "build_screen",
+    "screen_object_name",
+    "title_label",
+]
 
 
 def screen_object_name(screen_id: ScreenId) -> str:
@@ -18,12 +27,13 @@ def screen_object_name(screen_id: ScreenId) -> str:
     return f"screen_{screen_id.value}"
 
 
-def _label(text: str, name: str) -> QLabel:
-    label = QLabel(text)
-    label.setObjectName(name)
-    label.setTextFormat(Qt.TextFormat.PlainText)
-    label.setWordWrap(True)
-    return label
+def title_label(text: str, name: str = TITLE_NAME) -> QLabel:
+    """자리의 제목 라벨(굵게)."""
+    title = make_label(text, name)
+    font = title.font()
+    font.setBold(True)
+    title.setFont(font)
+    return title
 
 
 def build_screen(screen_id: ScreenId) -> QWidget:
@@ -31,14 +41,7 @@ def build_screen(screen_id: ScreenId) -> QWidget:
     page = QWidget()
     page.setObjectName(screen_object_name(screen_id))
     layout = QVBoxLayout(page)
-
-    title = _label(SCREEN_TITLES[screen_id], TITLE_NAME)
-    title_font = title.font()
-    title_font.setBold(True)
-    title.setFont(title_font)
-    layout.addWidget(title)
-    layout.addWidget(_label(EMPTY_BODY, BODY_NAME))
-    if screen_id is ScreenId.FIRST_SETUP:
-        layout.addWidget(_label(ADVICE_NOTICE, NOTICE_NAME))
+    layout.addWidget(title_label(SCREEN_TITLES[screen_id]))
+    layout.addWidget(make_label(EMPTY_BODY, BODY_NAME))
     layout.addStretch(1)
     return page

@@ -4,8 +4,11 @@ M1 명세 3.9절과 화면 설계서(8.4, 12)의 글이다. `{시각}`처럼 값
 """
 
 from collections.abc import Mapping
+from datetime import datetime
 from types import MappingProxyType
 from typing import Final
+
+from coin_report_trader.core.clock import KST
 
 # --- 단계 이름("단계"에 쓴다) ---
 STAGE_MARKETS: Final = "코인 목록 받기"
@@ -125,6 +128,18 @@ SETTINGS_COIN_NOT_LISTED: Final = (
     "코인 목록에 없는 코인이 있어 저장하지 않았습니다. 코인 목록을 다시 받은 뒤 저장하세요."
 )
 CANDLES_LOADING: Final = "봉을 받는 중입니다."
+MARKETS_LOADING: Final = "코인 목록을 불러오는 중입니다."
+MARKETS_FAILED: Final = "코인 목록을 받지 못했습니다. 네트워크를 확인한 뒤 다시 시도하세요."
+SETTINGS_UNREADABLE: Final = "설정을 읽지 못했습니다. 60분마다 다시 읽습니다."
+SETTINGS_SAVED: Final = "저장했습니다."
+SETTINGS_SAVE_FAILED: Final = "저장하지 못했습니다."
+
+
+def kst_time_text(moment: datetime) -> str:
+    """`{시각}`의 글: 한국 시간의 시와 분을 24시간제 `HH:MM`으로(날짜는 넣지 않는다)."""
+    if moment.utcoffset() is None:
+        raise ValueError("시간대가 없는 시각은 글로 바꿀 수 없다")
+    return moment.astimezone(KST).strftime("%H:%M")
 
 
 def test_message_text(category_title: str) -> str:
