@@ -26,6 +26,7 @@ from coin_report_trader.core.stats import (
     PeriodStats,
     empty_periods,
     format_percent,
+    format_price,
 )
 from coin_report_trader.core.tls import make_tls_context
 from coin_report_trader.core.views import (
@@ -87,6 +88,7 @@ __all__ = [
     "coin_label",
     "empty_periods",
     "format_percent",
+    "format_price",
     "is_webhook_url",
     "make_tls_context",
     "redact",

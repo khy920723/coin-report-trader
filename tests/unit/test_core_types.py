@@ -50,6 +50,7 @@ from coin_report_trader.core import (
     coin_label,
     empty_periods,
     format_percent,
+    format_price,
 )
 
 NOW = datetime(2026, 1, 2, tzinfo=UTC)
@@ -297,6 +298,36 @@ def test_markets_and_settings_view_added_fields() -> None:
     failed = SettingsView(state=LoadState.FAILED)
     assert (failed.coins, failed.retention_days, failed.first_setup_done) == ((), None, False)
     assert failed.state is LoadState.FAILED
+
+
+def test_views_carry_as_of() -> None:
+    now = datetime(2026, 1, 1, 14, 50, tzinfo=UTC)
+    assert CoinView("KRW-AAA", LoadState.LOADING).as_of is None
+    assert MarketsView(LoadState.LOADING).as_of is None
+    # 새 필드는 맨 뒤에 기본값과 함께 있어, 위치 인자로 만든 값은 그대로 통과한다.
+    assert CoinView("KRW-AAA", LoadState.NO_DATA) == CoinView(
+        "KRW-AAA", LoadState.NO_DATA, empty_periods(), None, False, None, None, None, None
+    )
+    assert MarketsView(LoadState.READY, (), None, None) == MarketsView(
+        LoadState.READY, (), None, None, None
+    )
+    assert CoinView("KRW-AAA", LoadState.LOADING, as_of=now).as_of == now
+    assert MarketsView(LoadState.FAILED, as_of=now).as_of == now
+
+
+def test_format_price() -> None:
+    assert format_price(Decimal("132")) == "132"
+    assert format_price(Decimal("132.0")) == "132"
+    assert format_price(Decimal("1234567.50")) == "1,234,567.5"
+    assert format_price(Decimal("1E-5")) == "0.00001"
+    # 자리를 줄이거나 반올림하지 않는다. 지수 꼴이 없다. 쉼표는 정수 부분에만 붙는다.
+    assert format_price(Decimal("0.000120")) == "0.00012"
+    assert format_price(Decimal("1E+3")) == "1,000"
+    assert format_price(Decimal("12345.123456789")) == "12,345.123456789"
+    assert format_price(Decimal("0.00")) == "0"
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        with pytest.raises(ValueError, match="유한하지"):
+            format_price(Decimal(bad))
 
 
 def test_alert_views() -> None:

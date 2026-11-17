@@ -45,6 +45,24 @@ def format_percent(value: Decimal | None, *, signed: bool) -> str:
     return f"{sign}{percent:f}%"
 
 
+def format_price(value: Decimal) -> str:
+    """가격 글(`원`은 붙이지 않는다). 받은 값의 자리를 그대로 쓰되 끝의 0과 빈 소수점은 지운다.
+
+    지수 꼴 없이 숫자로만 쓰고 정수 부분에만 세 자리마다 쉼표를 붙인다. 반올림하지 않는다.
+    예: `132`, `1,234,567.5`, `0.00001`. 유한하지 않은 값이면 `ValueError`다.
+    """
+    if not value.is_finite():
+        raise ValueError("유한하지 않은 값은 가격 글로 바꿀 수 없다")
+    text = format(value, "f")
+    sign = "-" if text.startswith("-") else ""
+    integer, _, fraction = text.lstrip("-").partition(".")
+    fraction = fraction.rstrip("0")
+    if not integer.strip("0") and not fraction:
+        sign = ""
+    grouped = f"{int(integer):,}"
+    return f"{sign}{grouped}.{fraction}" if fraction else f"{sign}{grouped}"
+
+
 @dataclass(frozen=True)
 class PeriodStats:
     """한 기간의 봉 통계. 봉이 2개보다 적으면 `count`만 있고 나머지 값은 모두 `None`이다."""
