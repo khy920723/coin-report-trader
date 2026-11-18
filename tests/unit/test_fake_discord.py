@@ -120,9 +120,9 @@ def test_bad_arguments_are_refused() -> None:
     fake = FakeDiscord()
     with pytest.raises(TypeError, match="script"):
         fake.script("실패")  # type: ignore[arg-type]
-    for times in (0, -1, True):
+    for times in (0, -1, True, 1.5, 2.0, "2"):
         with pytest.raises(ValueError, match="times"):
-            fake.fail(ERROR_DISCORD_TIMEOUT, times=times)
+            fake.fail(ERROR_DISCORD_TIMEOUT, times=times)  # type: ignore[arg-type]
 
 
 def test_hold_stops_a_send_until_release_and_the_send_is_recorded_after() -> None:
@@ -185,3 +185,63 @@ def test_several_threads_can_send_together() -> None:
         thread.join(10)
     assert len(fake.sent) == 200
     assert len(set(fake.texts)) == 200
+
+
+def test_entered_is_set_only_by_a_send_stopped_after_the_latest_hold() -> None:
+    fake = FakeDiscord()
+    fake.hold()
+    first = threading.Thread(target=fake.send, args=(URL, "첫째"), daemon=True)
+    first.start()
+    assert fake.entered.wait(10)
+    fake.release()
+    first.join(10)
+    assert not first.is_alive()
+    assert not fake.entered.is_set()  # 풀었으면 지운다
+    fake.hold()
+    assert not fake.entered.is_set()  # 아직 멈춘 보내기가 없다
+    second = threading.Thread(target=fake.send, args=(URL, "둘째"), daemon=True)
+    second.start()
+    assert fake.entered.wait(10)  # 새로 멈춘 보내기가 세운다
+    fake.release()
+    second.join(10)
+    assert not second.is_alive()
+    assert len(fake.sent) == 2
+    assert not fake.entered.is_set()
+
+
+def test_a_script_line_comes_first_and_does_not_use_up_a_fail() -> None:
+    fake = FakeDiscord()
+    fake.script(OK)
+    fake.fail(ERROR_DISCORD_TIMEOUT, times=1)
+    fake.send(URL, "첫째")  # 줄(OK)
+    with pytest.raises(WebhookError) as caught:
+        fake.send(URL, "둘째")  # 줄이 없으니 `fail`
+    assert caught.value.error_name == ERROR_DISCORD_TIMEOUT
+    fake.send(URL, "셋째")  # 둘 다 썼다
+    assert [m.error_name for m in fake.sent] == [None, ERROR_DISCORD_TIMEOUT, None]
+
+
+def test_a_script_failure_does_not_reduce_the_times_of_fail() -> None:
+    fake = FakeDiscord()
+    fake.script(WebhookError(ERROR_DISCORD_RATE_LIMIT, 1.0))
+    fake.fail(ERROR_DISCORD_TIMEOUT, times=1)
+    with pytest.raises(WebhookError) as first:
+        fake.send(URL, "첫째")
+    assert first.value.error_name == ERROR_DISCORD_RATE_LIMIT
+    with pytest.raises(WebhookError) as second:
+        fake.send(URL, "둘째")
+    assert second.value.error_name == ERROR_DISCORD_TIMEOUT
+    fake.send(URL, "셋째")
+
+
+def test_a_new_hold_clears_entered_even_without_a_release() -> None:
+    fake = FakeDiscord()
+    fake.hold()
+    stuck = threading.Thread(target=fake.send, args=(URL, "첫째"), daemon=True)
+    stuck.start()
+    assert fake.entered.wait(10)
+    fake.hold()  # release 없이 다시 hold: 앞서 멈춘 보내기의 표시는 지운다
+    assert not fake.entered.is_set()
+    fake.release()
+    stuck.join(10)
+    assert not stuck.is_alive()

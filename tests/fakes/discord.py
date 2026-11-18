@@ -10,14 +10,20 @@
   - 거르는 도우미: `alerts`(알림만), `tests`(확인용 글만), `texts`, `urls`(받은 차례의 목록).
 - 결과 정하기(`script`): 보내기 하나 단위로 정한다(`tests/fakes/quote.py`의 `script`와 같은 꼴).
   - `script(*outcomes, url=None)`이 줄 하나를 더한다. `url`을 주면 그 주소로 가는 보내기만 그 줄을
-    쓴다. 결과는 `WebhookError`(그 오류를 낸다)나 `OK`(성공)다. 맞는 줄이 없거나 다 썼으면 성공이다.
+    쓴다. 결과는 `WebhookError`(그 오류를 낸다)나 `OK`(성공)다.
   - 예: B16은 `script(WebhookError(ERROR_DISCORD_TIMEOUT))`, B25는 `script(OK, WebhookError(…))`.
-  - `fail(error_name, *, retry_after=None, times=None)`: 지금부터 모든 보내기(또는 `times`번)가
-    그 오류로 실패한다. `heal()`은 `script`와 `fail`을 모두 푼다.
+  - `fail(error_name, *, retry_after=None, times=None)`: `script`의 줄이 없을 때 모든 보내기(또는
+    `times`번)가 그 오류로 실패한다. `times`는 `bool`이 아닌 1 이상의 정수이거나 `None`이다(아니면
+    `ValueError`). `heal()`은 `script`와 `fail`을 모두 푼다.
+  - 차례: 맞는 줄이 있으면 그 줄이 먼저다. 맞는 줄이 없거나 다 썼으면, `fail`이 걸려 있을 때는 그
+    실패이고 아니면 성공이다. 줄을 쓴 보내기는 `fail`의 `times`를 줄이지 않는다. 예: `script(OK)`와
+    `fail(오류, times=1)`을 걸고 세 번 보내면 성공(줄), 그 오류(`fail`), 성공(둘 다 씀)이다.
 - 막아 두기: `hold()`를 부르면 그 뒤의 보내기는 `release()`를 부를 때까지 안에서 멈춘다(보내기
-  스레드가 막혀도 자료 스레드의 받기가 늦어지지 않는 것을 보려는 길). 멈춰 있는 보내기가 있으면
-  `entered`가 선다. 시험이 `release()`를 잊어도 `HOLD_LIMIT`초 뒤에는 `AssertionError`로 풀린다.
-  막힌 보내기도 풀린 뒤에 같은 규칙(기록, 정해 둔 실패)으로 처리한다.
+  스레드가 막혀도 자료 스레드의 받기가 늦어지지 않는 것을 보려는 길).
+  - `entered`는 `hold()` 뒤에 보내기가 멈추면 선다. `hold()`와 `release()`가 지우므로, 새로
+    `hold()`한 뒤에는 그 뒤에 멈춘 보내기가 있을 때만 서 있다.
+  - 시험이 `release()`를 잊어도 `HOLD_LIMIT`초 뒤에는 `AssertionError`로 풀린다. 막힌 보내기도 풀린
+    뒤에 같은 규칙(기록, 정해 둔 실패)으로 처리한다.
 - `wait_for(count, timeout)`은 기록이 `count`개 이상이 될 때까지 기다린다(실제 시간, 안전 시간).
 - 여러 스레드가 함께 써도 된다(잠금 하나. 보내기는 보내기 스레드가 부른다).
 - 값은 `repr`에 두지 않는다. 이 파일은 시험만 import한다. `src/`는 이 폴더를 import하지 않는다.
@@ -105,8 +111,10 @@ class FakeDiscord:
     def fail(
         self, error_name: str, *, retry_after: float | None = None, times: int | None = None
     ) -> None:
-        if times is not None and (isinstance(times, bool) or times < 1):
-            raise ValueError("times는 1 이상의 정수이거나 None이다")
+        if times is not None and (
+            not isinstance(times, int) or isinstance(times, bool) or times < 1
+        ):
+            raise ValueError("times는 bool이 아닌 1 이상의 정수이거나 None이다")
         with self._lock:
             self._always = _Always(error_name, retry_after, times)
 
@@ -116,10 +124,14 @@ class FakeDiscord:
             self._always = None
 
     def hold(self) -> None:
-        self._gate.clear()
+        with self._lock:
+            self._gate.clear()
+            self.entered.clear()
 
     def release(self) -> None:
-        self._gate.set()
+        with self._lock:
+            self._gate.set()
+            self.entered.clear()
 
     # --- 기록을 보는 도우미 ---------------------------------------------------------------
 
@@ -155,10 +167,12 @@ class FakeDiscord:
     # --- WebhookSender ---------------------------------------------------------------------
 
     def send(self, url: str, text: str) -> None:
-        if not self._gate.is_set():
-            self.entered.set()
-            if not self._gate.wait(HOLD_LIMIT):
-                raise AssertionError("FakeDiscord: hold()를 풀지 않았다(release()를 잊었다)")
+        with self._lock:
+            held = not self._gate.is_set()
+            if held:
+                self.entered.set()
+        if held and not self._gate.wait(HOLD_LIMIT):
+            raise AssertionError("FakeDiscord: hold()를 풀지 않았다(release()를 잊었다)")
         with self._lock:
             error = self._next_error(url)
             kind = TEST if text.startswith(TEST_MESSAGE_PREFIX) else ALERT

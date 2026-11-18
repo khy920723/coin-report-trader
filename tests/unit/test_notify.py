@@ -590,3 +590,35 @@ def test_only_a_rate_limit_is_retried_even_if_another_error_carries_a_time() -> 
     assert caught.value.error_name == ERROR_DISCORD_TIMEOUT
     assert len(fake.sent) == 1
     assert clock.sleeps == []
+
+
+def test_the_default_transport_uses_the_app_tls_context_from_the_certifi_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import certifi
+
+    from coin_report_trader.notify import sender as sender_module
+
+    asked: list[str] = []
+    made: list[object] = []
+    verified: list[object] = []
+    real_context = sender_module.make_tls_context
+    real_transport = httpx.HTTPTransport
+
+    def spy_context(cafile: str) -> object:
+        asked.append(cafile)
+        context = real_context(cafile)
+        made.append(context)
+        return context
+
+    def spy_transport(*args: object, **kwargs: object) -> httpx.HTTPTransport:
+        verified.append(kwargs.get("verify"))
+        return real_transport(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sender_module, "make_tls_context", spy_context)
+    monkeypatch.setattr(httpx, "HTTPTransport", spy_transport)
+    with HttpWebhookSender() as sender:  # 만들고 닫는다. 보내지 않는다.
+        assert repr(sender) == "HttpWebhookSender()"
+    assert asked == [certifi.where()]
+    assert len(made) == len(verified) == 1
+    assert verified[0] is made[0]  # 전송 객체가 받은 `verify`가 앱의 TLS 설정 그대로다
