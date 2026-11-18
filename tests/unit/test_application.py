@@ -387,7 +387,8 @@ def test_a_database_that_cannot_be_opened_is_written_to_the_startup_file_and_mov
     monkeypatch.setattr(application, "open_database", real_open)
     clock.advance(86_400)
     held = _quit_when(
-        env.app, lambda: (env.root / "logs" / "startup-errors.jsonl").read_text() == ""
+        env.app,
+        lambda: (env.root / "logs" / "startup-errors.jsonl").read_text(encoding="utf-8") == "",
     )
     assert run_gui([], services=Services(quote=FakeQuoteSource(), clock=clock)) == 0
     _release(held)
