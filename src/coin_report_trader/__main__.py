@@ -33,38 +33,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, services: object | None = None) -> int:
+    """`services`는 시험이 가짜를 넣는 자리다. 타입을 `object`로 두고 받은 값을 그대로 넘긴다."""
     try:
-        return _main(argv)
+        return _main(argv, services)
     except SystemExit as exc:  # argparse가 내는 종료(`--version`은 0, 모르는 옵션은 2)
         return _exit_code(exc)
     except BaseException:
         return 1
 
 
-def _main(argv: Sequence[str] | None) -> int:
+def _main(argv: Sequence[str] | None, services: object | None) -> int:
     args = build_parser().parse_args(argv)
     if args.self_test:
-        return _self_test()
-    return _gui([] if argv is None else list(argv))
+        return _self_test(services)
+    return _gui([] if argv is None else list(argv), services)
 
 
-def _gui(argv: list[str]) -> int:
+def _gui(argv: list[str], services: object | None = None) -> int:
     from coin_report_trader.app import run_gui
 
     try:
-        return run_gui(argv)
+        return run_gui(argv, services=services)  # type: ignore[arg-type]
     except Exception as exc:
         # 원인은 run_gui가 로그에 남긴다. 로그를 열기 전의 오류는 종류만 알린다.
         _warn(f"{PROG}: 시작하지 못했습니다 ({type(exc).__name__})")
         return 1
 
 
-def _self_test() -> int:
+def _self_test(services: object | None = None) -> int:
     try:
         from coin_report_trader.app.self_test import run_self_test
 
-        return run_self_test()
+        return run_self_test(services=services)  # type: ignore[arg-type]
     except BaseException as exc:
         _write_fallback_report(exc)
         return 1

@@ -17,7 +17,7 @@ from coin_report_trader.app import self_test as st
 from coin_report_trader.core import UiContext
 
 BOM = b"\xef\xbb\xbf"
-KEYS = ["import", "qt", "sqlite", "paths", "notice"]
+KEYS = ["import", "qt", "sqlite", "paths", "notice", "tls", "vault"]
 ROOT_TOKEN = "%LOCALAPPDATA%" if sys.platform == "win32" else "$XDG_DATA_HOME"
 
 
@@ -59,12 +59,12 @@ def test_full_run_passes_and_writes_the_report(
     assert lines[3].startswith("Python: 3.13.")
     assert lines[4].startswith("OS: ")
     assert lines[5].startswith("점검 시각(UTC): ")
-    # 명세 3.8: 머리 여섯 줄 + 항목 다섯 + 결과 한 줄. 빈 줄은 없다.
-    assert len(lines) == 6 + 5 + 1
+    # 명세 3.8, 3.11: 머리 여섯 줄 + 항목 일곱 + 결과 한 줄. 빈 줄은 없다.
+    assert len(lines) == 6 + 7 + 1
     assert "" not in lines
-    items = lines[6:11]
+    items = lines[6:13]
     assert [line.split(":")[0] for line in items] == [f"[통과] {key}" for key in KEYS]
-    assert lines[-1] == "결과: 통과 (5/5)"
+    assert lines[-1] == "결과: 통과 (7/7)"
     # 경로는 줄인 형태로만 쓴다.
     assert str(env.data_home) not in text
     assert str(env.cwd) not in text
@@ -92,10 +92,12 @@ def test_one_failing_check_is_reported_and_the_others_still_run(
         "[실패] sqlite",
         "[통과] paths",
         "[통과] notice",
+        "[통과] tls",
+        "[통과] vault",
     ]
     assert f"RuntimeError: boom in {ROOT_TOKEN}" in text
     assert str(env.data_home) not in text
-    assert text.splitlines()[-1] == "결과: 실패 (4/5)"
+    assert text.splitlines()[-1] == "결과: 실패 (6/7)"
 
 
 def test_system_exit_inside_a_check_is_a_failure(env: SimpleNamespace) -> None:
@@ -340,7 +342,7 @@ def test_permission_error_under_the_data_folder_leaves_no_path(
     for form in _forms(env.data_home) + _forms(secret):
         assert form not in text
     assert f"[실패] sqlite: PermissionError: Permission denied ({ROOT_TOKEN}" in text
-    assert text.splitlines()[-1] == "결과: 실패 (4/5)"
+    assert text.splitlines()[-1] == "결과: 실패 (6/7)"
 
 
 def test_oserror_while_importing_leaves_no_path(
@@ -390,7 +392,7 @@ def test_an_unknown_home_folder_does_not_stop_the_checks(
     monkeypatch.setattr(st, "check_notice", lambda: 1 / 0)
     results = st.run_checks(st.default_checks())
     assert [r.key for r in results] == KEYS
-    assert [r.ok for r in results] == [True, True, True, True, False]
+    assert [r.ok for r in results] == [True, True, True, True, False, True, True]
     assert results[3].detail.startswith(ROOT_TOKEN)
 
 
@@ -417,7 +419,7 @@ def test_self_test_in_a_fresh_process_without_qt_platform(tmp_path: Path) -> Non
     assert raw.startswith(BOM)
     lines = raw.decode("utf-8-sig").splitlines()
     assert any(line.startswith("[통과] qt: ") and "offscreen" in line for line in lines)
-    assert lines[-1] == "결과: 통과 (5/5)"
+    assert lines[-1] == "결과: 통과 (7/7)"
     assert str(tmp_path) not in "\n".join(lines)
 
 
@@ -428,3 +430,144 @@ def test_the_real_pyside6_plugin_folders_hold_the_offscreen_plugin(
     assert found is not None
     assert "offscreen" in found.name
     assert found.is_file()
+
+
+# --- 일곱 항목: tls, vault, import 목록, 오류 설명의 가리기(M1 명세 3.10, 3.11) -----------------
+
+
+def test_import_lists_cover_the_new_folders_and_modules() -> None:
+    assert {"trading", "stats"} <= set(st.SUBPACKAGES)
+    assert {"httpx", "certifi", "keyring"} <= set(st.THIRD_PARTY_MODULES)
+    names = set(st._package_module_names())
+    assert "coin_report_trader.trading.quote.client" in names
+    assert "coin_report_trader.stats.compute" in names
+    assert "coin_report_trader.app.data_thread" in names
+
+
+def test_tls_check_names_only_the_bundle_file() -> None:
+    detail = st.check_tls()
+    assert detail.startswith("cacert.pem, CA 인증서 ")
+    import certifi
+
+    assert str(Path(certifi.where()).parent) not in detail
+
+
+def test_tls_check_fails_without_the_bundle_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import certifi
+
+    monkeypatch.setattr(certifi, "where", lambda: str(tmp_path / "missing.pem"))
+    with pytest.raises(st.CheckFailed, match=r"missing\.pem") as caught:
+        st.check_tls()
+    assert str(tmp_path) not in str(caught.value)
+
+
+def test_tls_check_fails_when_the_bundle_has_no_ca_certificate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import certifi
+
+    import coin_report_trader.core as core
+
+    bundle = tmp_path / "empty.pem"
+    bundle.write_text("", encoding="utf-8")
+    monkeypatch.setattr(certifi, "where", lambda: str(bundle))
+
+    class Context:
+        def cert_store_stats(self) -> dict[str, int]:
+            return {"x509_ca": 0}
+
+    monkeypatch.setattr(st, "make_tls_context", lambda cafile: Context())
+    assert st.make_tls_context is not core.make_tls_context
+    with pytest.raises(st.CheckFailed, match=r"CA 인증서가 없습니다: empty\.pem"):
+        st.check_tls()
+
+
+def test_tls_check_in_an_exe_wants_the_bundle_inside_the_bundle_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import certifi
+
+    inside = tmp_path / "_internal"
+    inside.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    real = Path(certifi.where())
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "coin-report-trader.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(inside), raising=False)
+    monkeypatch.setattr(certifi, "where", lambda: str(real))
+    with pytest.raises(st.CheckFailed, match=r"번들 안에 없습니다: cacert\.pem"):
+        st.check_tls()
+    copy = inside / "cacert.pem"
+    copy.write_bytes(real.read_bytes())
+    monkeypatch.setattr(certifi, "where", lambda: str(copy))
+    assert st.check_tls().startswith("cacert.pem, CA 인증서 ")
+    assert outside.is_dir()
+
+
+def test_vault_check_does_not_judge_other_operating_systems(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import keyring
+
+    def never() -> object:
+        raise AssertionError("Windows가 아니면 get_keyring을 부르지 않는다")
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(keyring, "get_keyring", never)
+    assert "판정하지 않음" in st.check_vault()
+
+
+def test_vault_check_wants_the_windows_backend_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import keyring
+
+    class WinVaultKeyring:
+        __module__ = "keyring.backends.Windows"
+
+    class Other:
+        __module__ = "keyring.backends.fail"
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(keyring, "get_keyring", lambda: WinVaultKeyring())
+    assert st.check_vault() == "Windows 자격 증명 보관소(WinVaultKeyring)"
+    monkeypatch.setattr(keyring, "get_keyring", lambda: Other())
+    with pytest.raises(st.CheckFailed, match="Windows 자격 증명 보관소가 아닙니다: Other"):
+        st.check_vault()
+
+
+def test_failure_descriptions_are_redacted(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "https://" + "discord.com/api/webhooks/" + "1" * 18 + "/" + "T" * 64
+
+    def leaky() -> str:
+        raise RuntimeError(f"보냄 {url}")
+
+    def failed() -> str:
+        raise st.CheckFailed(f"설명 {url}")
+
+    results = st.run_checks([st.Check("a", leaky), st.Check("b", failed)])
+    assert [r.ok for r in results] == [False, False]
+    for result in results:
+        assert "T" * 20 not in result.detail
+        assert "(가려서 보임)" in result.detail
+
+
+def test_services_are_accepted_and_do_not_change_the_result(
+    env: SimpleNamespace, offscreen_app: QApplication
+) -> None:
+    class Never:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"점검이 services.{name}을 읽었다")
+
+    assert st.run_self_test(services=Never()) == 0
+    first = _report(env).splitlines()
+    assert st.run_self_test() == 0
+    second = _report(env).splitlines()
+    assert [line for line in first if not line.startswith("점검 시각")] == [
+        line for line in second if not line.startswith("점검 시각")
+    ]

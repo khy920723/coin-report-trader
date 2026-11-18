@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Final
 
 from coin_report_trader.core.clock import KST
+from coin_report_trader.core.market import CandleUnit
 
 # --- 단계 이름("단계"에 쓴다) ---
 STAGE_MARKETS: Final = "코인 목록 받기"
@@ -49,6 +50,8 @@ ERROR_MAINTENANCE: Final = "거래소 점검"
 ERROR_SERVER: Final = "서버 오류"
 ERROR_BAD_RESPONSE: Final = "응답 형식 오류"
 ERROR_NOT_ENOUGH_CANDLES: Final = "봉이 모자람"
+ERROR_STORAGE: Final = "DB 오류"
+"""`storage/`가 낸 `StorageError`의 오류 이름(3.9). 단계와 상관없이 이 하나다."""
 
 
 def error_unknown_exchange(status: int) -> str:
@@ -89,6 +92,22 @@ def text_markets_failed(error_name: str) -> str:
     """A-31."""
     return f"코인 목록을 받지 못했습니다({error_name})."
 
+
+# --- 알림의 내용(`AlertDetail.content`, 3.9) ---
+_UNIT_NAMES: Final = {CandleUnit.DAY: "일봉", CandleUnit.MINUTE_60: "60분봉"}
+
+
+def content_candles_failed(units: tuple[CandleUnit, ...]) -> str:
+    """A-1(요청의 실패)의 내용: 실패한 봉의 단위를 받은 차례로 ", "로 잇는다."""
+    return "실패한 봉: " + ", ".join(_UNIT_NAMES[CandleUnit(unit)] for unit in units)
+
+
+CONTENT_NOT_ENOUGH_CANDLES: Final = "완성된 봉이 모자라 다섯 기간 모두 통계를 셈하지 못했습니다."
+CONTENT_BLOCKED: Final = "거래소가 공개 시세 요청을 잠시 막았습니다."
+CONTENT_BLOCKED_NOT_REQUESTED: Final = (
+    "앞 코인에서 일시 차단을 받아 이 코인은 요청하지 않았습니다."
+)
+CONTENT_MARKETS_FAILED: Final = "코인 목록 요청이 실패했습니다."
 
 # --- 그 뒤에 한 일(3.9) ---
 def after_candles_retry(time_text: str) -> str:

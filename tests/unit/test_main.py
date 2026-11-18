@@ -38,9 +38,31 @@ def test_window_mode_calls_run_gui(monkeypatch: pytest.MonkeyPatch) -> None:
     import coin_report_trader.app as app_package
 
     seen: list[list[str]] = []
-    monkeypatch.setattr(app_package, "run_gui", lambda argv: seen.append(list(argv)) or 7)
+    monkeypatch.setattr(
+        app_package, "run_gui", lambda argv, *, services=None: seen.append(list(argv)) or 7
+    )
     assert entry.main([]) == 7
     assert seen == [[]]
+
+
+def test_main_passes_services_on_as_it_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    import coin_report_trader.app as app_package
+    from coin_report_trader.app import self_test
+
+    given = object()
+    gui: list[object] = []
+    checks: list[object] = []
+    monkeypatch.setattr(
+        app_package, "run_gui", lambda argv, *, services=None: gui.append(services) or 0
+    )
+    monkeypatch.setattr(
+        self_test, "run_self_test", lambda *, services=None: checks.append(services) or 0
+    )
+    assert entry.main([], services=given) == 0
+    assert entry.main(["--self-test"], services=given) == 0
+    assert entry.main([]) == 0
+    assert gui == [given, None]
+    assert checks == [given]
 
 
 def test_window_mode_failure_returns_one_and_names_only_the_error_type(
@@ -48,7 +70,7 @@ def test_window_mode_failure_returns_one_and_names_only_the_error_type(
 ) -> None:
     import coin_report_trader.app as app_package
 
-    def boom(_argv: list[str]) -> int:
+    def boom(_argv: list[str], *, services: object = None) -> int:
         raise RuntimeError(f"cannot open {tmp_path}")
 
     monkeypatch.setattr(app_package, "run_gui", boom)
@@ -61,7 +83,7 @@ def test_window_mode_failure_returns_one_and_names_only_the_error_type(
 def test_window_mode_failure_without_streams(monkeypatch: pytest.MonkeyPatch) -> None:
     import coin_report_trader.app as app_package
 
-    def boom(_argv: list[str]) -> int:
+    def boom(_argv: list[str], *, services: object = None) -> int:
         raise RuntimeError("x")
 
     monkeypatch.setattr(app_package, "run_gui", boom)
@@ -82,7 +104,7 @@ def test_window_mode_failure_without_streams(monkeypatch: pytest.MonkeyPatch) ->
 def test_nothing_escapes_main(
     monkeypatch: pytest.MonkeyPatch, error: BaseException, expected: int
 ) -> None:
-    def boom(_argv: list[str]) -> int:
+    def boom(_argv: list[str], _services: object = None) -> int:
         raise error
 
     monkeypatch.setattr(entry, "_gui", boom)
@@ -93,7 +115,9 @@ def test_self_test_returns_the_exit_code_of_run_self_test(monkeypatch: pytest.Mo
     from coin_report_trader.app import self_test
 
     for code in (0, 1):
-        monkeypatch.setattr(self_test, "run_self_test", lambda code=code: code)
+        monkeypatch.setattr(
+            self_test, "run_self_test", lambda *, services=None, code=code: code
+        )
         assert entry.main(["--self-test"]) == code
 
 
@@ -116,7 +140,7 @@ def test_self_test_crash_writes_a_fallback_report(
 ) -> None:
     from coin_report_trader.app import self_test
 
-    def boom() -> int:
+    def boom(*, services: object = None) -> int:
         raise RuntimeError(f"broken in {tmp_path}")
 
     monkeypatch.chdir(tmp_path)

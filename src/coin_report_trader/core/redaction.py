@@ -65,20 +65,16 @@ _ENV_PREFIXES: Final = (
     ("USERPROFILE", "~"),
 )
 # 사용자 폴더의 값. 값 바로 뒤에 폴더 이름이 이어지는 글(`_CONTINUATION`)이 구분자까지 이어지면
-# 그 값만 `~`로 바꾸지 않고 위의 이름 찾기가 이어진 이름 전체를 한 번에 줄이게 한다.
+# 그 값만 `~`로 바꾸지 않고, 이름 찾기(`Users` 바로 아래, 또는 값의 부모 폴더 바로 아래)가 이어진
+# 이름 전체를 한 번에 줄이게 한다.
 _USER_FOLDER_VARIABLES: Final = frozenset({"HOME", "USERPROFILE"})
-# 값이 `Users`(`/home`) 바로 아래의 사용자 폴더 자체일 때만 이름 찾기가 그 뒤를 이어받는다. 다른
-# 곳(예: `/srv/h`)이면 이름 찾기가 걸리지 않으므로 지금처럼 값을 `~`로 바꾼다.
-_IS_USERS_CHILD = re.compile(
-    r"(?:[A-Za-z]:[\\/]+Users|[\\/]+(?:home|Users))[\\/]+[^\\/]+[\\/]*", re.IGNORECASE
-)
 _CONTINUATION = r"(?:" + _GAP + r")?" + _CHUNK + r"(?:" + _GAP + _CHUNK + r")*[\\/]"
 
 
 def _prefix_pattern(prefix: str, *, user_folder: bool = False) -> re.Pattern[str] | None:
     """환경 변수 값(절대 경로)을 글 속에서 찾는 식. 상대 경로와 루트 폴더는 쓰지 않는다.
 
-    `user_folder`이면(값이 `Users`나 `/home` 바로 아래의 사용자 폴더) 값 바로 뒤에 폴더 이름이
+    `user_folder`이면(`HOME`, `USERPROFILE`) 값 바로 뒤에 폴더 이름이
     구분자까지 이어지는 글은 찾지 않는다.
     """
     windows_like = _WINDOWS_LIKE.match(prefix) is not None
@@ -94,6 +90,30 @@ def _prefix_pattern(prefix: str, *, user_folder: bool = False) -> re.Pattern[str
     return re.compile(_BEFORE + body + after, re.IGNORECASE if windows_like else 0)
 
 
+def _sibling_pattern(value: str) -> re.Pattern[str] | None:
+    """`HOME`, `USERPROFILE`의 값 아래의 이름을 `Users` 바로 아래처럼 찾는 식(3.10).
+
+    값의 부모 폴더를 사용자 폴더가 모인 폴더로 보고 그 바로 아래의 이름(`_NAME`)을 찾는다.
+    부모가 루트(`/`)나 드라이브 루트(`D:\\`)이면 이름이 값의 폴더 이름으로 시작하는 폴더만 찾는다.
+    """
+    windows_like = _WINDOWS_LIKE.match(value) is not None
+    names = [name for name in _SEPARATORS.split(value) if name]
+    if not names or not (windows_like or value[0] in "\\/"):
+        return None
+    drive_root = len(names) == 1 and windows_like and names[0].endswith(":")
+    if drive_root:
+        return None  # 드라이브 루트 자체
+    parents = names[:-1]
+    root = not parents or (len(parents) == 1 and parents[0].endswith(":"))
+    body = r"[\\/]+".join(re.escape(name) for name in parents)
+    if value[0] in "\\/":
+        body = r"[\\/]+" + body
+    lead = _BEFORE + body + (r"[\\/]+" if parents else "")
+    if root:  # 이름이 값의 폴더 이름으로 시작하는 폴더만
+        lead += "(?=" + re.escape(names[-1]) + ")"
+    return re.compile(lead + _NAME, re.IGNORECASE if windows_like else 0)
+
+
 def shorten_path(text: str, env: Mapping[str, str] | None = None) -> str:
     """글 속의 경로에서 사용자 이름이 드러나는 앞부분을 줄인다.
 
@@ -105,15 +125,22 @@ def shorten_path(text: str, env: Mapping[str, str] | None = None) -> str:
     """
     env = os.environ if env is None else env
     found = []
+    siblings: list[re.Pattern[str]] = []
     for name, token in _ENV_PREFIXES:
         value = env.get(name, "")
-        user_folder = name in _USER_FOLDER_VARIABLES and _IS_USERS_CHILD.fullmatch(value)
-        pattern = _prefix_pattern(value, user_folder=bool(user_folder))
+        user_folder = name in _USER_FOLDER_VARIABLES
+        pattern = _prefix_pattern(value, user_folder=user_folder)
+        if user_folder and value:
+            sibling = _sibling_pattern(value)
+            if sibling is not None:
+                siblings.append(sibling)
         if pattern is not None:
             found.append((len(value.rstrip("\\/")), pattern, token))
     # 긴 값부터 바꿔야 `~`가 더 구체적인 줄임을 가리지 않는다.
     for _, pattern, token in sorted(found, key=lambda item: item[0], reverse=True):
         text = pattern.sub(lambda _, t=token: t, text)
+    for sibling in siblings:
+        text = sibling.sub("~", text)
     text = _WINDOWS_USERS.sub("~", text)
     return _UNIX_USERS.sub("~", text)
 

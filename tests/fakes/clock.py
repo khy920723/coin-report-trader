@@ -6,7 +6,11 @@
   부른 값은 `sleeps`에 차례로 남는다.
 - `advance(seconds)`는 시험이 두 시각을 함께 옮기는 길이다(`sleeps`에는 남지 않는다).
 - `set_now(when)`은 벽시계(`now()`)만 그 시각으로 옮긴다. 단조 시각은 그대로다(PC 시계를 바꾼 경우).
-- 음수, NaN, 무한대의 초와 시간대가 없는 시각은 `ValueError`다.
+- `wait(event, seconds)`는 실제로 막혀 있다가, `event`가 서면 참을 돌려주고, 부른 때부터 단조 시각이
+  `seconds` 이상 옮겨지면(다른 스레드의 `advance`나 `sleep`) 거짓을 돌려준다. 스스로 시각을 옮기지
+  않고, `set_now`(벽시계)로는 깨어나지 않는다. `seconds`가 0이면 기다리지 않고 `event`의 상태를
+  돌려준다. 아무리 큰 유한한 초도 받는다. 부른 초는 `waits`에 차례로 남는다(0도 남긴다).
+- 음수, NaN, 무한대의 초와 시간대가 없는 시각은 `ValueError`다(`wait`는 `waits`에 남기지 않는다).
 - 여러 스레드가 함께 써도 된다(잠금 하나로 지킨다).
 """
 
@@ -16,6 +20,9 @@ from datetime import UTC, datetime, timedelta
 
 DEFAULT_START = datetime(2026, 1, 5, 3, 0, tzinfo=UTC)
 """처음 시각: 2026-01-05 03:00 UTC(한국 시간 월요일 12:00). 일봉이 바뀌는 09:00 KST가 아니다."""
+
+_POLL_SECONDS = 0.002
+"""`wait`가 `event`와 단조 시각을 다시 보는 실제 시간의 간격."""
 
 DEFAULT_MONOTONIC = 1000.0
 """처음 단조 시각. 0이 아니어서 "0부터 센다"고 기대하는 코드를 잡는다."""
@@ -47,6 +54,8 @@ class FakeClock:
             raise ValueError(f"monotonic_start: 유한한 초여야 한다: {monotonic_start!r}")
         self.sleeps: list[float] = []
         """`sleep`에 넘어온 초(부른 차례대로)."""
+        self.waits: list[float] = []
+        """`wait`에 넘어온 초(부른 차례대로)."""
 
     def now(self) -> datetime:
         with self._lock:
@@ -62,6 +71,22 @@ class FakeClock:
         with self._lock:
             self.sleeps.append(step)
             self._move(step)
+
+    def wait(self, event: threading.Event, seconds: float) -> bool:
+        """`event`가 서면 참, 부른 때부터 단조 시각이 `seconds` 이상 옮겨지면 거짓."""
+        span = _seconds(seconds, "wait")
+        with self._lock:
+            self.waits.append(span)
+            deadline = self._monotonic + span
+        if span == 0:
+            return event.is_set()
+        while True:
+            # 실제 시간은 시험이 멈추지 않게 짧게 끊어 보는 데만 쓴다.
+            if event.wait(_POLL_SECONDS):
+                return True
+            with self._lock:
+                if self._monotonic >= deadline:
+                    return event.is_set()
 
     def advance(self, seconds: float) -> None:
         """시험이 두 시각을 `seconds`만큼 함께 옮긴다."""

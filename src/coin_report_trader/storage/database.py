@@ -41,7 +41,7 @@ _SCHEMA_1 = (
     """,
     f"""
     CREATE TABLE alerts (
-        id INTEGER PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         created_utc TEXT NOT NULL,
         mode TEXT NOT NULL,
         category TEXT NOT NULL,
