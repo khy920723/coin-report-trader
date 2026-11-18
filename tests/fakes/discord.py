@@ -92,7 +92,10 @@ class FakeDiscord:
         self._gate = threading.Event()
         self._gate.set()
         self.entered = threading.Event()
-        """`hold()` 때문에 멈춰 있는 보내기가 있으면 선다."""
+        """`hold()` 뒤에 보내기가 멈추면 선다. `hold()`와 `release()`가 지운다.
+
+        그래서 새로 `hold()`한 뒤에는 그 뒤에 멈춘 보내기가 있을 때만 서 있다.
+        """
         self.sent: list[SentMessage] = []
         """받은 보내기(차례대로. 실패한 것도)."""
 
