@@ -8,15 +8,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fakes.clock import FakeClock
+from fakes.quote import FakeQuoteSource
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QLabel
 
 from coin_report_trader import __main__ as entry
 from coin_report_trader import ui
 from coin_report_trader.app import application, run_gui
+from coin_report_trader.app.services import Services
 from coin_report_trader.config.paths import resolve_app_paths
-from coin_report_trader.core import StorageError
-from coin_report_trader.storage.database import open_database
+from coin_report_trader.core import LoadState, MarketsView, SettingsView, StorageError
+from coin_report_trader.storage.database import migrate, open_database
 
 ROOT_TOKEN = "%LOCALAPPDATA%" if sys.platform == "win32" else "$XDG_DATA_HOME"
 
@@ -31,6 +34,11 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.Fixture
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     qapp = request.getfixturevalue("qapp")
     return SimpleNamespace(data_home=data_home, root=data_home / "coin-report-trader", app=qapp)
+
+
+def _services(quote: FakeQuoteSource | None = None) -> Services:
+    """창을 띄우는 시험은 가짜 시세와 가짜 시계로 돈다(진짜 시세로는 나가지 않는다)."""
+    return Services(quote=quote or FakeQuoteSource(), clock=FakeClock())
 
 
 def _quit_after_look(app: QApplication, look: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -76,7 +84,7 @@ def _log_text(env: Any) -> str:
 
 def test_run_gui_shows_the_window_and_logs_start_and_stop(env: Any) -> None:
     seen = _quit_after_look(env.app, _look_at_window)
-    assert run_gui([]) == 0
+    assert run_gui([], services=_services()) == 0
     seen = _finish(seen)
     assert seen["visible"] is True
     assert seen["title"] == "Coin Report Trader"
@@ -97,7 +105,7 @@ def test_run_gui_shows_the_window_and_logs_start_and_stop(env: Any) -> None:
 
 def test_run_gui_uses_the_existing_application_and_cleans_up(env: Any) -> None:
     seen = _quit_after_look(env.app, lambda: {"same": QApplication.instance() is env.app})
-    assert run_gui([]) == 0
+    assert run_gui([], services=_services()) == 0
     assert _finish(seen)["same"] is True
     assert QApplication.instance() is env.app
     assert logging.getLogger("coin_report_trader").handlers == []
@@ -107,7 +115,7 @@ def test_run_gui_uses_the_existing_application_and_cleans_up(env: Any) -> None:
 
 def test_main_without_options_runs_the_window(env: Any) -> None:
     seen = _quit_after_look(env.app, _look_at_window)
-    assert entry.main([]) == 0
+    assert entry.main([], services=_services()) == 0
     assert _finish(seen)["visible"] is True
     assert (env.root / "data" / "app.db").is_file()
     assert "종료: 코드 0" in _log_text(env)
@@ -116,7 +124,7 @@ def test_main_without_options_runs_the_window(env: Any) -> None:
 def test_run_twice_reuses_the_database_and_appends_to_the_log(env: Any) -> None:
     for _ in range(2):
         seen = _quit_after_look(env.app, _look_at_window)
-        assert run_gui([]) == 0
+        assert run_gui([], services=_services()) == 0
         _finish(seen)
     assert _log_text(env).count("종료: 코드 0") == 2
 
@@ -204,7 +212,7 @@ def test_closing_the_window_ends_the_program(env: Any) -> None:
             env.app.quit()
 
     QTimer.singleShot(0, close_the_window)
-    code = run_gui([])
+    code = run_gui([], services=_services())
     safety.stop()
     assert "error" not in seen, seen["error"]
     assert seen["visible"] == 1
@@ -216,7 +224,7 @@ def test_closing_the_window_ends_the_program(env: Any) -> None:
 def test_run_gui_makes_the_last_closed_window_quit_the_program(env: Any) -> None:
     env.app.setQuitOnLastWindowClosed(False)
     seen = _quit_after_look(env.app, lambda: {"quit": QApplication.quitOnLastWindowClosed()})
-    assert run_gui([]) == 0
+    assert run_gui([], services=_services()) == 0
     assert _finish(seen)["quit"] is True
 
 
@@ -233,3 +241,323 @@ def test_an_oserror_is_logged_without_the_path(env: Any, monkeypatch: pytest.Mon
     assert f"오류: PermissionError: Permission denied ({ROOT_TOKEN}" in log
     for form in (str(env.data_home), env.data_home.as_posix(), repr(str(secret))[1:-1]):
         assert form not in log
+
+
+def _quit_when(
+    app: QApplication, done: Callable[[], bool], limit_ms: int = 10_000
+) -> dict[str, Any]:
+    """`done()`이 참이 될 때까지 이벤트 루프를 돌리다 끝낸다(안전 타이머 `limit_ms`)."""
+    held: dict[str, Any] = {}
+    safety = QTimer()
+    safety.setSingleShot(True)
+    safety.timeout.connect(app.quit)
+    safety.start(limit_ms)
+    poll = QTimer()
+    poll.setInterval(5)
+
+    def check() -> None:
+        try:
+            if done():
+                app.quit()
+        except Exception as exc:
+            held["error"] = repr(exc)
+            app.quit()
+
+    poll.timeout.connect(check)
+    poll.start()
+    held.update(safety=safety, poll=poll)
+    return held
+
+
+def _release(held: dict[str, Any]) -> None:
+    held.pop("safety").stop()
+    held.pop("poll").stop()
+    assert "error" not in held, held["error"]
+
+
+def _record_updates(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
+    """창이 받는 값을 (받은 스레드의 이름, 값)으로 적는다."""
+    import threading
+
+    updates: list[tuple[str, object]] = []
+    real = ui.create_main_window
+
+    def create(context: object) -> object:
+        window = real(context)
+        original = window.apply
+
+        def apply(update: object) -> None:
+            updates.append((threading.current_thread().name, update))
+            original(update)
+
+        window.apply = apply
+        return window
+
+    monkeypatch.setattr(ui, "create_main_window", create)
+    return updates
+
+
+def test_the_first_run_asks_for_the_market_list_and_applies_on_the_main_thread(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    updates = _record_updates(monkeypatch)
+    quote = FakeQuoteSource()
+    held = _quit_when(env.app, lambda: any(isinstance(u, MarketsView) for _, u in updates))
+    assert run_gui([], services=_services(quote)) == 0
+    _release(held)
+    kinds = [type(update).__name__ for _, update in updates]
+    assert kinds[0] == "SettingsView"
+    assert kinds[1:] == ["MarketsView", "MarketsView"]  # 받는 중, 받음
+    assert [state.state for _, state in updates[1:]] == [LoadState.LOADING, LoadState.READY]
+    first = updates[0][1]
+    assert isinstance(first, SettingsView)
+    assert (first.state, first.first_setup_done, first.coins) == (LoadState.READY, False, ())
+    assert {name for name, _ in updates} == {threading.main_thread().name}
+    assert len(quote.market_requests()) == 1
+    assert quote.candle_requests() == []  # 처음 설정 전에는 봉을 받지 않는다
+
+
+def test_an_unreadable_settings_row_gives_a_failed_settings_view_and_no_requests(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = resolve_app_paths()
+    paths.ensure()
+    conn = open_database(paths.database_file)
+    try:
+        migrate(conn)
+        conn.execute("INSERT INTO settings VALUES ('coins', '이것은 JSON이 아니다')")
+        conn.commit()
+    finally:
+        conn.close()
+    updates = _record_updates(monkeypatch)
+    quote = FakeQuoteSource()
+    held = _quit_when(env.app, lambda: bool(updates))
+    assert run_gui([], services=_services(quote)) == 0
+    _release(held)
+    first = updates[0][1]
+    assert isinstance(first, SettingsView)
+    assert first.state is LoadState.FAILED
+    assert [u for _, u in updates if type(u).__name__ == "CoinView"] == []
+    assert quote.requests == []
+    reopened = open_database(paths.database_file)
+    try:
+        rows = reopened.execute("SELECT code, category, stage, error_name, coin FROM alerts")
+        assert rows.fetchall() == [("A-30", "other", "켜기", "DB 오류", None)]
+        # 저장된 설정은 덮어쓰지 않는다.
+        assert reopened.execute("SELECT value FROM settings").fetchall() == [
+            ("이것은 JSON이 아니다",)
+        ]
+    finally:
+        reopened.close()
+
+
+def _jsonl(env: Any) -> list[dict[str, Any]]:
+    import json
+
+    path = env.root / "logs" / "startup-errors.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def test_a_database_that_cannot_be_opened_is_written_to_the_startup_file_and_moved_next_time(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock()
+    real_open = application.open_database
+
+    def refuse(path: Path) -> object:
+        raise StorageError(f"cannot open {path}")
+
+    monkeypatch.setattr(application, "open_database", refuse)
+    with pytest.raises(StorageError):
+        run_gui([], services=Services(quote=FakeQuoteSource(), clock=clock))
+    (line,) = _jsonl(env)
+    assert line["kind"] == "startup"
+    assert (line["code"], line["category"], line["stage"], line["error_name"]) == (
+        "A-29", "error", "켜기", "DB 오류",
+    )  # fmt: skip
+    assert line["created_utc"] == "2026-01-05T03:00:00Z"
+    assert str(env.data_home) not in line["content"]
+    assert "종료: 코드 1" in _log_text(env)
+
+    # 정상인 두 번째 실행: 알림으로 옮기고 파일을 비운다(디스코드로 보내지 않는다).
+    monkeypatch.setattr(application, "open_database", real_open)
+    clock.advance(86_400)
+    held = _quit_when(
+        env.app,
+        lambda: (env.root / "logs" / "startup-errors.jsonl").read_text(encoding="utf-8") == "",
+    )
+    assert run_gui([], services=Services(quote=FakeQuoteSource(), clock=clock)) == 0
+    _release(held)
+    assert _jsonl(env) == []
+    conn = open_database(resolve_app_paths().database_file)
+    try:
+        rows = conn.execute(
+            "SELECT created_utc, code, discord_state, seen, stage, error_name FROM alerts"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [("2026-01-05T03:00:00Z", "A-29", "local_only", 0, "켜기", "DB 오류")]
+
+
+def test_the_schema_is_raised_on_the_way_in(env: Any) -> None:
+    held = _quit_when(env.app, lambda: True)
+    assert run_gui([], services=_services()) == 0
+    _release(held)
+    conn = open_database(resolve_app_paths().database_file)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+    assert {"settings", "candles", "alerts"} <= names
+
+
+def test_a_window_that_cannot_be_made_is_an_a30_startup_line(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_context: object) -> object:
+        raise RuntimeError("창을 만들지 못했다")
+
+    monkeypatch.setattr(ui, "create_main_window", broken)
+    with pytest.raises(RuntimeError):
+        run_gui([], services=_services())
+    (line,) = _jsonl(env)
+    assert (line["code"], line["category"], line["error_name"]) == ("A-30", "other", "RuntimeError")
+    assert line["stage"] == "켜기"
+
+
+def test_an_unwritable_startup_file_leaves_only_the_log(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(path: Path) -> object:
+        raise StorageError("열지 못했다")
+
+    paths = resolve_app_paths()
+    paths.ensure()
+    (paths.logs_dir / "startup-errors.jsonl").mkdir()  # 쓸 수 없는 자리
+    monkeypatch.setattr(application, "open_database", refuse)
+    with pytest.raises(StorageError):
+        run_gui([], services=_services())
+    assert "오류: StorageError" in _log_text(env)
+    assert entry.main([], services=_services()) == 1
+
+
+def test_the_log_of_a_failed_start_redacts_webhook_text(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "https://" + "discord.com/api/webhooks/" + "1" * 18 + "/" + "Tok_" * 16
+
+    def refuse(path: Path) -> object:
+        raise StorageError(f"열지 못했다 {url}")
+
+    monkeypatch.setattr(application, "open_database", refuse)
+    with pytest.raises(StorageError):
+        run_gui([], services=_services())
+    log = _log_text(env)
+    assert "Tok_" not in log
+    assert "(가려서 보임)" in log
+    assert "Tok_" not in (env.root / "logs" / "startup-errors.jsonl").read_text(encoding="utf-8")
+
+
+def test_the_database_is_raised_before_the_window_and_the_thread_starts_after_it_is_shown(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from coin_report_trader.app.data_thread import DATA_THREAD_NAME
+
+    def data_threads() -> list[str]:
+        return [t.name for t in threading.enumerate() if t.name == DATA_THREAD_NAME]
+
+    def user_version() -> int:
+        conn = open_database(resolve_app_paths().database_file)
+        try:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+
+    seen: dict[str, Any] = {}
+    real = ui.create_main_window
+
+    def create(context: object) -> object:
+        seen["create"] = (user_version(), data_threads())
+        window = real(context)
+        original = window.show
+
+        def show() -> None:
+            seen["show"] = data_threads()  # 창을 띄우기 전에는 자료 스레드가 없다
+            original()
+
+        window.show = show
+        return window
+
+    monkeypatch.setattr(ui, "create_main_window", create)
+    updates = _record_updates(monkeypatch)  # `create`를 한 번 더 감싼다
+    held = _quit_when(env.app, lambda: bool(updates))
+    assert run_gui([], services=_services()) == 0
+    _release(held)
+    assert seen["create"] == (1, [])  # 스키마 번호는 1이고 스레드는 아직 없다
+    assert seen["show"] == []
+    assert updates  # 창을 띄운 뒤에는 자료 스레드가 첫 값을 보냈다
+
+
+@pytest.mark.parametrize("target", ["DataWorker", "UiBridge"])
+def test_a_failure_while_making_the_window_pieces_leaves_a_startup_line(
+    env: Any, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    from coin_report_trader.app import bridge, data_thread
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError(f"{target}를 만들지 못했다")
+
+    monkeypatch.setattr(data_thread if target == "DataWorker" else bridge, target, broken)
+    with pytest.raises(RuntimeError, match=target):
+        run_gui([], services=_services())
+    (line,) = _jsonl(env)
+    assert (line["kind"], line["code"], line["category"]) == ("startup", "A-30", "other")
+    assert (line["stage"], line["error_name"]) == ("켜기", "RuntimeError")
+    assert f"{target}를 만들지 못했다" in line["content"]
+    assert "오류: RuntimeError" in _log_text(env)
+    assert "종료: 코드 1" in _log_text(env)
+
+
+def test_a_failure_while_making_the_application_leaves_a_startup_line(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken() -> object:
+        raise RuntimeError("QApplication을 만들지 못했다")
+
+    real = QApplication.instance
+    monkeypatch.setattr(QApplication, "instance", staticmethod(broken))
+    with pytest.raises(RuntimeError, match="QApplication"):
+        run_gui([], services=_services())
+    monkeypatch.setattr(QApplication, "instance", real)
+    (line,) = _jsonl(env)
+    assert (line["code"], line["error_name"]) == ("A-30", "RuntimeError")
+
+
+def test_a_migrate_failure_and_a_newer_schema_leave_a_startup_line_of_the_database(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(conn: object) -> int:
+        raise StorageError("DB 스키마 올리기에 실패했습니다: OperationalError")
+
+    real = application.migrate
+    monkeypatch.setattr(application, "migrate", refuse)
+    with pytest.raises(StorageError):
+        run_gui([], services=_services())
+    (line,) = _jsonl(env)
+    assert (line["code"], line["category"], line["error_name"]) == ("A-29", "error", "DB 오류")
+    assert "스키마 올리기" in line["content"]
+    monkeypatch.setattr(application, "migrate", real)
+    _make_newer_database(env)
+    with pytest.raises(StorageError, match="스키마 번호"):
+        run_gui([], services=_services())
+    first, second = _jsonl(env)
+    assert first["content"] != second["content"]
+    assert (second["code"], second["stage"], second["error_name"]) == ("A-29", "켜기", "DB 오류")
+    assert "스키마 번호" in second["content"]

@@ -29,15 +29,32 @@ from coin_report_trader.config.paths import (
     display_text,
     resolve_app_paths,
 )
-from coin_report_trader.core import SCREEN_TITLES, WINDOW_TITLE, ScreenId, UiContext
+from coin_report_trader.core import (
+    SCREEN_TITLES,
+    WINDOW_TITLE,
+    ScreenId,
+    UiContext,
+    make_tls_context,
+    redact,
+)
 from coin_report_trader.storage.database import migrate, open_database, schema_version
+
+from .services import Services
 
 REPORT_FILE_NAME = "self-test-report.txt"
 REPORT_TITLE = "Coin Report Trader 자체 점검 (--self-test)"
 PACKAGE = "coin_report_trader"
 # `pkgutil`이 찾지 못해도 빠졌는지 알 수 있게 하위 패키지는 이름으로도 센다.
-SUBPACKAGES = ("core", "config", "storage", "app", "ui")
-THIRD_PARTY_MODULES = ("PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "sqlite3")
+SUBPACKAGES = ("core", "config", "storage", "trading", "stats", "app", "ui")
+THIRD_PARTY_MODULES = (
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+    "sqlite3",
+    "httpx",
+    "certifi",
+    "keyring",
+)
 
 # check_qt가 만든 QApplication. 프로세스가 끝날 때까지 붙잡아 둔다(다시 만들 수 없다).
 _qt_app = None
@@ -179,6 +196,45 @@ def check_paths() -> str:
     return f"{shown} (root, data, logs 쓰기 가능)"
 
 
+def check_tls() -> str:
+    """`certifi.where()`의 파일로 TLS 설정을 만든다(연결하지 않는다). 파일 이름만 보고서에 쓴다."""
+    import certifi
+
+    bundle = Path(certifi.where())
+    if not bundle.is_file():
+        raise CheckFailed(f"인증서 묶음 파일이 없습니다: {bundle.name}")
+    if getattr(sys, "frozen", False) and not _inside_bundle(bundle):
+        raise CheckFailed(f"인증서 묶음이 번들 안에 없습니다: {bundle.name}")
+    context = make_tls_context(str(bundle))
+    count = int(context.cert_store_stats().get("x509_ca", 0))
+    if count < 1:
+        raise CheckFailed(f"CA 인증서가 없습니다: {bundle.name}")
+    return f"{bundle.name}, CA 인증서 {count}개"
+
+
+def _inside_bundle(path: Path) -> bool:
+    """exe의 번들 폴더(`sys._MEIPASS`)나 exe 옆 폴더 안에 있는 파일인지."""
+    roots = [Path(sys.executable).parent]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass))
+    resolved = path.resolve()
+    return any(resolved.is_relative_to(root.resolve()) for root in roots)
+
+
+def check_vault() -> str:
+    """keyring 백엔드의 종류만 본다(값을 읽거나 쓰지 않는다). Windows에서만 판정한다."""
+    if sys.platform != "win32":
+        return "Windows가 아니어서 판정하지 않음"
+    import keyring
+
+    backend = keyring.get_keyring()
+    kind = type(backend)
+    if not kind.__module__.startswith("keyring.backends.Windows"):
+        raise CheckFailed(f"Windows 자격 증명 보관소가 아닙니다: {kind.__name__}")
+    return f"Windows 자격 증명 보관소({kind.__name__})"
+
+
 def check_notice() -> str:
     """exe일 때만 exe 옆 `NOTICE.txt`와 `_internal/licenses/`를 본다."""
     if not getattr(sys, "frozen", False):
@@ -202,6 +258,8 @@ def default_checks() -> tuple[Check, ...]:
         Check("sqlite", check_sqlite),
         Check("paths", check_paths),
         Check("notice", check_notice),
+        Check("tls", check_tls),
+        Check("vault", check_vault),
     )
 
 
@@ -226,14 +284,14 @@ def run_checks(checks: Sequence[Check]) -> list[CheckResult]:
 def _describe(exc: BaseException) -> str:
     """오류 설명(경로는 줄인 것만). 설명을 만들다 난 오류가 다음 점검을 막지 않게 한다."""
     try:
-        return describe_error(exc)
+        return redact(describe_error(exc))
     except Exception:
         return type(exc).__name__
 
 
 def _describe_failure(exc: CheckFailed) -> str:
     try:
-        return display_text(str(exc))
+        return redact(display_text(str(exc)))
     except Exception:
         return type(exc).__name__
 
@@ -259,8 +317,18 @@ def format_report(results: Sequence[CheckResult], now: datetime | None = None) -
     return "\n".join(lines) + "\n"
 
 
-def run_self_test(report_path: Path | None = None, checks: Sequence[Check] | None = None) -> int:
-    """점검하고 보고서를 쓴다. 모두 통과하고 보고서를 썼으면 0, 아니면 1."""
+def run_self_test(
+    report_path: Path | None = None,
+    checks: Sequence[Check] | None = None,
+    *,
+    services: Services | None = None,
+) -> int:
+    """점검하고 보고서를 쓴다. 모두 통과하고 보고서를 썼으면 0, 아니면 1.
+
+    `services`는 받기만 하고 쓰지 않는다. 일곱 항목은 시세, 시계, 보관소를 쓰지 않아서 가짜를
+    넘겨도 결과가 같다(M1 명세 3.11).
+    """
+    del services
     results = run_checks(default_checks() if checks is None else checks)
     report = format_report(results)
     target = Path.cwd() / REPORT_FILE_NAME if report_path is None else report_path

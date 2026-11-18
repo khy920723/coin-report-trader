@@ -48,7 +48,9 @@ def _pragmas(connection: sqlite3.Connection) -> tuple[str, int, int]:
 
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
-    rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    )
     return {name for (name,) in rows}
 
 
@@ -108,6 +110,47 @@ def test_migrate_creates_three_strict_tables(tmp_path: Path) -> None:
             connection.execute("INSERT INTO settings VALUES ('k', x'00')")
     finally:
         connection.close()
+
+
+def test_alert_numbers_are_never_given_again(conn: sqlite3.Connection) -> None:
+    first = _alert(conn)
+    last = _alert(conn)
+    assert alerts.delete_alert(conn, last) is True
+    again = _alert(conn)
+    assert again > last > first  # 가장 큰 번호의 줄을 지운 뒤에도 그 번호를 다시 쓰지 않는다
+    alerts.delete_category(conn, AlertCategory.ERROR)
+    assert _alert(conn) > again
+    assert "AUTOINCREMENT" in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'alerts'"
+    ).fetchone()[0]
+
+
+def _internal_tables(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_%'")
+    return {name for (name,) in rows if not name.startswith("sqlite_autoindex")}
+
+
+def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_path: Path) -> None:
+    broken = open_database(tmp_path / "broken.db")
+    late = open_database(tmp_path / "late.db")
+    good = open_database(tmp_path / "good.db")
+    try:
+        broken.execute("CREATE TABLE alerts (x TEXT)")  # 셋째 표를 만들 때 실패한다
+        broken.commit()
+        with pytest.raises(StorageError):
+            migrate(broken)
+        assert _internal_tables(broken) == set()
+        # 셋째 표(`AUTOINCREMENT`)를 만든 뒤, 번호를 쓰다 실패해도 `sqlite_sequence`가 남지 않는다.
+        with pytest.raises(StorageError):
+            migrate(_FailsOnVersionWrite(late))  # type: ignore[arg-type]
+        assert _internal_tables(late) == set()
+        assert _tables(late) == set()
+        assert migrate(good) == 1
+        assert _internal_tables(good) == {"sqlite_sequence"}
+    finally:
+        broken.close()
+        late.close()
+        good.close()
 
 
 def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> None:

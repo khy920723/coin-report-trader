@@ -3,6 +3,7 @@
 import copy
 import dataclasses
 import pickle
+import threading
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -472,6 +473,19 @@ class _Store:
         return None
 
 
+class _ClockWithoutWait:
+    """`wait`가 없는 옛 시계의 모양."""
+
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+    def monotonic(self) -> float:
+        return 0.0
+
+    def sleep(self, seconds: float) -> None:
+        return None
+
+
 class _Actions:
     def refresh_markets(self) -> None: ...
 
@@ -494,6 +508,60 @@ class _Actions:
     def send_test(self, category: AlertCategory) -> None: ...
 
 
+def test_system_clock_wait() -> None:
+    clock = SystemClock()
+    event = threading.Event()
+    assert clock.wait(event, 0) is False
+    started = time.monotonic()
+    assert clock.wait(event, 0.01) is False  # 시간이 다 흘렀다
+    assert time.monotonic() - started >= 0.005
+    event.set()
+    assert clock.wait(event, 0) is True
+    assert clock.wait(event, 60) is True  # 이미 선 event는 기다리지 않는다
+
+
+def test_system_clock_wait_wakes_when_another_thread_sets_the_event() -> None:
+    clock = SystemClock()
+    event = threading.Event()
+    threading.Timer(0.02, event.set).start()
+    assert clock.wait(event, 30) is True
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf"), float("-inf")])
+def test_system_clock_wait_refuses_bad_seconds(bad: float) -> None:
+    with pytest.raises(ValueError, match="0 이상"):
+        SystemClock().wait(threading.Event(), bad)
+
+
+def test_system_clock_wait_accepts_seconds_beyond_the_timeout_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`event.wait`가 받는 가장 큰 초보다 큰 초도 오류 없이 끝까지 나누어 기다린다."""
+    monkeypatch.setattr(threading, "TIMEOUT_MAX", 0.005)
+    clock = SystemClock()
+    event = threading.Event()
+    started = time.monotonic()
+    assert clock.wait(event, 0.03) is False
+    assert time.monotonic() - started >= 0.025
+    threading.Timer(0.01, event.set).start()
+    assert clock.wait(event, 30) is True
+
+
+def test_system_clock_wait_beyond_the_real_timeout_limit_waits_in_pieces() -> None:
+    """진짜 `threading.TIMEOUT_MAX`보다 큰 초도 오류 없이 기다리고, event가 서면 바로 참이다."""
+    clock = SystemClock()
+    event = threading.Event()
+    huge = float(threading.TIMEOUT_MAX) * 2
+    timer = threading.Timer(0.02, event.set)
+    timer.start()
+    started = time.monotonic()
+    assert clock.wait(event, huge) is True
+    assert time.monotonic() - started < 5
+    timer.join()
+    assert clock.wait(event, huge) is True  # 이미 선 event
+    assert clock.wait(threading.Event(), 0) is False
+
+
 def test_protocols_match_by_shape() -> None:
     assert isinstance(_Quote(), QuoteSource)
     assert isinstance(_Sender(), WebhookSender)
@@ -504,6 +572,8 @@ def test_protocols_match_by_shape() -> None:
     assert not isinstance(_Sender(), SecretStore)
     assert not isinstance(_Store(), UiActions)
     assert not isinstance(object(), Clock)
+    assert isinstance(SystemClock(), Clock)
+    assert not isinstance(_ClockWithoutWait(), Clock)
 
 
 def test_ui_actions_has_the_nine_actions_of_the_spec() -> None:

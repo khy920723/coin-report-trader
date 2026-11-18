@@ -4,10 +4,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes.clock import FakeClock
+from fakes.quote import FakeQuoteSource
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from coin_report_trader.__main__ import main
+from coin_report_trader.app.services import Services
 from coin_report_trader.config.paths import resolve_app_paths
 
 
@@ -42,7 +45,7 @@ def test_a10_main_without_options_opens_the_window_and_logs(
 
     QTimer.singleShot(0, look_then_quit)
     try:
-        code = main([])
+        code = main([], services=Services(quote=FakeQuoteSource(), clock=FakeClock()))
     finally:
         state["armed"] = False
         safety.stop()

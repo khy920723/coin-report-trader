@@ -11,7 +11,7 @@ from coin_report_trader.app import self_test
 
 REPORT = "self-test-report.txt"
 BOM = b"\xef\xbb\xbf"
-KEYS = ["import", "qt", "sqlite", "paths", "notice"]
+KEYS = ["import", "qt", "sqlite", "paths", "notice", "tls", "vault"]
 
 
 def _report(folder: Path) -> list[str]:
@@ -39,7 +39,7 @@ def test_a6_self_test_passes_and_writes_the_report(in_tmp_path: Path) -> None:
     assert main(["--self-test"]) == 0
     lines = _report(in_tmp_path)
     assert [line.split(":")[0] for line in _items(lines)] == [f"[통과] {key}" for key in KEYS]
-    assert lines[-1] == "결과: 통과 (5/5)"
+    assert lines[-1] == "결과: 통과 (7/7)"
     text = "\n".join(lines)
     assert str(in_tmp_path) not in text
     assert in_tmp_path.as_posix() not in text
@@ -57,7 +57,7 @@ def test_a7_one_failing_check_fails_only_that_item(
     lines = _report(in_tmp_path)
     expected = [f"[{'실패' if key == 'sqlite' else '통과'}] {key}" for key in KEYS]
     assert [line.split(":")[0] for line in _items(lines)] == expected
-    assert lines[-1] == "결과: 실패 (4/5)"
+    assert lines[-1] == "결과: 실패 (6/7)"
 
 
 @pytest.mark.scenario("A8")
