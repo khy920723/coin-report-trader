@@ -125,6 +125,34 @@ def test_alert_numbers_are_never_given_again(conn: sqlite3.Connection) -> None:
     ).fetchone()[0]
 
 
+def _internal_tables(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_%'")
+    return {name for (name,) in rows if not name.startswith("sqlite_autoindex")}
+
+
+def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_path: Path) -> None:
+    broken = open_database(tmp_path / "broken.db")
+    late = open_database(tmp_path / "late.db")
+    good = open_database(tmp_path / "good.db")
+    try:
+        broken.execute("CREATE TABLE alerts (x TEXT)")  # 셋째 표를 만들 때 실패한다
+        broken.commit()
+        with pytest.raises(StorageError):
+            migrate(broken)
+        assert _internal_tables(broken) == set()
+        # 셋째 표(`AUTOINCREMENT`)를 만든 뒤, 번호를 쓰다 실패해도 `sqlite_sequence`가 남지 않는다.
+        with pytest.raises(StorageError):
+            migrate(_FailsOnVersionWrite(late))  # type: ignore[arg-type]
+        assert _internal_tables(late) == set()
+        assert _tables(late) == set()
+        assert migrate(good) == 1
+        assert _internal_tables(good) == {"sqlite_sequence"}
+    finally:
+        broken.close()
+        late.close()
+        good.close()
+
+
 def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> None:
     settings.write_settings(conn, SettingsView(("KRW-AAA",), 30, True))
     assert migrate(conn) == 1

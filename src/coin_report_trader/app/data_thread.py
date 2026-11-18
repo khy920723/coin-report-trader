@@ -120,6 +120,22 @@ class _SaveTask:
 type _Task = str | _SaveTask
 
 
+class _WakeEvent(threading.Event):
+    """자료 스레드를 깨우는 `event`. `Clock.wait`가 처음 기다리기 시작한 때를 `waiting`에 남긴다.
+
+    `Clock.wait`는 마감을 정한 뒤에 `event`를 기다리므로, `waiting`이 선 뒤에 시계를 옮기면 그
+    기다림이 깬다. `DataWorker.wait_idle`이 이것을 본다.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiting = threading.Event()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waiting.set()
+        return super().wait(timeout)
+
+
 class DataWorker:
     """자료 스레드와 그 동작 큐. `UiActions`를 지킨다(주 스레드에서 부른다)."""
 
@@ -139,7 +155,7 @@ class DataWorker:
         self._sink = sink
         self._lock = threading.Lock()
         self._queue: deque[_Task] = deque()
-        self._wake = threading.Event()
+        self._wake = _WakeEvent()
         self._stop = threading.Event()
         self._idle = threading.Event()
         self._thread: threading.Thread | None = None
@@ -158,6 +174,7 @@ class DataWorker:
         self._backoff = 0
         self._fetched: dict[str, datetime | None] = {}
         self._last_stats: dict[str, CandleStats] = {}
+        self._last_view: dict[str, CoinView] = {}
 
     # --- 주 스레드: 시작, 끝, 동작 ------------------------------------------------------------
 
@@ -179,10 +196,14 @@ class DataWorker:
         return self._thread
 
     def wait_idle(self, timeout: float = 10.0) -> bool:
-        """큐가 비고 지금 할 일이 없어 기다리는 중이 될 때까지 기다린다(시험의 길, 실제 시간)."""
+        """큐가 비고 지금 할 일이 없어 시계의 기다림(`Clock.wait`)에 걸릴 때까지 기다린다.
+
+        참을 돌려준 뒤에 가짜 시계를 옮기면(`advance`) 자료 스레드가 틈 없이 깬다(시험의 길,
+        기다리는 것은 실제 시간이다).
+        """
         done = threading.Event()
         for _ in range(max(1, int(timeout / 0.002))):
-            if self._idle.is_set() and not self._work_pending():
+            if self._idle.is_set() and self._wake.waiting.is_set() and not self._work_pending():
                 return True
             done.wait(0.002)
         return False
@@ -227,7 +248,7 @@ class DataWorker:
     def _run(self) -> None:
         try:
             self._open()
-            self._startup()
+            self._guard(self._startup, STAGE_STARTUP)
             self._loop()
         except Exception as exc:
             log.error("자료 스레드가 멈췄습니다: %s: %s", type(exc).__name__, exc)
@@ -254,6 +275,8 @@ class DataWorker:
                 log.warning("공개 시세 연결을 닫지 못했습니다: %s", type(exc).__name__)
 
     def _post(self, update: UiUpdate) -> None:
+        if isinstance(update, CoinView):
+            self._last_view[update.market] = update
         if self._stop.is_set():
             return
         try:
@@ -282,7 +305,7 @@ class DataWorker:
             return
         try:
             view = read_settings(self._conn)
-        except StorageError as exc:
+        except Exception as exc:  # 읽기의 실패와 그 밖의 예외 모두 "설정을 읽지 못함"이다
             self._emit_unexpected(STAGE_STARTUP, None, exc)
             self._settings_unreadable()
             return
@@ -293,7 +316,7 @@ class DataWorker:
         for market in view.coins:
             self._send_initial_view(market)
         if view.first_setup_done and view.coins:
-            self._fetch_round()
+            self._guard(self._fetch_round)
 
     def _settings_unreadable(self) -> None:
         first = not self._settings_failed
@@ -306,9 +329,10 @@ class DataWorker:
         """켤 때 처음의 `CoinView`: 저장된 봉으로 셈한 값(없으면 `NO_DATA`)."""
         try:
             stats = self._read_stats(market)
-        except StorageError as exc:
+        except Exception as exc:  # 읽기의 실패와 셈의 예외 모두 A-30으로 알리고 다음 코인으로 간다
             self._emit_unexpected(STAGE_STARTUP, market, exc)
-            self._post(self._build_view(market, LoadState.FAILED, None, error_name=ERROR_STORAGE))
+            name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
+            self._post(self._build_view(market, LoadState.FAILED, None, error_name=name))
             return
         state = LoadState.READY if stats.has_values else LoadState.NO_DATA
         self._post(self._build_view(market, state, stats))
@@ -318,6 +342,7 @@ class DataWorker:
     def _loop(self) -> None:
         while not self._stop.is_set():
             self._wake.clear()
+            self._wake.waiting.clear()
             self._idle.clear()  # 일하는 동안은 쉬는 중이 아니다(`wait_idle`이 끝나기를 기다린다)
             with self._lock:
                 task = self._queue.popleft() if self._queue else None
@@ -632,13 +657,11 @@ class DataWorker:
         self._backoff = 0
         try:
             stats = self._read_stats(market)
-        except StorageError as exc:
-            self._emit_unexpected(STAGE_STATS, market, exc)
-            self._post(self._coin_view(market, LoadState.FAILED, error_name=ERROR_STORAGE))
-            return
         except Exception as exc:
+            # 값은 그 코인에 마지막으로 보낸 `CoinView`의 값이다(3.8). 새로 읽거나 셈하지 않는다.
             self._emit_unexpected(STAGE_STATS, market, exc)
-            self._post(self._coin_view(market, LoadState.FAILED, error_name=type(exc).__name__))
+            name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
+            self._post(self._view_with_last_values(market, LoadState.FAILED, name))
             return
         if stats.has_values:
             self._rules.a1_succeeded(market)
@@ -682,6 +705,21 @@ class DataWorker:
         except Exception:
             stats = self._last_stats.get(market)
         return self._build_view(market, state, stats, error_name=error_name, blocked=blocked)
+
+    def _view_with_last_values(
+        self, market: str, state: LoadState, error_name: str | None
+    ) -> CoinView:
+        """그 코인에 마지막으로 보낸 `CoinView`의 값(없으면 모두 `None`)을 담는다."""
+        last = self._last_view.get(market)
+        fetched_at, as_of = self._fetched_at(market), self._clock.now()
+        if last is None:
+            return CoinView(
+                market, state, fetched_at=fetched_at, error_name=error_name, as_of=as_of
+            )
+        return CoinView(
+            market, state, last.periods, last.indicator, last.last_incomplete, fetched_at,
+            error_name, None, as_of,
+        )  # fmt: skip
 
     def _build_view(
         self,

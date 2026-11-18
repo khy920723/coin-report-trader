@@ -138,6 +138,7 @@ def make_rig(
     days: int | None = 30,
     quote: FakeQuoteSource | None = None,
     bars: bool = True,
+    clock: FakeClock | None = None,
 ) -> Rig:
     db = tmp_path / "app.db"
     logs = tmp_path / "logs"
@@ -148,7 +149,7 @@ def make_rig(
         write_settings(conn, SettingsView(coins, days, done))
     finally:
         conn.close()
-    clock = FakeClock()
+    clock = clock or FakeClock()
     source = quote or FakeQuoteSource(markets=markets(AAA, BBB, CCC), clock=clock)
     if bars:
         for coin in coins:
@@ -324,18 +325,22 @@ def test_first_fetch_saves_the_candles_and_sends_loading_then_the_result(build: 
 def test_the_next_fetch_gets_only_the_new_candles_and_overwrites_the_last(build: Any) -> None:
     rig = build()
     rig.start()
-    saved_close = rig.stored(AAA, DAY)[-1].close
-    rig.advance(24 * 3600)  # 이튿날 한국 시간 12시
-    rig.quote.put_candles(*make_candles(AAA, DAY, 2, last_start=TODAY_START + timedelta(days=1)))
+    old_last = rig.stored(AAA, DAY)[-1]
+    assert old_last.start == TODAY_START
+    # 새 일봉 둘: 마지막으로 저장된 일봉(오늘)은 종가가 바뀐 채 다시 오고, 뒤로 이틀이 더해진다.
+    new = make_candles(AAA, DAY, 3, last_start=TODAY_START + timedelta(days=2))
+    assert new[0].start == TODAY_START
+    assert new[0].close != old_last.close
+    rig.quote.put_candles(*new)
     before = len(rig.quote.candle_requests(AAA, DAY))
-    rig.worker.retry_candles()
-    rig.settle()
-    new_requests = rig.quote.candle_requests(AAA, DAY)[before:]
-    assert len(new_requests) == 1
+    rig.advance(2 * 24 * 3600)  # 저절로 받는 (라)의 때가 한 번 지난다
+    assert len(rig.quote.candle_requests(AAA, DAY)) - before == 1  # 일봉 요청은 한 번
     stored = rig.stored(AAA, DAY)
-    assert stored[-1].start == TODAY_START + timedelta(days=1)
-    assert len(stored) == 41  # 40개 + 새 하루. 겹친 하루는 덮어썼다
-    assert stored[-2].close != saved_close or stored[-2].start == TODAY_START
+    assert len(stored) == 42  # 40개 + 새 일봉 둘
+    assert [c.start for c in stored[-3:]] == [c.start for c in new]
+    assert stored[-3].close == new[0].close  # 마지막으로 저장된 일봉은 덮어썼다
+    assert stored[-3].close != old_last.close
+    assert stored[-1].close == new[2].close
 
 
 def test_the_fetch_every_sixty_minutes(build: Any) -> None:
@@ -369,13 +374,31 @@ def test_no_next_time_waits_an_hour_and_does_nothing_when_it_wakes(build: Any) -
 
 
 def test_retry_does_nothing_without_coins_even_while_blocked(build: Any) -> None:
-    rig = build(coins=(), done=False)
+    rig = build(coins=(), done=False, days=None, bars=False)
     rig.start()
     rig.sink.clear()
     rig.worker.retry_candles()
     rig.settle()
     assert rig.sink.items == []
     assert rig.quote.requests == []
+    assert rig.worker._next_round_mono is None  # (라)의 60분을 새로 세지 않는다
+    rig.quote.script(QuoteError(ERROR_BLOCKED), kind="markets")  # 코인 목록이 차단을 정한다
+    rig.worker.refresh_markets()
+    rig.settle()
+    until, mono, backoff = rig.worker._blocked_until, rig.worker._blocked_mono, rig.worker._backoff
+    assert until is not None
+    assert backoff == 1
+    rig.sink.clear()
+    rig.worker.retry_candles()  # 차단 중이어도 같다
+    rig.settle()
+    assert rig.sink.items == []
+    assert len(rig.quote.requests) == 1  # 코인 목록 요청 하나뿐이다
+    assert rig.worker._next_round_mono is None
+    assert (rig.worker._blocked_until, rig.worker._blocked_mono, rig.worker._backoff) == (
+        until, mono, backoff,
+    )  # fmt: skip
+    assert rig.alerts()[-1].code == "A-31"
+    assert len([a for a in rig.alerts() if a.code == "A-1"]) == 0
 
 
 def test_actions_that_arrive_during_a_fetch_run_after_it(build: Any) -> None:
@@ -398,10 +421,20 @@ def test_actions_that_arrive_during_a_fetch_run_after_it(build: Any) -> None:
     assert rig.quote.market_requests() == []  # 받는 중이라 아직 처리하지 않았다
     release.set()
     rig.settle()
-    kinds = [type(u).__name__ for u in rig.sink.items]
-    assert kinds.index("MarketsView") > max(i for i, k in enumerate(kinds) if k == "CoinView") - 3
-    assert len(rig.quote.market_requests()) == 1
-    assert states(rig.sink.coin(AAA)).count(LoadState.LOADING) == 2  # 처음 받기와 "다시 시도"
+    shown = [
+        (type(u).__name__, u.state if isinstance(u, CoinView | MarketsView) else None)
+        for u in rig.sink.items
+    ]
+    assert shown == [
+        ("SettingsView", None),
+        ("CoinView", LoadState.NO_DATA),
+        ("CoinView", LoadState.LOADING),  # 켤 때의 (가) 받기
+        ("CoinView", LoadState.READY),
+        ("CoinView", LoadState.LOADING),  # 받는 중에 온 "다시 시도"는 그 뒤에 처리했다
+        ("CoinView", LoadState.READY),
+        ("MarketsView", LoadState.LOADING),  # 그다음 코인 목록
+        ("MarketsView", LoadState.READY),
+    ]
 
 
 # --- 미완성 봉과 "봉이 모자람" -----------------------------------------------------------
@@ -663,25 +696,34 @@ def test_failing_to_read_the_last_candle_is_an_a30_of_the_candle_stage(
     assert len(rig.alerts()) == 2  # 방금 만들었으므로 만들지 않는다
 
 
-def test_a_failed_fetched_at_write_is_an_a29_and_the_values_use_the_new_candles(
+def test_a_failed_fetched_at_write_is_an_a29_keeps_the_old_time_and_the_steps(
     build: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = build()
+    rig.start()  # 성공: fetched_at = NOW
+    assert rig.sink.coin(AAA)[-1].fetched_at == NOW
+    rig.quote.script(QuoteError(ERROR_BLOCKED), kind="candles", market=AAA, unit=DAY)
+    rig.worker.retry_candles()  # 시간을 주지 않은 차단: 늘리는 차례가 한 칸 간다
+    rig.settle()
+    assert rig.worker._backoff == 1
+    assert len(rig.alerts()) == 1
 
     def refuse(conn: Any, market: str, moment: datetime) -> None:
         raise StorageError("받은 때 저장에 실패했습니다: OperationalError")
 
     monkeypatch.setattr(data_thread, "write_fetched_at", refuse)
-    rig.start()
+    rig.advance(300)  # 차단이 끝나 저절로 받는다: 요청과 봉 저장은 되고 fetched_at 쓰기만 실패한다
     view = rig.sink.coin(AAA)[-1]
-    assert (view.state, view.error_name, view.fetched_at) == (LoadState.FAILED, "DB 오류", None)
-    assert view.periods[3].count == 30  # 새로 저장된 봉으로 셈한 값이다
-    (alert,) = rig.alerts()
-    assert alert.code == "A-29"
-    assert alert.detail is not None
-    assert alert.detail.stage == "봉 저장"
-    assert len(rig.stored(AAA, DAY)) == 40
-    assert rig.worker._backoff == 0
+    assert (view.state, view.error_name) == (LoadState.FAILED, "DB 오류")
+    assert view.fetched_at == NOW  # 앞의 값 그대로다(받기 전체가 성공하지 않았다)
+    assert rig.fetched_at(AAA) == NOW
+    assert view.periods[3].count == 30
+    assert rig.worker._backoff == 1  # 늘리는 차례를 처음으로 돌리지 않는다
+    alerts = rig.alerts()
+    assert [a.code for a in alerts] == ["A-1", "A-29"]
+    assert alerts[1].detail is not None
+    assert alerts[1].detail.stage == "봉 저장"
+    assert alerts[1].coin == AAA
 
 
 def test_a_failure_in_the_statistics_is_an_a30_and_the_fetch_still_counts(
@@ -693,14 +735,22 @@ def test_a_failure_in_the_statistics_is_an_a30_and_the_fetch_still_counts(
 
     def sometimes_broken(candles: Any, now: datetime) -> Any:
         calls["n"] += 1
-        if calls["n"] > 1:  # 켤 때 처음의 셈은 지나가고, 받기 뒤의 셈에서 난다
+        if calls["n"] == 3:  # 켤 때(1), 받기 시작(2)의 셈은 지나가고 받기 뒤의 셈(3)에서 한 번 난다
             raise RuntimeError("셈이 깨졌다")
         return real(candles, now)
 
     monkeypatch.setattr(data_thread, "compute_candle_stats", sometimes_broken)
     rig.start()
-    view = rig.sink.coin(AAA)[-1]
+    views = rig.sink.coin(AAA)
+    view = views[-1]
     assert (view.state, view.error_name) == (LoadState.FAILED, "RuntimeError")
+    # 값은 그 코인에 마지막으로 보낸 `CoinView`(받기 시작 때의 `LOADING`)의 값이다.
+    # 새로 저장된 봉으로 셈하지 않는다(그러면 한 달 통계의 봉 수가 30이 된다).
+    assert views[-2].state is LoadState.LOADING
+    assert (view.periods, view.indicator, view.last_incomplete) == (
+        views[-2].periods, views[-2].indicator, views[-2].last_incomplete,
+    )  # fmt: skip
+    assert view.periods[3].count == 0
     assert view.fetched_at == NOW  # 요청과 저장은 끝났다
     assert rig.fetched_at(AAA) == NOW
     (alert,) = rig.alerts()
@@ -823,24 +873,34 @@ def test_while_blocked_nothing_is_requested_and_it_is_fetched_once_after(build: 
     assert len(rig.quote.requests) > after
 
 
-def test_blocked_requests_do_not_move_the_sixty_minute_timer_or_the_fetched_at(build: Any) -> None:
+def test_a_fetch_time_inside_a_block_does_nothing_and_the_block_end_fetches_once(
+    build: Any,
+) -> None:
     rig = build()
-    rig.start()  # 성공: fetched_at = NOW, 다음 (라)는 NOW + 60분
+    rig.start()  # 성공: fetched_at = NOW
     fetched = rig.sink.coin(AAA)[-1].fetched_at
     assert fetched == NOW
     rig.advance(1800)
     block(rig, 7200.0)
-    rig.worker.retry_candles()  # 차단을 받는다
+    rig.worker.retry_candles()  # 차단을 받는다. 그 받기가 끝난 때부터 (라)는 60분 뒤다
     rig.settle()
-    count = len(rig.quote.requests)
     view = rig.sink.coin(AAA)[-1]
     assert (view.error_name, view.fetched_at) == (ERROR_BLOCKED, fetched)
-    rig.advance(1800)  # 처음 (라)의 때: 차단 중이라 요청하지 않는다
-    assert len(rig.quote.requests) == count
-    rig.worker.retry_candles()  # 요청하지 않은 받기도 fetched_at을 바꾸지 않는다
+    requests, views, alerts = len(rig.quote.requests), len(rig.sink.of(CoinView)), len(rig.alerts())
+    backoff = rig.worker._backoff
+    rig.advance(3600)  # (라)의 때가 차단 기간(7200초) 안에서 온다
+    rig.advance(3599)  # 차단이 끝나기 1초 전
+    assert (len(rig.quote.requests), len(rig.sink.of(CoinView)), len(rig.alerts())) == (
+        requests, views, alerts,
+    )  # fmt: skip
+    rig.worker.retry_candles()  # 요청하지 않은 받기도 fetched_at과 차례를 바꾸지 않는다
     rig.settle()
+    assert len(rig.quote.requests) == requests
     assert rig.sink.coin(AAA)[-1].fetched_at == fetched
-    assert len(rig.quote.requests) == count
+    assert rig.worker._backoff == backoff
+    rig.advance(1)  # blocked_until: 저절로 한 번 받는다
+    assert len(rig.quote.requests) == requests + 2  # 일봉과 60분봉
+    assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
 
 
 def test_a_save_during_a_block_saves_then_sends_blocked_views_without_requests(build: Any) -> None:
@@ -1136,6 +1196,8 @@ def test_a_failed_write_is_an_a29_and_sends_nothing_else(
 ) -> None:
     rig = build(coins=(AAA,), done=True, days=30)
     rig.start()
+    rig.quote.set_markets(markets(BBB, CCC))  # 저장된 코인(AAA)은 이제 목록에 없다
+    listed(rig)
     real = data_thread.write_settings
     failing = {"on": True}
 
@@ -1147,24 +1209,26 @@ def test_a_failed_write_is_an_a29_and_sends_nothing_else(
     monkeypatch.setattr(data_thread, "write_settings", maybe)
     count = len(rig.quote.requests)
     rig.sink.clear()
-    rig.worker.save_settings((AAA,), 7, first_setup=False)
+    rig.worker.save_settings((BBB,), 7, first_setup=False)  # 코인을 바꾸는 저장이 실패한다
     rig.settle()
     assert rig.sink.items == [SaveResult("settings", False, SETTINGS_SAVE_FAILED)]
     assert len(rig.quote.requests) == count
-    assert rig.settings().retention_days == 30
+    assert rig.settings() == SettingsView((AAA,), 30, True)
     (alert,) = rig.alerts()
     assert (alert.code, alert.category, alert.coin) == ("A-29", AlertCategory.ERROR, None)
     assert alert.text == "저장하지 못했습니다(DB 오류)."
     assert alert.detail is not None
     assert alert.detail.stage == "설정 저장"
     assert alert.detail.after == "저장하지 못한 값은 화면에 남겨 두었습니다."
-    rig.worker.save_settings((AAA,), 7, first_setup=False)  # 성공하기 전에는 다시 만들지 않는다
+    rig.worker.save_settings((BBB,), 7, first_setup=False)  # 성공하기 전에는 다시 만들지 않는다
     rig.settle()
     assert len(rig.alerts()) == 1
     failing["on"] = False
-    rig.worker.save_settings((AAA,), 7, first_setup=False)
+    # 실패한 저장이 자료 스레드가 가진 설정을 바꿨다면 코인(AAA)이 달라져 목록과 견주고 거절된다.
+    rig.worker.save_settings((AAA,), 90, first_setup=False)
     rig.settle()
-    assert rig.settings().retention_days == 7  # 자료 스레드가 가진 설정은 실패 때 바뀌지 않았다
+    assert rig.settings() == SettingsView((AAA,), 90, True)
+    assert rig.sink.of(SaveResult)[-1] == SaveResult("settings", True, SETTINGS_SAVED)
 
 
 # --- 설정을 읽지 못했을 때 ------------------------------------------------------------------------
@@ -1374,3 +1438,362 @@ def test_the_alert_texts_carry_no_secret_or_path(build: Any) -> None:
     (alert,) = rig.alerts()
     assert alert.detail is not None
     assert alert.detail.content == "(가려서 보임) ~/x"
+
+
+# --- 검토 뒤 보완: 켤 때의 예외, 기다림의 틈, 요청 한도, 시계가 흐르는 받기 ----------------------
+
+
+class TickingQuote(FakeQuoteSource):
+    """요청마다 가짜 시계를 옮기는 `QuoteSource`(받기가 시간이 걸리는 것을 흉내 낸다)."""
+
+    def __init__(self, clock: FakeClock, seconds: float, **kwargs: Any) -> None:
+        super().__init__(clock=clock, **kwargs)
+        self._ticker = (clock, seconds)
+
+    def get_candles(self, market: str, unit: CandleUnit, *, to: datetime | None, count: int) -> Any:
+        self._ticker[0].advance(self._ticker[1])
+        return super().get_candles(market, unit, to=to, count=count)
+
+    def list_markets(self) -> tuple[Market, ...]:
+        self._ticker[0].advance(self._ticker[1])
+        return super().list_markets()
+
+
+def test_an_exception_in_the_first_calculation_does_not_end_the_thread(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(coins=(AAA, BBB))
+    real = data_thread.compute_candle_stats
+    calls = {"n": 0}
+
+    def broken_once(candles: Any, now: datetime) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:  # 켤 때 첫 코인의 처음 셈
+            raise RuntimeError("처음 셈이 깨졌다")
+        return real(candles, now)
+
+    monkeypatch.setattr(data_thread, "compute_candle_stats", broken_once)
+    rig.start()
+    assert rig.worker.thread is not None
+    assert rig.worker.thread.is_alive()
+    first = rig.sink.coin(AAA)[0]
+    assert (first.state, first.error_name, first.periods[3].count) == (
+        LoadState.FAILED, "RuntimeError", 0,
+    )  # fmt: skip
+    assert rig.sink.coin(BBB)[0].state is LoadState.NO_DATA  # 남은 코인의 `CoinView`도 온다
+    assert [r.market for r in rig.quote.candle_requests()] == [AAA, AAA, BBB, BBB]  # (가) 받기
+    assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
+    (alert,) = rig.alerts()
+    assert (alert.code, alert.category, alert.coin) == ("A-30", AlertCategory.OTHER, AAA)
+    assert alert.text == "예상하지 못한 오류가 났습니다(RuntimeError)."
+    assert alert.detail is not None
+    assert (alert.detail.stage, alert.detail.error_name) == ("켜기", "RuntimeError")
+    assert alert.detail.content == "처음 셈이 깨졌다"
+    count = len(rig.quote.requests)
+    rig.worker.retry_candles()  # 큐의 동작과 (라)가 그대로 돈다
+    rig.settle()
+    assert len(rig.quote.requests) > count
+    rig.advance(3600)
+    assert len(rig.quote.requests) > count + 4
+
+
+def test_an_exception_in_the_first_fetch_round_does_not_end_the_thread(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    calls = {"n": 0}
+    real = rig.worker._fetch_round
+
+    def broken_once() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("받기가 깨졌다")
+        real()
+
+    monkeypatch.setattr(rig.worker, "_fetch_round", broken_once)
+    rig.start()
+    (alert,) = rig.alerts()
+    assert (alert.code, alert.detail.stage if alert.detail else None) == ("A-30", "봉 받기")
+    rig.worker.retry_candles()
+    rig.settle()
+    assert rig.sink.coin(AAA)[-1].state is LoadState.READY
+    assert rig.worker.thread is not None
+    assert rig.worker.thread.is_alive()
+
+
+def test_a_stored_candle_that_cannot_be_read_at_the_start_is_an_a30_of_that_coin(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(coins=(AAA, BBB))
+    real = data_thread.read_candles
+    calls = {"n": 0}
+
+    def unreadable_once(conn: Any, market: str, unit: CandleUnit) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise StorageError("봉 읽기에 실패했습니다: OperationalError")
+        return real(conn, market, unit)
+
+    monkeypatch.setattr(data_thread, "read_candles", unreadable_once)
+    rig.start()
+    first = rig.sink.coin(AAA)[0]
+    assert (first.state, first.error_name, first.fetched_at) == (LoadState.FAILED, "DB 오류", None)
+    assert all(p.count == 0 for p in first.periods)
+    assert rig.sink.coin(BBB)[0].state is LoadState.NO_DATA
+    (alert,) = rig.alerts()
+    assert (alert.code, alert.category, alert.coin) == ("A-30", AlertCategory.OTHER, AAA)
+    assert alert.detail is not None
+    assert (alert.detail.stage, alert.detail.error_name) == ("켜기", "DB 오류")
+    assert alert.detail.coin == AAA
+    assert len(rig.quote.candle_requests(AAA)) == 2  # (가) 받기는 그대로 나간다
+    assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
+
+
+def test_wait_idle_returns_only_once_the_clock_wait_is_on_so_a_later_advance_wakes_it(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    real = rig.worker._seconds_until_due
+
+    def slow() -> float:
+        value = real()
+        threading.Event().wait(0.05)  # 남은 초를 셈한 뒤 시계의 기다림이 걸리기까지의 틈을 넓힌다
+        return value
+
+    monkeypatch.setattr(rig.worker, "_seconds_until_due", slow)
+    rig.worker.start()
+    assert rig.worker.wait_idle(SAFETY)
+    count = len(rig.quote.requests)
+    rig.clock.advance(3600)  # 참을 돌려준 뒤의 `advance`는 틈과 상관없이 자료 스레드를 깨운다
+    assert rig.worker.wait_idle(SAFETY)
+    assert len(rig.quote.requests) > count
+    for _ in range(3):
+        count = len(rig.quote.requests)
+        rig.clock.advance(3600)
+        assert rig.worker.wait_idle(SAFETY)
+        assert len(rig.quote.requests) > count
+
+
+def window_of(requests: list[Any], start: int) -> int:
+    first = requests[start].monotonic
+    return sum(1 for r in requests if first <= r.monotonic < first + 1.0)
+
+
+def test_requests_through_the_worker_keep_the_limit_and_share_one_client(build: Any) -> None:
+    rig = build(coins=(AAA, BBB))
+    rig.start()  # 봉 요청 넷
+    rig.worker.refresh_markets()  # 코인 목록 요청은 같은 `QuoteClient`의 한도에 센다
+    rig.settle()
+    for _ in range(2):
+        rig.worker.retry_candles()
+        rig.settle()
+    requests = rig.quote.requests
+    assert len(requests) == 13
+    assert [r.kind for r in requests].count("markets") == 1
+    assert all(r.monotonic is not None for r in requests)
+    assert max(window_of(requests, i) for i in range(len(requests))) <= 5
+    assert max(r.monotonic for r in requests) - min(r.monotonic for r in requests) >= 1.0
+    assert rig.clock.sleeps  # 한도 장치가 시계로 기다렸다
+
+
+def test_the_a1_and_the_next_fetch_time_count_from_the_end_of_the_round(build: Any) -> None:
+    clock = FakeClock()
+    quote = TickingQuote(clock, 30.0, markets=markets(AAA, BBB))
+    rig = build(coins=(AAA, BBB), quote=quote, clock=clock)
+    fail(rig, QuoteError(ERROR_NETWORK), unit=DAY, market=AAA)
+    fail(rig, QuoteError(ERROR_TIMEOUT), unit=DAY, market=BBB)
+    rig.start()
+    ended = NOW + timedelta(seconds=120)  # 요청 넷, 요청마다 30초
+    assert rig.clock.now() == ended
+    first, second = rig.alerts()
+    assert first.created_at == second.created_at == ended
+    for alert in (first, second):
+        assert alert.detail is not None
+        assert alert.detail.after == "다음 받는 때(13:02)에 다시 받습니다."  # 끝난 때 + 60분
+    count = len(rig.quote.requests)
+    rig.advance(3599)  # (라)도 앞 받기가 끝난 때부터 60분이다
+    assert len(rig.quote.requests) == count
+    rig.advance(1)
+    assert len(rig.quote.requests) > count
+    assert rig.sink.coin(AAA)[-1].as_of > ended
+
+
+def test_the_a1_after_text_ignores_actions_queued_during_the_round(build: Any) -> None:
+    release = threading.Event()
+    inside = threading.Event()
+    quote = FakeQuoteSource(markets=markets(AAA, BBB))
+    real = quote.get_candles
+
+    def gated(market: str, unit: CandleUnit, *, to: datetime | None, count: int) -> Any:
+        inside.set()
+        assert release.wait(SAFETY)
+        return real(market, unit, to=to, count=count)
+
+    quote.get_candles = gated  # type: ignore[method-assign]
+    rig = build(coins=(AAA,), quote=quote)
+    quote.script(QuoteError(ERROR_NETWORK), kind="candles", market=AAA, unit=DAY)
+    rig.worker.start()
+    assert inside.wait(SAFETY)
+    rig.worker.retry_candles()  # 받는 중에 큐에 든 (다)
+    rig.worker.save_settings((AAA,), 7, first_setup=False)  # 와 (나)
+    rig.clock.advance(120)  # 받기가 길어졌다
+    release.set()
+    rig.settle()
+    alert = rig.alerts()[0]
+    assert alert.created_at == NOW + timedelta(seconds=120)
+    assert alert.detail is not None
+    # 큐의 일은 정해진 때가 아니다
+    assert alert.detail.after == "다음 받는 때(13:02)에 다시 받습니다."
+    assert len(rig.alerts()) == 1
+
+
+def test_an_earlier_failed_coin_also_gets_the_block_time_when_a_later_coin_is_blocked(
+    build: Any,
+) -> None:
+    rig = build(coins=(AAA, BBB))
+    fail(rig, QuoteError(ERROR_TIMEOUT), unit=DAY, market=AAA)
+    block(rig, 120.0, market=BBB)
+    rig.start()
+    first, second = rig.alerts()
+    assert (first.coin, second.coin) == (AAA, BBB)
+    assert first.text == "봉 통계를 만들지 못했습니다(시간 초과)."
+    assert first.detail is not None
+    assert first.detail.content == "실패한 봉: 일봉"
+    assert first.detail.after == "12:02까지 봉 받기를 멈췄습니다."  # 차단이 아닌 앞 코인의 것도
+    assert second.detail is not None
+    assert second.detail.after == "12:02까지 봉 받기를 멈췄습니다."
+    assert second.detail.content == "거래소가 공개 시세 요청을 잠시 막았습니다."
+    assert rig.sink.coin(AAA)[-1].error_name == ERROR_TIMEOUT
+
+
+def test_every_alert_code_is_stored_without_an_address_state(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(coins=(AAA,), done=True)
+    rig.start()
+    rig.quote.script(QuoteError(ERROR_NETWORK), kind="markets")
+    rig.worker.refresh_markets()  # A-31
+    rig.settle()
+    real_write = data_thread.write_settings
+
+    def refuse(conn: Any, view: SettingsView) -> None:
+        raise StorageError("설정 저장에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread, "write_settings", refuse)
+    rig.worker.save_settings((AAA,), 7, first_setup=False)  # A-29
+    rig.settle()
+    monkeypatch.setattr(data_thread, "write_settings", real_write)
+
+    def unreadable(conn: Any, market: str, unit: CandleUnit) -> Any:
+        raise StorageError("마지막 봉 읽기에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread, "last_candle_start", unreadable)
+    rig.worker.retry_candles()  # A-30
+    rig.settle()
+    fail_unit = [a for a in rig.alerts() if a.code == "A-30"]
+    assert len(fail_unit) == 1
+    conn = open_database(rig.db)
+    try:
+        rows = conn.execute("SELECT code, discord_state FROM alerts ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    assert sorted(code for code, _ in rows) == ["A-29", "A-30", "A-31"]
+    assert {state for _, state in rows} == {"no_address"}
+
+
+def test_a_coin_change_is_accepted_after_a_failed_or_blocked_list_but_a_reorder_needs_a_list(
+    build: Any,
+) -> None:
+    rig = build(coins=(AAA,), done=True)
+    rig.start()
+    listed(rig)  # READY
+    rig.quote.script(QuoteError(ERROR_NETWORK), kind="markets")
+    listed(rig)  # 받지 못함: 앞서 받은 목록을 지우지 않는다
+    assert rig.sink.of(MarketsView)[-1].state is LoadState.FAILED
+    rig.worker.save_settings((BBB,), 30, first_setup=False)
+    rig.settle()
+    assert rig.settings().coins == (BBB,)
+    rig.quote.script(QuoteError(ERROR_BLOCKED, 600.0), kind="markets")
+    listed(rig)  # 일시 차단 중
+    assert rig.sink.of(MarketsView)[-1].error_name == ERROR_BLOCKED
+    rig.worker.save_settings((CCC, BBB), 30, first_setup=False)
+    rig.settle()
+    assert rig.settings().coins == (CCC, BBB)
+    assert rig.sink.of(SaveResult)[-1] == SaveResult("settings", True, SETTINGS_SAVED)
+
+
+def test_a_reorder_of_the_saved_coins_is_refused_without_a_received_list(build: Any) -> None:
+    rig = build(coins=(AAA, BBB), done=True)
+    rig.start()  # 코인 목록은 한 번도 받지 않았다
+    rig.sink.clear()
+    rig.worker.save_settings((BBB, AAA), 30, first_setup=False)
+    rig.settle()
+    assert rig.sink.items == [SaveResult("settings", False, SETTINGS_COIN_NOT_LISTED)]
+    assert rig.settings().coins == (AAA, BBB)
+
+
+def test_actions_queued_before_the_start_run_after_every_view_of_the_first_fetch(
+    build: Any,
+) -> None:
+    rig = build(coins=(AAA, BBB), done=True)
+    rig.worker.retry_candles()
+    rig.worker.refresh_markets()
+    rig.start()
+    shown = [
+        (type(u).__name__, getattr(u, "market", None), u.state if hasattr(u, "state") else None)
+        for u in rig.sink.items
+    ]
+    load, ready = LoadState.LOADING, LoadState.READY
+    assert shown == [
+        ("SettingsView", None, LoadState.READY),
+        ("CoinView", AAA, LoadState.NO_DATA),
+        ("CoinView", BBB, LoadState.NO_DATA),
+        ("CoinView", AAA, load), ("CoinView", AAA, ready),  # (가) 받기
+        ("CoinView", BBB, load), ("CoinView", BBB, ready),
+        ("CoinView", AAA, load), ("CoinView", AAA, ready),  # 시작 전에 넣은 "다시 시도"
+        ("CoinView", BBB, load), ("CoinView", BBB, ready),
+        ("MarketsView", None, load), ("MarketsView", None, ready),  # 그다음 코인 목록
+    ]  # fmt: skip
+
+
+def test_a_restart_counts_the_repeats_from_the_start(build: Any, tmp_path: Path) -> None:
+    first = build()
+    fail(first, QuoteError(ERROR_NETWORK), unit=DAY)
+    first.start()
+    first.worker.retry_candles()
+    first.settle()
+    assert len(first.alerts()) == 1  # 같은 오류 이름은 한 번이다
+    first.worker.stop()
+    first.worker.join(SAFETY)
+    second = build()  # 같은 DB로 다시 켠다
+    fail(second, QuoteError(ERROR_NETWORK), unit=DAY)
+    second.start()
+    assert [a.code for a in second.alerts()] == ["A-1", "A-1"]  # 되풀이가 처음부터 세어진다
+
+
+def test_an_exception_other_than_a_storage_error_while_reading_settings_is_unreadable_settings(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    real = data_thread.read_settings
+    calls = {"n": 0}
+
+    def broken_once(conn: Any) -> SettingsView:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("설정 글이 이상하다")
+        return real(conn)
+
+    monkeypatch.setattr(data_thread, "read_settings", broken_once)
+    rig.start()
+    assert rig.sink.items == [SettingsView(state=LoadState.FAILED)]
+    assert rig.quote.requests == []
+    (alert,) = rig.alerts()
+    assert (alert.code, alert.coin) == ("A-30", None)
+    assert alert.detail is not None
+    assert (alert.detail.stage, alert.detail.error_name) == ("켜기", "ValueError")
+    assert rig.worker.thread is not None
+    assert rig.worker.thread.is_alive()
+    rig.advance(3600)  # 60분 뒤 다시 읽으면 읽힌다
+    assert rig.sink.of(SettingsView)[-1] == SettingsView((AAA,), 30, True)
+    assert rig.quote.candle_requests(AAA)

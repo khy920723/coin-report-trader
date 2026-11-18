@@ -571,3 +571,14 @@ def test_services_are_accepted_and_do_not_change_the_result(
     assert [line for line in first if not line.startswith("점검 시각")] == [
         line for line in second if not line.startswith("점검 시각")
     ]
+
+
+def test_run_self_test_takes_services_typed_as_the_services_class() -> None:
+    import inspect
+
+    from coin_report_trader.app.services import Services
+
+    parameter = inspect.signature(st.run_self_test).parameters["services"]
+    assert parameter.annotation == (Services | None)
+    assert parameter.default is None
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY

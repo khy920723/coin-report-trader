@@ -39,6 +39,8 @@ from coin_report_trader.core import (
 )
 from coin_report_trader.storage.database import migrate, open_database, schema_version
 
+from .services import Services
+
 REPORT_FILE_NAME = "self-test-report.txt"
 REPORT_TITLE = "Coin Report Trader 자체 점검 (--self-test)"
 PACKAGE = "coin_report_trader"
@@ -319,7 +321,7 @@ def run_self_test(
     report_path: Path | None = None,
     checks: Sequence[Check] | None = None,
     *,
-    services: object | None = None,
+    services: Services | None = None,
 ) -> int:
     """점검하고 보고서를 쓴다. 모두 통과하고 보고서를 썼으면 0, 아니면 1.
 

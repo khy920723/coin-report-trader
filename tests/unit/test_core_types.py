@@ -547,6 +547,21 @@ def test_system_clock_wait_accepts_seconds_beyond_the_timeout_limit(
     assert clock.wait(event, 30) is True
 
 
+def test_system_clock_wait_beyond_the_real_timeout_limit_waits_in_pieces() -> None:
+    """진짜 `threading.TIMEOUT_MAX`보다 큰 초도 오류 없이 기다리고, event가 서면 바로 참이다."""
+    clock = SystemClock()
+    event = threading.Event()
+    huge = float(threading.TIMEOUT_MAX) * 2
+    timer = threading.Timer(0.02, event.set)
+    timer.start()
+    started = time.monotonic()
+    assert clock.wait(event, huge) is True
+    assert time.monotonic() - started < 5
+    timer.join()
+    assert clock.wait(event, huge) is True  # 이미 선 event
+    assert clock.wait(threading.Event(), 0) is False
+
+
 def test_protocols_match_by_shape() -> None:
     assert isinstance(_Quote(), QuoteSource)
     assert isinstance(_Sender(), WebhookSender)

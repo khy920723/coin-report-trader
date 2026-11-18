@@ -93,35 +93,37 @@ def _record_startup_error(paths: AppPaths, clock: Clock, exc: Exception) -> None
 def _run_window(
     paths: AppPaths, argv: Sequence[str] | None, services: Services | None, clock: Clock
 ) -> int:
-    from PySide6.QtWidgets import QApplication
-
-    from coin_report_trader.ui import create_main_window
-
-    from .bridge import UiBridge
-    from .data_thread import DataWorker
-
-    app = QApplication.instance()
-    if app is None:
-        program = sys.argv[0] if sys.argv and sys.argv[0] else APP_ID
-        app = QApplication([program, *(argv or ())])
-    assert isinstance(app, QApplication)
-    app.setQuitOnLastWindowClosed(True)  # 창을 닫으면 프로그램이 끝난다.
-    app.setApplicationName(APP_ID)
-    app.setApplicationVersion(__version__)
-    bridge = UiBridge()
-    worker = DataWorker(
-        database_file=paths.database_file,
-        logs_dir=paths.logs_dir,
-        clock=clock,
-        quote=None if services is None else services.quote,
-        sink=bridge.post,
-    )
+    bridge = None
     try:
+        from PySide6.QtWidgets import QApplication
+
+        from coin_report_trader.ui import create_main_window
+
+        from .bridge import UiBridge
+        from .data_thread import DataWorker
+
+        app = QApplication.instance()
+        if app is None:
+            program = sys.argv[0] if sys.argv and sys.argv[0] else APP_ID
+            app = QApplication([program, *(argv or ())])
+        assert isinstance(app, QApplication)
+        app.setQuitOnLastWindowClosed(True)  # 창을 닫으면 프로그램이 끝난다.
+        app.setApplicationName(APP_ID)
+        app.setApplicationVersion(__version__)
+        bridge = UiBridge()
+        worker = DataWorker(
+            database_file=paths.database_file,
+            logs_dir=paths.logs_dir,
+            clock=clock,
+            quote=None if services is None else services.quote,
+            sink=bridge.post,
+        )
         window = create_main_window(UiContext(__version__, display_path(paths.root), worker))
         bridge.set_apply(window.apply)
         window.show()
     except Exception as exc:
-        bridge.close()
+        if bridge is not None:
+            bridge.close()
         _record_startup_error(paths, clock, exc)
         raise
     worker.start()

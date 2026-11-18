@@ -461,3 +461,103 @@ def test_the_log_of_a_failed_start_redacts_webhook_text(
     assert "Tok_" not in log
     assert "(가려서 보임)" in log
     assert "Tok_" not in (env.root / "logs" / "startup-errors.jsonl").read_text(encoding="utf-8")
+
+
+def test_the_database_is_raised_before_the_window_and_the_thread_starts_after_it_is_shown(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from coin_report_trader.app.data_thread import DATA_THREAD_NAME
+
+    def data_threads() -> list[str]:
+        return [t.name for t in threading.enumerate() if t.name == DATA_THREAD_NAME]
+
+    def user_version() -> int:
+        conn = open_database(resolve_app_paths().database_file)
+        try:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.close()
+
+    seen: dict[str, Any] = {}
+    real = ui.create_main_window
+
+    def create(context: object) -> object:
+        seen["create"] = (user_version(), data_threads())
+        window = real(context)
+        original = window.show
+
+        def show() -> None:
+            seen["show"] = data_threads()  # 창을 띄우기 전에는 자료 스레드가 없다
+            original()
+
+        window.show = show
+        return window
+
+    monkeypatch.setattr(ui, "create_main_window", create)
+    updates = _record_updates(monkeypatch)  # `create`를 한 번 더 감싼다
+    held = _quit_when(env.app, lambda: bool(updates))
+    assert run_gui([], services=_services()) == 0
+    _release(held)
+    assert seen["create"] == (1, [])  # 스키마 번호는 1이고 스레드는 아직 없다
+    assert seen["show"] == []
+    assert updates  # 창을 띄운 뒤에는 자료 스레드가 첫 값을 보냈다
+
+
+@pytest.mark.parametrize("target", ["DataWorker", "UiBridge"])
+def test_a_failure_while_making_the_window_pieces_leaves_a_startup_line(
+    env: Any, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    from coin_report_trader.app import bridge, data_thread
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError(f"{target}를 만들지 못했다")
+
+    monkeypatch.setattr(data_thread if target == "DataWorker" else bridge, target, broken)
+    with pytest.raises(RuntimeError, match=target):
+        run_gui([], services=_services())
+    (line,) = _jsonl(env)
+    assert (line["kind"], line["code"], line["category"]) == ("startup", "A-30", "other")
+    assert (line["stage"], line["error_name"]) == ("켜기", "RuntimeError")
+    assert f"{target}를 만들지 못했다" in line["content"]
+    assert "오류: RuntimeError" in _log_text(env)
+    assert "종료: 코드 1" in _log_text(env)
+
+
+def test_a_failure_while_making_the_application_leaves_a_startup_line(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken() -> object:
+        raise RuntimeError("QApplication을 만들지 못했다")
+
+    real = QApplication.instance
+    monkeypatch.setattr(QApplication, "instance", staticmethod(broken))
+    with pytest.raises(RuntimeError, match="QApplication"):
+        run_gui([], services=_services())
+    monkeypatch.setattr(QApplication, "instance", real)
+    (line,) = _jsonl(env)
+    assert (line["code"], line["error_name"]) == ("A-30", "RuntimeError")
+
+
+def test_a_migrate_failure_and_a_newer_schema_leave_a_startup_line_of_the_database(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(conn: object) -> int:
+        raise StorageError("DB 스키마 올리기에 실패했습니다: OperationalError")
+
+    real = application.migrate
+    monkeypatch.setattr(application, "migrate", refuse)
+    with pytest.raises(StorageError):
+        run_gui([], services=_services())
+    (line,) = _jsonl(env)
+    assert (line["code"], line["category"], line["error_name"]) == ("A-29", "error", "DB 오류")
+    assert "스키마 올리기" in line["content"]
+    monkeypatch.setattr(application, "migrate", real)
+    _make_newer_database(env)
+    with pytest.raises(StorageError, match="스키마 번호"):
+        run_gui([], services=_services())
+    first, second = _jsonl(env)
+    assert first["content"] != second["content"]
+    assert (second["code"], second["stage"], second["error_name"]) == ("A-29", "켜기", "DB 오류")
+    assert "스키마 번호" in second["content"]
