@@ -831,9 +831,7 @@ def test_a_block_stops_the_round_and_marks_every_unrequested_coin(build: Any) ->
         "앞 코인에서 일시 차단을 받아 이 코인은 요청하지 않았습니다.",
     ]
     afters = {a.detail.after for a in alerts if a.detail}
-    assert afters == {"14:00까지 봉 받기를 멈췄습니다."} or afters == {
-        "12:02까지 봉 받기를 멈췄습니다."
-    }
+    assert afters == {"12:02까지 봉 받기를 멈췄습니다."}  # blocked_until = 한국 시간 12:00 + 120초
     assert all(a.text == "봉 통계를 만들지 못했습니다(일시 차단)." for a in alerts)
 
 
