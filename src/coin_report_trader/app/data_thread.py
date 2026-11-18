@@ -535,6 +535,18 @@ class DataWorker:
     # --- 받기(2의 1, 3.8의 "받기가 끝나는 모습") --------------------------------------------------
 
     def _fetch_round(self) -> None:
+        """한 번의 받기. 어떻게 끝나든(예외 포함) 다음 (라)의 때를 끝난 때 + 60분으로 정한다.
+
+        멈추려고 끝난 받기는 정하지 않는다. 요청하지 않는 일(차단 중의 `retry_candles` 등)은 이
+        함수를 부르지 않으므로 (라)를 새로 세지 않는다. `_backoff`, `blocked_*`는 건드리지 않는다.
+        """
+        try:
+            self._fetch_round_body()
+        finally:
+            if not self._stop.is_set():
+                self._next_round_mono = self._clock.monotonic() + FETCH_INTERVAL
+
+    def _fetch_round_body(self) -> None:
         settings = self._settings
         assert settings is not None
         self._expire_block()
@@ -560,7 +572,6 @@ class DataWorker:
         if self._stop.is_set():
             return
         ended = self._clock.now()
-        self._next_round_mono = self._clock.monotonic() + FETCH_INTERVAL
         if blocked and self._blocked_until is not None:
             after = after_candles_blocked(kst_when_text(self._blocked_until, ended))
         else:

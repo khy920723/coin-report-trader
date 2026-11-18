@@ -1795,3 +1795,108 @@ def test_an_exception_other_than_a_storage_error_while_reading_settings_is_unrea
     rig.advance(3600)  # 60분 뒤 다시 읽으면 읽힌다
     assert rig.sink.of(SettingsView)[-1] == SettingsView((AAA,), 30, True)
     assert rig.quote.candle_requests(AAA)
+
+
+# --- 예외로 끝난 받기 뒤에도 다음 (라)를 정한다 ---------------------------------------------------
+
+
+def break_the_round(rig: Rig, monkeypatch: pytest.MonkeyPatch, *, on_call: int = 1) -> list[int]:
+    """코인의 `try` 밖에 있는 `_expire_block`이 `on_call`번째에 한 번 예외를 낸다.
+
+    돌려주는 목록의 길이가 받기가 불린 횟수다.
+    """
+    calls: list[int] = []
+    real = rig.worker._expire_block
+
+    def expire() -> None:
+        calls.append(1)
+        if len(calls) == on_call:
+            raise RuntimeError("받기가 시작하자마자 깨졌다")
+        real()
+
+    monkeypatch.setattr(rig.worker, "_expire_block", expire)
+    return calls
+
+
+def test_a_first_round_that_ends_with_an_exception_is_tried_again_after_sixty_minutes(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    calls = break_the_round(rig, monkeypatch)
+    rig.start()
+    assert len(calls) == 1
+    assert rig.quote.requests == []
+    (alert,) = rig.alerts()
+    assert alert.code == "A-30"
+    rig.advance(3599)
+    assert rig.quote.requests == []
+    rig.advance(1)  # 화면의 동작 없이 (라)의 때에 받는다
+    assert len(calls) == 2
+    assert len(rig.quote.requests) == 2
+    assert rig.sink.coin(AAA)[-1].state is LoadState.READY
+
+
+def test_a_first_round_after_settings_were_read_again_that_ends_with_an_exception_is_retried(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    break_settings(rig)
+    rig.start()
+    repair_settings(rig)
+    calls = break_the_round(rig, monkeypatch)
+    rig.advance(3600)  # 설정을 다시 읽고 (가) 받기를 시작하지만 예외로 끝난다
+    assert len(calls) == 1
+    assert rig.quote.requests == []
+    assert rig.sink.of(SettingsView)[-1] == SettingsView((AAA,), 30, True)
+    rig.advance(3600)  # 화면의 동작 없이 (라)의 때에 받는다
+    assert len(calls) == 2
+    assert len(rig.quote.requests) == 2
+
+
+def test_a_first_setup_fetch_that_ends_with_an_exception_is_retried_after_sixty_minutes(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(coins=(AAA,), done=False, days=None)
+    rig.start()
+    calls = break_the_round(rig, monkeypatch)
+    rig.worker.save_settings((AAA,), 30, first_setup=True)  # 저장된 코인과 같은 코인
+    rig.settle()
+    assert rig.sink.of(SaveResult)[-1] == SaveResult("settings", True, SETTINGS_SAVED)
+    assert len(calls) == 1  # 단계가 "설정 저장"인 `_guard` 안에서 받기가 예외로 끝났다
+    assert rig.quote.requests == []
+    assert [a.detail.stage for a in rig.alerts() if a.detail] == ["설정 저장"]
+    rig.advance(3600)
+    assert len(calls) == 2
+    assert len(rig.quote.requests) == 2
+
+
+def test_a_scheduled_round_that_ends_with_an_exception_does_not_spin(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    rig.start()  # 성공: 다음 (라)는 60분 뒤
+    calls = break_the_round(rig, monkeypatch)
+    count = len(rig.quote.requests)
+    rig.advance(3600)  # (라)의 받기가 예외로 끝난다
+    assert len(calls) == 1
+    assert rig.worker.wait_idle(SAFETY)  # 자료 스레드는 쉰다(같은 받기를 바퀴마다 부르지 않는다)
+    rig.advance(3599)
+    assert len(calls) == 1  # 60분이 되기 전에는 받기가 다시 불리지 않는다
+    assert len(rig.quote.requests) == count
+    rig.advance(1)
+    assert len(calls) == 2  # 60분이 되면 한 번 받는다
+    assert len(rig.quote.requests) == count + 2
+    assert rig.worker.wait_idle(SAFETY)
+    assert len(calls) == 2
+
+
+def test_the_round_ended_by_stop_does_not_set_the_next_time(
+    build: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    rig.start()
+    rig.worker._next_round_mono = None
+    rig.worker.stop()
+    rig.worker.join(SAFETY)
+    rig.worker._fetch_round()  # 멈춘 뒤의 받기는 다음 때를 정하지 않는다
+    assert rig.worker._next_round_mono is None
