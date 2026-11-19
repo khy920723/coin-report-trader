@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -13,9 +14,13 @@ from PySide6.QtWidgets import (
 )
 
 from coin_report_trader.core import (
+    ALERT_CATEGORY_TITLES,
+    SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_SETTINGS,
     SCREEN_TITLES,
     WINDOW_TITLE,
+    AlertCategory,
+    AlertsView,
     CoinView,
     LoadState,
     MarketsView,
@@ -25,6 +30,7 @@ from coin_report_trader.core import (
     UiActions,
     UiContext,
     UiUpdate,
+    WebhookView,
 )
 from coin_report_trader.core.texts import (
     ERROR_BLOCKED,
@@ -41,11 +47,18 @@ from coin_report_trader.ui.settings_screen import SettingsScreen
 from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
 from coin_report_trader.ui.status_screen import StatusScreen
 from coin_report_trader.ui.texts import (
+    ALERT_CLEAR_TITLE,
+    ALERT_DELETE_BODY,
+    ALERT_DELETE_TITLE,
     LOADING_TEXT,
     RETENTION_SHRINK_TITLE,
     SETTINGS_BEFORE_FIRST_SETUP,
     STATUS_BEFORE_FIRST_SETUP,
+    WEBHOOK_DELETE_TITLE,
+    alert_clear_body,
     retention_shrink_body,
+    status_nav_text,
+    webhook_delete_body,
 )
 
 WINDOW_NAME = "mainWindow"
@@ -81,6 +94,11 @@ class MainWindow(QMainWindow):
         self._first_settings_handled = False
         self._markets: MarketsView | None = None
         self._coin_views: dict[str, CoinView] = {}
+        self._alerts: AlertsView | None = None
+        self._webhooks: dict[AlertCategory, WebhookView] = {}
+        self._delete_message: Message | None = None
+        self._status_was_active = False
+        self._hold_seen = False
         self._markets_loading = False
         self._pending_saves: list[ScreenId] = []
         self._messages: dict[ScreenId, Message] = {}
@@ -109,6 +127,7 @@ class MainWindow(QMainWindow):
             else:
                 stack.addWidget(build_screen(screen_id))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
+        nav.itemClicked.connect(self._on_nav_clicked)
         nav.setCurrentRow(0)
         nav.setMaximumWidth(160)
         self._nav = nav
@@ -137,6 +156,13 @@ class MainWindow(QMainWindow):
         self._settings.save_requested.connect(self._on_save)
         self._settings.retry_requested.connect(self._retry_markets)
         self._status.retry_requested.connect(self._retry_candles)
+        center = self._status.alert_center
+        center.seen_requested.connect(self._on_seen)
+        center.delete_alert_requested.connect(self._on_alert_delete)
+        center.clear_requested.connect(self._on_alert_clear)
+        center.save_webhook_requested.connect(self._on_webhook_save)
+        center.delete_webhook_requested.connect(self._on_webhook_delete)
+        center.send_test_requested.connect(self._on_send_test)
         stack.currentChanged.connect(self._on_screen_changed)
 
         self._update()
@@ -151,6 +177,12 @@ class MainWindow(QMainWindow):
             self._on_markets_view(update)
         elif isinstance(update, CoinView):
             self._on_coin_view(update)
+        elif isinstance(update, AlertsView):
+            self._alerts = update
+            self._update()
+        elif isinstance(update, WebhookView):
+            self._webhooks[update.category] = update
+            self._update()
         elif isinstance(update, SaveResult):
             self._on_save_result(update)
 
@@ -206,6 +238,12 @@ class MainWindow(QMainWindow):
         self._update()
 
     def _on_save_result(self, result: SaveResult) -> None:
+        if result.target == SAVE_TARGET_ALERT_DELETE:
+            # 지우기의 결과: 지우지 못했으면 알림센터 아래에 경고 색으로 보이고, 지웠으면 지운다.
+            failed = not result.ok and bool(result.message)
+            self._delete_message = Message(result.message, Tone.WARNING) if failed else None
+            self._update()
+            return
         if result.target != SAVE_TARGET_SETTINGS:
             return
         if self._pending_saves:
@@ -264,6 +302,50 @@ class MainWindow(QMainWindow):
         self._pending_saves.append(origin)
         self._actions.save_settings(coins, days, first_setup=first_setup)
         self._update()
+
+    def _on_nav_clicked(self, item) -> None:
+        """사용자가 화면 이름 목록의 줄을 눌렀다. 현황이면 보지 않은 알림이 있는 맨 앞 탭을 연다."""
+        if self._nav.row(item) == list(ScreenId).index(ScreenId.STATUS):
+            # 누르는 동안 미룬 본 알림 알림은 열릴 탭이 정해진 뒤에 푼다.
+            self._hold_seen = False
+            self._status.alert_center.select_first_unseen_tab()
+
+    def _on_seen(self, ids: object) -> None:
+        if self._actions is not None:
+            self._actions.mark_seen(tuple(ids))  # type: ignore[arg-type]
+
+    def _on_alert_delete(self, alert_id: int) -> None:
+        if self._actions is None:
+            return
+        if self._ask_confirm(ALERT_DELETE_TITLE, ALERT_DELETE_BODY):
+            self._delete_message = None
+            self._actions.delete_alert(alert_id)
+            self._update()
+
+    def _on_alert_clear(self, category: AlertCategory, count: int) -> None:
+        if self._actions is None:
+            return
+        title = ALERT_CATEGORY_TITLES[category]
+        if self._ask_confirm(ALERT_CLEAR_TITLE, alert_clear_body(title, count)):
+            self._delete_message = None
+            self._actions.clear_alerts(category)
+            self._update()
+
+    def _on_webhook_save(self, category: AlertCategory, url: str) -> None:
+        if self._actions is not None:
+            self._actions.save_webhook(category, url)
+
+    def _on_webhook_delete(self, category: AlertCategory) -> None:
+        if self._actions is None:
+            return
+        title = ALERT_CATEGORY_TITLES[category]
+        if self._ask_confirm(WEBHOOK_DELETE_TITLE, webhook_delete_body(title)):
+            self._status.alert_center.mark_delete_requested(category)
+            self._actions.delete_webhook(category)
+
+    def _on_send_test(self, category: AlertCategory) -> None:
+        if self._actions is not None:
+            self._actions.send_test(category)
 
     def _retry_markets(self) -> None:
         self._request_markets()
@@ -374,6 +456,27 @@ class MainWindow(QMainWindow):
             coins=self._saved.coins if self._saved is not None else (),
             views=self._coin_views,
         )
+        status_index = list(ScreenId).index(ScreenId.STATUS)
+        unseen = sum(self._alerts.unseen.values()) if self._alerts is not None else 0
+        self._nav.item(status_index).setText(
+            status_nav_text(SCREEN_TITLES[ScreenId.STATUS], unseen)
+        )
+        active = current_screen(self) is ScreenId.STATUS
+        pressed = bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        if active and not self._status_was_active and pressed:
+            # 사용자가 현황을 누르는 중이다. 손을 뗄 때(`itemClicked`) 열릴 탭이 정해지므로,
+            # 그 전에 이전에 고른 탭의 줄을 본 것으로 알리지 않는다.
+            self._hold_seen = True
+        elif self._hold_seen and not pressed:
+            self._hold_seen = False  # 다른 곳에서 손을 뗐다(`itemClicked`가 오지 않는다).
+        self._status_was_active = active
+        self._status.alert_center.render(
+            alerts=self._alerts,
+            webhooks=self._webhooks,
+            active=active,
+            delete_message=self._delete_message,
+            hold_seen=self._hold_seen,
+        )
 
 
 def create_main_window(context: UiContext) -> MainWindow:
@@ -432,6 +535,23 @@ def create_main_window(context: UiContext) -> MainWindow:
       `statusCoinIndicator_<m>`)의 `isEnabled()`가 거짓이다.
       표의 줄과 지표 항목을 그리지 않는 모습은
       그 묶음이 숨겨져 있다(`isHidden()`).
+    - 알림센터(현황 자리 안, `alert_center.py`에 모든 `objectName`이 있다): 묶음 `alertCenter`,
+      탭 `alertTab_<분류 값>`(여섯, `AlertCategory` 차례. 글은 "이름"이나 "이름 ({n})"이고
+      골라진 탭은
+      `font().bold()`와 `font().underline()`이 참), 줄 `alertRow_<id>`(골라진 탭의 줄만 있다.
+      음수 id도 그대로), 줄 글 `alertLine_<id>`(보지 않은 줄은 "● "로 시작하고 `font().bold()`가 참.
+      누르려면 `QTest.mouseClick`), `alertDelete_<id>`, `alertDiscordFailed_<id>`(경고 색),
+      펼친 글 `alertDetail_<id>`, 목록 자리의 글 `alertListMessage`,
+      "이 탭 모두 지우기" `alertClear`,
+      주소 칸 `alertWebhookInput`(점으로 보임)과 단추 `alertWebhookSave`, `alertWebhookChange`,
+      `alertWebhookDelete`, `alertWebhookCancel`, `alertWebhookTest`, 칸 아래 글
+      `alertWebhookMessage`와 `alertWebhookTestMessage`, 지우기 결과 글 `alertDeleteMessage`.
+      주소가 저장된 분류의 칸은 비어 있고 `placeholderText()`가 "(가려서 보임) 저장됨"이다.
+      흐린 것은 `isEnabled()`가 거짓이다. 주소는 `UiActions.save_webhook`의 인자로만 창을 떠난다.
+    - 화면 이름 목록의 현황 줄: `screenNav`의 `ScreenId` 차례의 줄(`item(1)`)의 글이 "현황"이나
+      "현황 ({n})"이다. 사용자가 그 줄을 누른 것은 `screenNav.itemClicked`로 알린다(시험은
+      `itemClicked.emit(item)`). `select_screen`은 누른 것이 아니라서 마지막에 고른 탭을
+      그대로 둔다.
     - 현황 자리의 "다시 시도"는 `retry_candles()`를 부른다. 처음 설정을 마치고 설정을 읽은 뒤에만
       불리고, 그 밖의 때에는 단추가 보이지 않는다.
     """

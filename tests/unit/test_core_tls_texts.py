@@ -116,6 +116,7 @@ def test_error_names_follow_the_spec() -> None:
         texts.ERROR_SERVER,
         texts.ERROR_BAD_RESPONSE,
         texts.ERROR_NOT_ENOUGH_CANDLES,
+        texts.ERROR_STORAGE,
     ] == [
         "네트워크 끊김",
         "시간 초과",
@@ -125,6 +126,7 @@ def test_error_names_follow_the_spec() -> None:
         "서버 오류",
         "응답 형식 오류",
         "봉이 모자람",
+        "DB 오류",
     ]
     assert texts.error_unknown_exchange(418) == "알 수 없는 거래소 오류(418)"
     assert [
@@ -143,6 +145,26 @@ def test_error_names_follow_the_spec() -> None:
         "주소를 읽지 못함",
     ]
     assert texts.error_discord_rejected(404) == "디스코드 거절(404)"
+
+
+def test_alert_contents() -> None:
+    from coin_report_trader.core import CandleUnit
+
+    assert texts.content_candles_failed((CandleUnit.DAY,)) == "실패한 봉: 일봉"
+    assert texts.content_candles_failed((CandleUnit.MINUTE_60,)) == "실패한 봉: 60분봉"
+    both = (CandleUnit.DAY, CandleUnit.MINUTE_60)
+    assert texts.content_candles_failed(both) == "실패한 봉: 일봉, 60분봉"
+    assert texts.content_candles_failed(both[::-1]) == "실패한 봉: 60분봉, 일봉"
+    assert (
+        texts.CONTENT_NOT_ENOUGH_CANDLES
+        == "완성된 봉이 모자라 다섯 기간 모두 통계를 셈하지 못했습니다."
+    )
+    assert texts.CONTENT_BLOCKED == "거래소가 공개 시세 요청을 잠시 막았습니다."
+    assert (
+        texts.CONTENT_BLOCKED_NOT_REQUESTED
+        == "앞 코인에서 일시 차단을 받아 이 코인은 요청하지 않았습니다."
+    )
+    assert texts.CONTENT_MARKETS_FAILED == "코인 목록 요청이 실패했습니다."
 
 
 def test_alert_codes_and_texts() -> None:

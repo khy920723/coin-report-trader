@@ -428,7 +428,7 @@ def test_shorten_path_ignores_env_values_that_are_not_useful_prefixes(value: str
 
 
 def test_shorten_path_does_not_touch_a_longer_folder_name() -> None:
-    assert shorten_path("/srv/h2/x /srv/hx", {"HOME": "/srv/h"}) == "/srv/h2/x /srv/hx"
+    assert shorten_path("/srv/h2/x /srv/hx", {"HOME": "/srv/h"}) == "~/x ~"
 
 
 def test_shorten_path_is_idempotent() -> None:
@@ -520,12 +520,85 @@ def test_home_followed_by_a_folder_name_shortens_the_whole_name(tail: str) -> No
     assert shorten_path(f"{mac_home('u1')}{tail}/file", env) == "~/file"
 
 
-def test_home_outside_the_users_folder_is_still_replaced_by_value() -> None:
-    # 이름 찾기가 걸리지 않는 곳이어서 값을 그대로 `~`로 바꾼다.
-    assert shorten_path("/srv/h Work/file", {"HOME": "/srv/h"}) == "~ Work/file"
+def test_home_outside_the_users_folder_shortens_the_whole_name_too() -> None:
+    # 값의 부모 폴더 아래의 이름을 `Users` 바로 아래처럼 찾는다(3.10).
+    assert shorten_path("/srv/h Work/file", {"HOME": "/srv/h"}) == "~/file"
 
 
 def test_the_continuation_rule_does_not_apply_to_the_other_variables() -> None:
     env = {"LOCALAPPDATA": "D:\\AppData\\Local", "XDG_DATA_HOME": "/srv/u"}
     assert shorten_path("D:\\AppData\\Local Work\\f", env) == "%LOCALAPPDATA% Work\\f"
     assert shorten_path("/srv/u Work/f", env) == "$XDG_DATA_HOME Work/f"
+
+
+
+# --- 값이 `Users` 바로 아래가 아닐 때(3.10): 부모 폴더 아래의 이름 찾기 --------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("/srv/h/f", "~/f"),
+        ("/srv/h Work/f", "~/f"),
+        ("/srv/h(old)/f", "~/f"),
+        ("/srv/hx/f", "~/f"),
+        ("/srv/h", "~"),
+        ("/srv/hx", "~"),
+        ("/srv/h Work", "~ Work"),
+        ("/srv/data/f", "~/f"),  # 부모 폴더 아래의 사용자 폴더가 아닌 폴더도 이름처럼 줄어든다
+        ("/srv/u1b/f", "~/f"),  # 이 PC의 다른 계정의 폴더
+        ("/opt/f", "/opt/f"),  # 부모 폴더 밖
+        ("/srvx/f", "/srvx/f"),
+    ],
+)
+def test_home_under_a_parent_folder(text: str, shown: str) -> None:
+    assert shorten_path(text, {"HOME": "/srv/h"}) == shown
+
+
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("D:\\Profiles\\u1\\f", "~\\f"),
+        ("D:\\Profiles\\u1 Work\\f", "~\\f"),
+        ("D:\\Profiles\\u1(old)\\f", "~\\f"),
+        ("D:\\Profiles\\u2\\f", "~\\f"),  # 같은 부모 폴더 아래 다른 계정
+        ("D:\\Profiles\\u2", "~"),
+        ("D:\\Profiles\\u1x", "~"),
+        ("D:\\Profiles\\u1 Work", "~ Work"),
+        ("d:/profiles/U3/f", "~/f"),  # 대소문자와 구분자
+        ("D:\\Other\\f", "D:\\Other\\f"),
+    ],
+)
+def test_userprofile_under_a_parent_folder(text: str, shown: str) -> None:
+    assert shorten_path(text, {"USERPROFILE": "D:\\Profiles\\u1"}) == shown
+
+
+def test_a_parent_that_is_a_root_only_matches_names_that_start_with_the_folder_name() -> None:
+    assert shorten_path("/u1 Work/f", {"HOME": "/u1"}) == "~/f"
+    assert shorten_path("/u1x", {"HOME": "/u1"}) == "~"
+    assert shorten_path("/etc/f /usr/g", {"HOME": "/u1"}) == "/etc/f /usr/g"
+    env = {"USERPROFILE": "D:\\u1"}
+    assert shorten_path("D:\\u1 Work\\f", env) == "~\\f"
+    assert shorten_path("D:\\etc\\f", env) == "D:\\etc\\f"
+    assert shorten_path("d:\\U1\\f", env) == "~\\f"
+
+
+def test_the_other_variables_do_not_search_their_parents() -> None:
+    env = {"LOCALAPPDATA": "D:\\Profiles\\u1\\AppData\\Local", "XDG_DATA_HOME": "/srv/u/data"}
+    assert shorten_path("D:\\Profiles\\u2\\f /srv/x/f", env) == "D:\\Profiles\\u2\\f /srv/x/f"
+    assert shorten_path("/srv/u/data/f", env) == "$XDG_DATA_HOME/f"
+
+
+def test_the_longer_value_still_goes_first_with_the_parent_search() -> None:
+    env = {
+        "USERPROFILE": "D:\\Profiles\\u1",
+        "LOCALAPPDATA": "D:\\Profiles\\u1\\AppData\\Local",
+    }
+    text = "D:\\Profiles\\u1\\AppData\\Local\\app D:\\Profiles\\u1\\x"
+    assert shorten_path(text, env) == "%LOCALAPPDATA%\\app ~\\x"
+
+
+def test_redact_with_a_home_value_outside_the_users_folder() -> None:
+    env = {"HOME": "/srv/h", "USERPROFILE": "D:\\Profiles\\u1"}
+    text = f"{webhook()} /srv/h Work/a D:\\Profiles\\u1 Work\\b D:\\Profiles\\u9\\c"
+    assert redact(text, env=env) == f"{MASK} ~/a ~\\b ~\\c"

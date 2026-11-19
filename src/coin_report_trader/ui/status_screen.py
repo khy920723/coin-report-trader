@@ -1,6 +1,6 @@
-"""현황 화면(설계서 4, M1 명세 4절 17번): 코인 칸의 지표와 기간별 봉 통계.
+"""현황 화면(설계서 4, M1 명세 4절 17번, 25번): 코인 칸의 지표, 기간별 봉 통계, 알림센터.
 
-알림센터(설계서 4.2의 5)는 25번이 이 화면에 더한다. 보유, 주문, 손절선, 오늘 요약, 지금 회차, 모의
+알림센터(설계서 4.2의 5)는 `alert_center.py`다. 보유, 주문, 손절선, 오늘 요약, 지금 회차, 모의
 운영은 M3에서 생긴다.
 """
 
@@ -35,6 +35,7 @@ from coin_report_trader.core.texts import (
     kst_datetime_text,
     kst_when_text,
 )
+from coin_report_trader.ui.alert_center import AlertCenter
 from coin_report_trader.ui.screens import TITLE_NAME, screen_object_name, title_label
 from coin_report_trader.ui.state import Message
 from coin_report_trader.ui.texts import (
@@ -331,6 +332,9 @@ class StatusScreen(QWidget):
         self._stats.chosen.connect(self._render_stats)
         content_layout.addWidget(self._stats)
         layout.addWidget(self._content)
+        # 알림센터는 글 하나만 보이는 모습(설정을 불러오는 중 등)에서도 그대로 보인다(설계서 4.5).
+        self.alert_center = AlertCenter()
+        layout.addWidget(self.alert_center)
         layout.addStretch(1)
         self._content.hide()
 
