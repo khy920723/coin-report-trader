@@ -1464,3 +1464,93 @@ def test_leftover_not_sent_that_cannot_be_settled_is_an_a29_in_the_first_alerts_
         "알림 저장"
     ]  # 분류마다 늘지 않는다
     assert len(alert_save_a29(rig)) == 1
+
+
+def test_the_a29_of_a_failed_step_two_is_not_settled_by_the_same_step_and_is_sent(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(saved={ERROR: webhook_url("t")})
+    make_stored_alert(rig, category=TRADE)
+    real = data_thread.alert_store.settle_not_sent
+
+    def only_trade_fails(conn: Any, category: AlertCategory, state: Any) -> int:
+        if category is TRADE:
+            raise StorageError("디스코드 결과 정리에 실패했습니다: OperationalError")
+        return real(conn, category, state)
+
+    monkeypatch.setattr(data_thread.alert_store, "settle_not_sent", only_trade_fails)
+    rig.discord.hold()  # 보낸 결과가 오기 전의 모습을 본다
+    rig.send.start()
+    rig.data.start()
+    assert rig.discord.entered.wait(SAFETY)
+    assert rig.data.wait_idle(SAFETY)
+    (made,) = [v for v in rig.sink.of(AlertsView)[0].alerts if v.code == "A-29"]
+    assert made.discord_failed is False  # 이 실행에서 만든 알림은 "보내지 못함"이 아니다
+    (row,) = [r for r in rig.rows() if r[2] == "A-29"]
+    assert row[3] == "not_sent"
+    rig.discord.release()
+    rig.settle()
+    assert rig.state_of(row[0]) == "sent"  # 보낸 결과가 오면 그대로 바뀐다
+
+
+def test_several_failed_categories_of_step_two_make_one_a29_even_with_successes_between(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    make_stored_alert(rig, category=TRADE)
+    real = data_thread.alert_store.settle_not_sent
+
+    def trade_and_other_fail(conn: Any, category: AlertCategory, state: Any) -> int:
+        if category in (TRADE, OTHER):
+            raise StorageError("디스코드 결과 정리에 실패했습니다: OperationalError")
+        return real(conn, category, state)
+
+    monkeypatch.setattr(data_thread.alert_store, "settle_not_sent", trade_and_other_fail)
+    rig.start()
+    first = rig.sink.of(AlertsView)[0]
+    assert [v.code for v in first.alerts if v.code == "A-29"] == ["A-29"]
+    assert len(alert_save_a29(rig)) == 1
+
+
+def test_a_successful_seen_mark_does_not_free_the_repeat_of_an_alert_write(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    target = make_stored_alert(rig, category=TRADE, state=DiscordState.NO_ADDRESS)
+    rig.start()
+
+    def refuse_insert(conn: Any, **kwargs: Any) -> int:
+        raise StorageError("알림 저장에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread.alert_store, "insert_alert", refuse_insert)
+    candles_fail(rig, QuoteError(ERROR_NETWORK))
+    rig.data.retry_candles()
+    rig.settle()
+    assert len([v for v in rig.last_alerts_view().alerts if v.id < 0]) == 1
+    rig.data.mark_seen((target,))  # 표시 쓰기의 성공은 알림 쓰기의 되풀이를 풀지 않는다
+    rig.settle()
+    candles_fail(rig, QuoteError(ERROR_SERVER))
+    rig.data.retry_candles()
+    rig.settle()
+    assert len([v for v in rig.last_alerts_view().alerts if v.id < 0]) == 1
+
+
+def test_a_successful_seen_mark_does_not_free_the_repeat_of_a_discord_state_write(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(saved={ERROR: webhook_url("u")})
+    target = make_stored_alert(rig, category=TRADE, state=DiscordState.NO_ADDRESS)
+
+    def refuse(conn: Any, alert_id: int, state: Any) -> bool:
+        raise StorageError("디스코드 결과 저장에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread.alert_store, "set_discord_state", refuse)
+    candles_fail(rig, QuoteError(ERROR_NETWORK))
+    rig.start()
+    assert len(alert_save_a29(rig)) == 1
+    rig.data.mark_seen((target,))  # 표시 쓰기의 성공은 `discord_state` 쓰기의 되풀이를 풀지 않는다
+    rig.settle()
+    candles_fail(rig, QuoteError(ERROR_SERVER))
+    rig.data.retry_candles()
+    rig.settle()
+    assert len(alert_save_a29(rig)) == 1

@@ -399,6 +399,7 @@ class DataWorker:
         assert self._conn is not None
         self._steps_done = True
         if self._send is not None:
+            failure: StorageError | None = None
             for category in AlertCategory:
                 try:
                     alert_store.settle_not_sent(
@@ -406,9 +407,13 @@ class DataWorker:
                     )
                 except StorageError as exc:
                     log.warning("남은 알림의 디스코드 결과를 바꾸지 못했습니다: %s", exc)
-                    self._emit_alert_save_failed(ALERT_WRITE_STATE, exc)
-                else:
-                    self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
+                    failure = failure or exc
+            # 앞 실행에서 남은 알림만 바꾼다. 실패의 A-29는 분류를 다 바꾼 뒤에 한 번 만들므로
+            # 이 실행에서 만든 알림은 뒤 분류의 바꾸기에 걸리지 않는다(`"not_sent"`로 남아 보낸다).
+            if failure is None:
+                self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
+            else:
+                self._emit_alert_save_failed(ALERT_WRITE_STATE, failure)
         try:
             startup_errors.move_to_alerts(self._conn, self._logs_dir, self._settled_state)
         except Exception as exc:
