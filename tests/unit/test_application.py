@@ -9,7 +9,9 @@ from typing import Any
 
 import pytest
 from fakes.clock import FakeClock
+from fakes.discord import FakeDiscord
 from fakes.quote import FakeQuoteSource
+from fakes.vault import FakeVault
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QLabel
 
@@ -18,7 +20,7 @@ from coin_report_trader import ui
 from coin_report_trader.app import application, run_gui
 from coin_report_trader.app.services import Services
 from coin_report_trader.config.paths import resolve_app_paths
-from coin_report_trader.core import LoadState, MarketsView, SettingsView, StorageError
+from coin_report_trader.core import LoadState, MarketsView, QuoteError, SettingsView, StorageError
 from coin_report_trader.storage.database import migrate, open_database
 
 ROOT_TOKEN = "%LOCALAPPDATA%" if sys.platform == "win32" else "$XDG_DATA_HOME"
@@ -37,8 +39,14 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.Fixture
 
 
 def _services(quote: FakeQuoteSource | None = None) -> Services:
-    """창을 띄우는 시험은 가짜 시세와 가짜 시계로 돈다(진짜 시세로는 나가지 않는다)."""
-    return Services(quote=quote or FakeQuoteSource(), clock=FakeClock())
+    """창을 띄우는 시험은 가짜 시세, 가짜 디스코드, 가짜 보관소, 가짜 시계로 돈다. 가짜 보관소가
+    없으면 Windows에서 진짜 보관소(keyring)를 부르므로 늘 함께 넣는다."""
+    return Services(
+        quote=quote or FakeQuoteSource(),
+        webhook=FakeDiscord(),
+        vault=FakeVault(),
+        clock=FakeClock(),
+    )
 
 
 def _quit_after_look(app: QApplication, look: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -307,11 +315,13 @@ def test_the_first_run_asks_for_the_market_list_and_applies_on_the_main_thread(
     held = _quit_when(env.app, lambda: any(isinstance(u, MarketsView) for _, u in updates))
     assert run_gui([], services=_services(quote)) == 0
     _release(held)
-    kinds = [type(update).__name__ for _, update in updates]
-    assert kinds[0] == "SettingsView"
-    assert kinds[1:] == ["MarketsView", "MarketsView"]  # 받는 중, 받음
-    assert [state.state for _, state in updates[1:]] == [LoadState.LOADING, LoadState.READY]
-    first = updates[0][1]
+    # 보내기 스레드의 `WebhookView`(분류마다 하나)와 알림센터의 `AlertsView`는 따로 센다.
+    others = [u for _, u in updates if type(u).__name__ not in ("WebhookView", "AlertsView")]
+    kinds = [type(update).__name__ for update in others]
+    assert kinds == ["SettingsView", "MarketsView", "MarketsView"]  # 받는 중, 받음
+    assert [state.state for state in others[1:]] == [LoadState.LOADING, LoadState.READY]
+    assert sum(1 for _, u in updates if type(u).__name__ == "WebhookView") == 6
+    first = others[0]
     assert isinstance(first, SettingsView)
     assert (first.state, first.first_setup_done, first.coins) == (LoadState.READY, False, ())
     assert {name for name, _ in updates} == {threading.main_thread().name}
@@ -333,10 +343,10 @@ def test_an_unreadable_settings_row_gives_a_failed_settings_view_and_no_requests
         conn.close()
     updates = _record_updates(monkeypatch)
     quote = FakeQuoteSource()
-    held = _quit_when(env.app, lambda: bool(updates))
+    held = _quit_when(env.app, lambda: any(isinstance(u, SettingsView) for _, u in updates))
     assert run_gui([], services=_services(quote)) == 0
     _release(held)
-    first = updates[0][1]
+    first = next(u for _, u in updates if isinstance(u, SettingsView))
     assert isinstance(first, SettingsView)
     assert first.state is LoadState.FAILED
     assert [u for _, u in updates if type(u).__name__ == "CoinView"] == []
@@ -373,7 +383,12 @@ def test_a_database_that_cannot_be_opened_is_written_to_the_startup_file_and_mov
 
     monkeypatch.setattr(application, "open_database", refuse)
     with pytest.raises(StorageError):
-        run_gui([], services=Services(quote=FakeQuoteSource(), clock=clock))
+        run_gui(
+            [],
+            services=Services(
+                quote=FakeQuoteSource(), webhook=FakeDiscord(), vault=FakeVault(), clock=clock
+            ),
+        )
     (line,) = _jsonl(env)
     assert line["kind"] == "startup"
     assert (line["code"], line["category"], line["stage"], line["error_name"]) == (
@@ -390,7 +405,10 @@ def test_a_database_that_cannot_be_opened_is_written_to_the_startup_file_and_mov
         env.app,
         lambda: (env.root / "logs" / "startup-errors.jsonl").read_text(encoding="utf-8") == "",
     )
-    assert run_gui([], services=Services(quote=FakeQuoteSource(), clock=clock)) == 0
+    services = Services(
+        quote=FakeQuoteSource(), webhook=FakeDiscord(), vault=FakeVault(), clock=clock
+    )
+    assert run_gui([], services=services) == 0
     _release(held)
     assert _jsonl(env) == []
     conn = open_database(resolve_app_paths().database_file)
@@ -561,3 +579,105 @@ def test_a_migrate_failure_and_a_newer_schema_leave_a_startup_line_of_the_databa
     assert first["content"] != second["content"]
     assert (second["code"], second["stage"], second["error_name"]) == ("A-29", "켜기", "DB 오류")
     assert "스키마 번호" in second["content"]
+
+
+def _webhook_url() -> str:
+    return "https://" + "discord.com/api/webhooks/" + "1" * 18 + "/" + "a" * 64
+
+
+def test_the_actions_go_to_the_thread_that_owns_them() -> None:
+    from coin_report_trader.app.actions import AppActions
+    from coin_report_trader.core import AlertCategory
+
+    calls: list[tuple[str, str]] = []
+
+    class Spy:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def __getattr__(self, method: str) -> Callable[..., None]:
+            def record(*args: object, **kwargs: object) -> None:
+                calls.append((self._name, method))
+
+            return record
+
+    actions = AppActions(Spy("data"), Spy("send"))  # type: ignore[arg-type]
+    category = AlertCategory.ERROR
+    actions.refresh_markets()
+    actions.save_settings(("KRW-AAA",), 7, first_setup=False)
+    actions.retry_candles()
+    actions.mark_seen((1,))
+    actions.delete_alert(1)
+    actions.clear_alerts(category)
+    actions.save_webhook(category, "x")
+    actions.delete_webhook(category)
+    actions.send_test(category)
+    assert calls == [
+        ("data", "refresh_markets"), ("data", "save_settings"), ("data", "retry_candles"),
+        ("data", "mark_seen"), ("data", "delete_alert"), ("data", "clear_alerts"),
+        ("send", "save_webhook"), ("send", "delete_webhook"), ("send", "send_test"),
+    ]  # fmt: skip
+
+
+def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from coin_report_trader.core import AlertCategory
+    from coin_report_trader.core.texts import ERROR_NETWORK
+    from coin_report_trader.storage.settings import write_settings
+    from coin_report_trader.vault import webhook_secret_name
+
+    monkeypatch.setattr(application, "JOIN_SECONDS", 0.05)  # 막힌 보내기를 오래 기다리지 않는다
+    paths = resolve_app_paths()
+    paths.ensure()
+    conn = open_database(paths.database_file)
+    try:
+        migrate(conn)
+        write_settings(conn, SettingsView(("KRW-AAA",), 30, True))
+    finally:
+        conn.close()
+    discord = FakeDiscord()
+    discord.hold()
+    vault = FakeVault({webhook_secret_name(AlertCategory.ERROR): _webhook_url()})
+    quote = FakeQuoteSource()
+    quote.script(QuoteError(ERROR_NETWORK), kind="candles", market="KRW-AAA")
+    updates = _record_updates(monkeypatch)
+    services = Services(quote=quote, webhook=discord, vault=vault, clock=FakeClock())
+    held = _quit_when(env.app, discord.entered.is_set)
+    assert run_gui([], services=services) == 0  # 보내기가 막힌 채 끝낸다: 기다리지 않는다
+    _release(held)
+    stale = [t for t in threading.enumerate() if t.name == "crt-send"]
+    assert stale  # 막힌 보내기 스레드가 아직 남아 있다
+    shown, reads = len(updates), len(vault.calls)
+    discord.release()
+    for thread in stale:
+        thread.join(10.0)
+        assert not thread.is_alive()
+    assert len(updates) == shown  # 닫힌 다리와 창에 아무것도 보내지 않는다
+    assert len(vault.calls) == reads  # 보관소도 더 읽지 않는다
+    assert len(discord.sent) == 1
+    reopened = open_database(paths.database_file)
+    try:
+        states = {row[0] for row in reopened.execute("SELECT discord_state FROM alerts")}
+    finally:
+        reopened.close()
+    assert states == {"not_sent"}  # 멈춘 뒤의 결과는 버렸다(다음에 켤 때 "failed"가 된다)
+    later = Services(
+        quote=FakeQuoteSource(), webhook=FakeDiscord(), vault=FakeVault(), clock=FakeClock()
+    )
+    before = len(updates)
+    held = _quit_when(
+        env.app, lambda: any(type(u).__name__ == "AlertsView" for _, u in updates[before:])
+    )
+    assert run_gui([], services=later) == 0
+    _release(held)
+    assert len(discord.sent) == 1  # 앞 실행의 가짜에는 더 쌓이지 않는다
+    assert len(vault.calls) == reads
+    reopened = open_database(paths.database_file)
+    try:
+        states = {row[0] for row in reopened.execute("SELECT discord_state FROM alerts")}
+    finally:
+        reopened.close()
+    assert states == {"no_address"}  # 켤 때 차례 2: 뒤 실행의 보관소에는 주소가 없다
