@@ -103,3 +103,69 @@ def count_text(count: int) -> str:
 def indicator_row_text(title: str, value: str) -> str:
     """코인 칸의 지표 한 줄(설계서 4.3의 예: "1년 변화 +12.34%")."""
     return f"{title} {value}"
+
+
+# --- 알림센터(설계서 8) ---
+ALERT_DELETE_TEXT: Final = "지우기"
+ALERT_CLEAR_TEXT: Final = "이 탭 모두 지우기"
+WEBHOOK_SAVE_TEXT: Final = "저장"
+WEBHOOK_CHANGE_TEXT: Final = "바꾸기"
+WEBHOOK_DELETE_TEXT: Final = "지우기"
+WEBHOOK_CANCEL_TEXT: Final = "그만두기"
+WEBHOOK_TEST_TEXT: Final = "확인용 글 보내기"
+WEBHOOK_EMPTY_TEXT: Final = "넣지 않음"
+WEBHOOK_SAVED_SUFFIX: Final = " 저장됨"
+DISCORD_FAILED_TEXT: Final = "디스코드로 보내지 못함"
+UNSEEN_DOT: Final = "●"
+ALERTS_UNREADABLE: Final = "알림을 읽지 못했습니다."
+
+
+def webhook_title_text(category_title: str) -> str:
+    """주소 칸의 이름(설계서 8.4)."""
+    return f"{category_title} 디스코드 웹후크 주소"
+
+
+def no_alerts_text(category_title: str) -> str:
+    """알림이 없는 탭의 목록 자리 글(설계서 8.7)."""
+    return f"{category_title}이 없습니다."
+
+
+def tab_title_text(category_title: str, unseen: int) -> str:
+    """탭 이름. 아직 보지 않은 알림이 있으면 뒤에 "({n})"(설계서 8.2. 빈칸은 없다)."""
+    return f"{category_title}({unseen})" if unseen > 0 else category_title
+
+
+def status_nav_text(screen_title: str, unseen: int) -> str:
+    """화면 이름 목록의 "현황 ({n})"(M1 명세 2의 4)."""
+    return f"{screen_title} ({unseen})" if unseen > 0 else screen_title
+
+
+DETAIL_STAGE: Final = "단계"
+DETAIL_COIN: Final = "코인"
+DETAIL_ERROR_NAME: Final = "오류 이름"
+DETAIL_CONTENT: Final = "내용"
+DETAIL_AFTER: Final = "그 뒤에 한 일"
+
+# --- 알림센터의 확인 창 셋(설계서 8.8) ---
+ALERT_DELETE_TITLE: Final = "알림을 지울까요?"
+ALERT_DELETE_BODY: Final = (
+    "이 알림 한 줄을 지웁니다. 지운 알림은 되살릴 수 없습니다. "
+    "보고서, 판단, 주문, 체결, 외부 변동의 기록과 디스코드로 이미 보낸 글은 그대로 남습니다."
+)
+ALERT_CLEAR_TITLE: Final = "이 탭의 알림을 모두 지울까요?"
+WEBHOOK_DELETE_TITLE: Final = "디스코드 웹후크 주소를 지울까요?"
+
+
+def alert_clear_body(category_title: str, count: int) -> str:
+    """탭 전체 지우기의 본문. `count`는 그 탭의 알림 전부의 수(본 것과 보지 않은 것을 합친다)."""
+    return (
+        f"{category_title} {count}건을 모두 지웁니다. 지운 알림은 되살릴 수 없습니다. "
+        "보고서, 판단, 주문, 체결, 외부 변동의 기록과 디스코드로 이미 보낸 글은 그대로 남습니다."
+    )
+
+
+def webhook_delete_body(category_title: str) -> str:
+    return (
+        f"{category_title}의 디스코드 웹후크 주소를 지우면, "
+        "이 분류의 알림은 디스코드로 가지 않습니다."
+    )
