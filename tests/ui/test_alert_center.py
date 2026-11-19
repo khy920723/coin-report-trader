@@ -405,6 +405,27 @@ def test_a_press_that_ends_elsewhere_still_marks_the_shown_tab_later(make_window
     assert [c for c in actions.calls if c[0] == "mark_seen"] == [("mark_seen", (1,))]
 
 
+def test_a_tab_opened_after_a_press_that_ended_elsewhere_marks_its_lines(make_window, actions):
+    window = make_window(actions)
+    window.apply(SettingsView(("KRW-AAA",), 30, True))
+    select_screen(window, ScreenId.SETTINGS)
+    window.apply(_view(_alert(1, AlertCategory.ERROR, seen=False)))
+    _click_nav(window, ScreenId.STATUS, release=False)
+    nav = _find(window, QListWidget, "screenNav")
+    # 목록의 빈 곳에서 손을 뗀다. `itemClicked`는 오지 않는다.
+    QTest.mouseRelease(
+        nav.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        nav.viewport().rect().bottomRight(),
+    )
+    assert current_screen(window) is ScreenId.STATUS
+    assert actions.count("mark_seen") == 0
+    # 사용자가 탭 단추를 눌러 연 탭의 줄은 바로 본 알림이 된다.
+    QTest.mouseClick(_tab(_status(window), AlertCategory.ERROR), Qt.MouseButton.LeftButton)
+    assert [c for c in actions.calls if c[0] == "mark_seen"] == [("mark_seen", (1,))]
+
+
 def test_a_click_without_unseen_alerts_keeps_the_chosen_tab(make_window):
     window = make_window(FakeActions())
     screen = _open(window, _view(_alert(1, AlertCategory.ERROR)))
@@ -822,12 +843,38 @@ def test_the_box_keeps_no_undo_history_of_the_address(make_window, actions):
     edit.setEnabled(True)
     edit.undo()
     assert edit.text() == ""
-    # 바꾸기, 그만두기, 탭 바꾸기로 비운 칸도 같다.
+    # 바꾸기 뒤 그만두기로 비운 칸도 같다.
     window.apply(WebhookView(AlertCategory.TRADE, saved=True))
     _find(screen, QPushButton, "alertWebhookChange").click()
     edit.setText(make_url())
     _find(screen, QPushButton, "alertWebhookCancel").click()
     edit.setEchoMode(QLineEdit.EchoMode.Normal)
+    edit.undo()
+    assert edit.text() == ""
+    # 주소를 넣은 채 다른 탭 단추를 눌러 비운 칸도 같다.
+    window.apply(WebhookView(AlertCategory.TRADE, saved=False))
+    edit.setEchoMode(QLineEdit.EchoMode.Password)
+    edit.setText(make_url())
+    _tab(_status(window), AlertCategory.OTHER).click()
+    assert edit.text() == ""
+    edit.setEchoMode(QLineEdit.EchoMode.Normal)
+    edit.setEnabled(True)
+    edit.undo()
+    assert edit.text() == ""
+
+
+def test_the_box_keeps_no_undo_history_after_the_address_is_deleted(make_window, actions):
+    window = make_window(actions)
+    screen = _webhook_screen(window, WebhookView(AlertCategory.TRADE, saved=True))
+    edit = _find(screen, QLineEdit, "alertWebhookInput")
+    # 바꾸기로 주소를 넣은 채 주소 지우기를 확인한다.
+    _find(screen, QPushButton, "alertWebhookChange").click()
+    edit.setText(make_url())
+    window.set_confirm_handler(Confirm(True))
+    _find(screen, QPushButton, "alertWebhookDelete").click()
+    assert edit.text() == ""
+    edit.setEchoMode(QLineEdit.EchoMode.Normal)
+    edit.setEnabled(True)
     edit.undo()
     assert edit.text() == ""
 

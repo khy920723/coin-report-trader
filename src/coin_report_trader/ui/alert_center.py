@@ -229,7 +229,11 @@ class AlertCenter(QWidget):
         return self._selected
 
     def select_tab(self, category: AlertCategory) -> None:
-        """탭을 고른다. 그 분류의 주소 칸과 목록이 보이고, 보지 않은 줄은 본 것으로 알린다."""
+        """탭을 고른다. 그 분류의 주소 칸과 목록이 보이고, 보지 않은 줄은 본 것으로 알린다.
+
+        탭이 정해졌으므로 누르는 동안 미룬 본 알림 알림(`hold_seen`)도 푼다.
+        """
+        self._hold = False
         if category is not self._selected:
             self._selected = category
             self._requested.clear()
