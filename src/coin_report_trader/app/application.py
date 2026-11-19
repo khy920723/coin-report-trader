@@ -1,7 +1,7 @@
 """일반 실행: 자료 폴더, 로그, DB를 준비하고 창을 띄운다. 창을 닫으면 끝난다(트레이는 M4).
 
 켜는 순서(M1 명세 3.8): 1. 자료 폴더와 로그를 준비하고 DB를 열어 `migrate`한 뒤 닫는다. 2. 창을
-만든다. 3. 창을 띄운 뒤 자료 스레드를 시작한다. 1과 2에서 난 오류는 로그에 쓰고
+만든다. 3. 창을 띄운 뒤 자료 스레드와 보내기 스레드를 시작한다. 1과 2에서 난 오류는 로그에 쓰고
 `logs/startup-errors.jsonl`에 `"startup"` 줄로 남긴 뒤 다시 낸다.
 """
 
@@ -32,13 +32,15 @@ from .startup_errors import append_line, startup_line
 log = logging.getLogger(__name__)
 
 JOIN_SECONDS = 2.0
-"""끝낼 때 자료 스레드가 닫히기를 기다리는 가장 긴 실제 시간(하던 일은 기다리지 않는다)."""
+"""끝낼 때 각 스레드가 닫히기를 기다리는 가장 긴 실제 시간(하던 일은 기다리지 않는다)."""
 
 
 def run_gui(argv: Sequence[str] | None = None, *, services: Services | None = None) -> int:
     """자료 폴더를 만들고, 로그를 열고, DB를 열어 확인하고 올린 뒤 창을 띄운다.
 
-    `services`는 바깥과 잇는 것(시세, 시계)을 넣는 자리다. 없는 것은 진짜를 쓴다.
+    `services`는 바깥과 잇는 것(시세, 디스코드, 보관소, 시계)을 넣는 자리다. 없는 것은 진짜를
+    쓴다(디스코드는 `HttpWebhookSender`, 보관소는 `vault.create_secret_store()`. 둘 다 보내기
+    스레드가 만들어 쓴다).
 
     `QApplication.instance()`가 있으면 그것을 쓰고 없을 때만 만든다. 이벤트 루프가 끝나면
     종료 코드를 돌려준다. 준비나 창 만들기에서 난 오류는 로그에 쓰고 다시 낸다.
@@ -99,8 +101,10 @@ def _run_window(
 
         from coin_report_trader.ui import create_main_window
 
+        from .actions import AppActions
         from .bridge import UiBridge
         from .data_thread import DataWorker
+        from .send_thread import SendWorker
 
         app = QApplication.instance()
         if app is None:
@@ -111,14 +115,23 @@ def _run_window(
         app.setApplicationName(APP_ID)
         app.setApplicationVersion(__version__)
         bridge = UiBridge()
+        sender = SendWorker(
+            webhook=None if services is None else services.webhook,
+            vault=None if services is None else services.vault,
+            clock=clock,
+            sink=bridge.post,
+        )
         worker = DataWorker(
             database_file=paths.database_file,
             logs_dir=paths.logs_dir,
             clock=clock,
             quote=None if services is None else services.quote,
             sink=bridge.post,
+            send=sender,
         )
-        window = create_main_window(UiContext(__version__, display_path(paths.root), worker))
+        sender.attach(worker)
+        actions = AppActions(worker, sender)
+        window = create_main_window(UiContext(__version__, display_path(paths.root), actions))
         bridge.set_apply(window.apply)
         window.show()
     except Exception as exc:
@@ -127,11 +140,14 @@ def _run_window(
         _record_startup_error(paths, clock, exc)
         raise
     worker.start()
+    sender.start()
     try:
         return int(app.exec())
     finally:
         bridge.close()
         worker.stop()
+        sender.stop()
         window.close()
         window.deleteLater()
         worker.join(JOIN_SECONDS)
+        sender.join(JOIN_SECONDS)

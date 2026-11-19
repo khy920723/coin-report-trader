@@ -127,7 +127,7 @@ def test_startup_lines_become_local_only_alerts_with_the_written_time(
 
 
 def test_unreadable_lines_are_skipped_and_memory_lines_stay(tmp_path: Path, conn: object) -> None:
-    memory = good(kind="memory")
+    memory = good(kind="memory", id=-1, seen=False, discord_state=None)
     path = write_lines(
         tmp_path,
         "",

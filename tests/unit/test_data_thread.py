@@ -19,6 +19,7 @@ from coin_report_trader.app import data_thread
 from coin_report_trader.app.data_thread import DATA_THREAD_NAME, DataWorker
 from coin_report_trader.core import (
     AlertCategory,
+    AlertsView,
     Candle,
     CandleUnit,
     CoinView,
@@ -229,24 +230,27 @@ def test_actions_that_come_before_the_start_are_not_dropped(build: Any) -> None:
     rig = build(coins=(AAA,), done=False)
     rig.worker.refresh_markets()  # 시작 전에 큐에 들어왔다
     rig.start()
-    assert [type(u).__name__ for u in rig.sink.items][:3] == [
-        "SettingsView", "CoinView", "MarketsView",
+    assert [type(u).__name__ for u in rig.sink.items][:4] == [
+        "SettingsView", "CoinView", "AlertsView", "MarketsView",
     ]  # fmt: skip
     assert len(rig.quote.market_requests()) == 1
 
 
-def test_the_other_actions_do_nothing_in_the_first_number(build: Any) -> None:
+def test_alert_actions_for_unknown_ids_change_nothing_and_only_resend_the_view(
+    build: Any,
+) -> None:
     rig = build()
     rig.start()
     rig.sink.clear()
     rig.worker.mark_seen((1, 2))
     rig.worker.delete_alert(1)
     rig.worker.clear_alerts(AlertCategory.ERROR)
-    rig.worker.save_webhook(AlertCategory.ERROR, "x")
-    rig.worker.delete_webhook(AlertCategory.ERROR)
-    rig.worker.send_test(AlertCategory.ERROR)
     rig.settle()
-    assert rig.sink.items == []
+    assert [type(u).__name__ for u in rig.sink.items] == [
+        "AlertsView", "AlertsView", "SaveResult", "AlertsView",
+    ]  # fmt: skip
+    assert rig.sink.items[2] == SaveResult("alert_delete", True)  # 분류 지우기는 늘 성공이다
+    assert all(not view.alerts for view in rig.sink.of(AlertsView))
 
 
 def test_stop_ends_the_thread_without_waiting_for_the_next_time(build: Any) -> None:
@@ -286,6 +290,7 @@ def test_a_sink_that_fails_does_not_stop_the_thread(
     assert [type(c).__name__ for c in calls] == [
         "SettingsView",
         "CoinView",
+        "AlertsView",
         "MarketsView",
         "MarketsView",
     ]
@@ -428,6 +433,7 @@ def test_actions_that_arrive_during_a_fetch_run_after_it(build: Any) -> None:
     assert shown == [
         ("SettingsView", None),
         ("CoinView", LoadState.NO_DATA),
+        ("AlertsView", None),
         ("CoinView", LoadState.LOADING),  # 켤 때의 (가) 받기
         ("CoinView", LoadState.READY),
         ("CoinView", LoadState.LOADING),  # 받는 중에 온 "다시 시도"는 그 뒤에 처리했다
@@ -912,7 +918,7 @@ def test_a_save_during_a_block_saves_then_sends_blocked_views_without_requests(b
     rig.worker.save_settings((AAA,), 90, first_setup=False)  # 코인이 같으면 목록과 견주지 않는다
     rig.settle()
     kinds = [type(u).__name__ for u in rig.sink.items]
-    assert kinds == ["SaveResult", "SettingsView", "CoinView"]
+    assert kinds == ["SaveResult", "SettingsView", "AlertsView", "CoinView"]
     assert rig.sink.coin(AAA)[0].error_name == ERROR_BLOCKED
     assert len(rig.quote.requests) == count
     assert len(rig.alerts()) == 1  # A-1은 처음 받기의 것 하나뿐이다
@@ -1002,7 +1008,7 @@ def test_a_success_of_the_list_does_not_return_the_steps_to_the_start(build: Any
 
 
 def test_the_blocked_until_wait_is_not_capped_and_huge_waits_are_accepted(build: Any) -> None:
-    rig = build()
+    rig = build(days=None)  # 보관 기간을 고르지 않아 60분마다의 알림 지우기가 없다
     block(rig, 999_999_999.0)
     rig.start()
     assert rig.clock.waits[-1] == pytest.approx(999_999_999.0)
@@ -1209,7 +1215,9 @@ def test_a_failed_write_is_an_a29_and_sends_nothing_else(
     rig.sink.clear()
     rig.worker.save_settings((BBB,), 7, first_setup=False)  # 코인을 바꾸는 저장이 실패한다
     rig.settle()
-    assert rig.sink.items == [SaveResult("settings", False, SETTINGS_SAVE_FAILED)]
+    kinds = [type(u).__name__ for u in rig.sink.items]
+    assert kinds == ["SaveResult", "AlertsView"]  # 만든 A-29가 알림센터에 보인다
+    assert rig.sink.items[0] == SaveResult("settings", False, SETTINGS_SAVE_FAILED)
     assert len(rig.quote.requests) == count
     assert rig.settings() == SettingsView((AAA,), 30, True)
     (alert,) = rig.alerts()
@@ -1254,7 +1262,10 @@ def test_unreadable_settings_send_failed_settings_and_make_no_requests(build: An
     rig = build()
     break_settings(rig)
     rig.start()
-    assert rig.sink.items == [SettingsView(state=LoadState.FAILED)]
+    assert rig.sink.items[0] == SettingsView(state=LoadState.FAILED)
+    (alerts_view,) = rig.sink.of(AlertsView)  # 알림센터는 그대로 보낸다(만든 A-30이 보인다)
+    assert [view.code for view in alerts_view.alerts] == ["A-30"]
+    assert len(rig.sink.items) == 2
     assert rig.quote.requests == []
     (alert,) = rig.alerts()
     assert (alert.code, alert.category, alert.coin) == ("A-30", AlertCategory.OTHER, None)
@@ -1266,7 +1277,7 @@ def test_unreadable_settings_send_failed_settings_and_make_no_requests(build: An
     rig.worker.refresh_markets()
     rig.worker.save_settings((AAA,), 7, first_setup=True)
     rig.settle()
-    assert rig.sink.items == [SettingsView(state=LoadState.FAILED)]
+    assert [type(u).__name__ for u in rig.sink.items] == ["SettingsView", "AlertsView"]
     assert rig.quote.requests == []
     assert len(rig.alerts()) == 1
 
@@ -1423,7 +1434,7 @@ def test_the_stored_alert_columns(build: Any) -> None:
         (
             "2026-01-05T03:00:00Z", "paper", "error", "A-1", AAA,
             "봉 통계를 만들지 못했습니다(네트워크 끊김).", "봉 받기", "네트워크 끊김",
-            "실패한 봉: 일봉", "다음 받는 때(13:00)에 다시 받습니다.", 0, "no_address",
+            "실패한 봉: 일봉", "다음 받는 때(13:00)에 다시 받습니다.", 0, "not_sent",
         )
     ]  # fmt: skip
 
@@ -1664,7 +1675,7 @@ def test_an_earlier_failed_coin_also_gets_the_block_time_when_a_later_coin_is_bl
     assert rig.sink.coin(AAA)[-1].error_name == ERROR_TIMEOUT
 
 
-def test_every_alert_code_is_stored_without_an_address_state(
+def test_every_alert_code_is_stored_as_not_sent_without_a_send_thread(
     build: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = build(coins=(AAA,), done=True)
@@ -1696,7 +1707,7 @@ def test_every_alert_code_is_stored_without_an_address_state(
     finally:
         conn.close()
     assert sorted(code for code, _ in rows) == ["A-29", "A-30", "A-31"]
-    assert {state for _, state in rows} == {"no_address"}
+    assert {state for _, state in rows} == {"not_sent"}  # 보내기 스레드가 없으니 결과도 없다
 
 
 def test_a_coin_change_is_accepted_after_a_failed_or_blocked_list_but_a_reorder_needs_a_list(
@@ -1746,6 +1757,7 @@ def test_actions_queued_before_the_start_run_after_every_view_of_the_first_fetch
         ("SettingsView", None, LoadState.READY),
         ("CoinView", AAA, LoadState.NO_DATA),
         ("CoinView", BBB, LoadState.NO_DATA),
+        ("AlertsView", None, LoadState.READY),
         ("CoinView", AAA, load), ("CoinView", AAA, ready),  # (가) 받기
         ("CoinView", BBB, load), ("CoinView", BBB, ready),
         ("CoinView", AAA, load), ("CoinView", AAA, ready),  # 시작 전에 넣은 "다시 시도"
@@ -1784,7 +1796,8 @@ def test_an_exception_other_than_a_storage_error_while_reading_settings_is_unrea
 
     monkeypatch.setattr(data_thread, "read_settings", broken_once)
     rig.start()
-    assert rig.sink.items == [SettingsView(state=LoadState.FAILED)]
+    assert [type(u).__name__ for u in rig.sink.items] == ["SettingsView", "AlertsView"]
+    assert rig.sink.items[0] == SettingsView(state=LoadState.FAILED)
     assert rig.quote.requests == []
     (alert,) = rig.alerts()
     assert (alert.code, alert.coin) == ("A-30", None)
