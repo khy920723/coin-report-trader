@@ -45,7 +45,7 @@ REPORT_FILE_NAME = "self-test-report.txt"
 REPORT_TITLE = "Coin Report Trader 자체 점검 (--self-test)"
 PACKAGE = "coin_report_trader"
 # `pkgutil`이 찾지 못해도 빠졌는지 알 수 있게 하위 패키지는 이름으로도 센다.
-SUBPACKAGES = ("core", "config", "storage", "trading", "stats", "app", "ui")
+SUBPACKAGES = ("core", "config", "storage", "trading", "stats", "vault", "notify", "app", "ui")
 THIRD_PARTY_MODULES = (
     "PySide6.QtCore",
     "PySide6.QtGui",

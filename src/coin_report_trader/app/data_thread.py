@@ -2,9 +2,12 @@
 
 - 창을 띄운 뒤로는 SQLite 연결 하나를 이 스레드만 연다(연결은 스레드 안에서 연다).
 - `UiActions`의 동작은 큐에 넣고 바로 돌아온다. 결과는 `sink`(다리의 `post`)로 간다.
-  19번이 맡는 동작은 `refresh_markets`, `save_settings`, `retry_candles`이고, 알림센터의 동작
-  (`mark_seen`, `delete_alert`, `clear_alerts`)과 주소의 동작(`save_webhook`, `delete_webhook`,
-  `send_test`)은 27번의 것이어서 아무 일도 하지 않는다.
+  이 스레드가 맡는 동작은 `refresh_markets`, `save_settings`, `retry_candles`, `mark_seen`,
+  `delete_alert`, `clear_alerts`다. 주소의 동작(`save_webhook`, `delete_webhook`, `send_test`)은
+  보내기 스레드(`send_thread`)의 큐에 바로 들어가므로 여기에 없다.
+- 알림: 새 알림은 `"not_sent"`로 쓰고 알림의 번호, 분류, 가린 글만 보내기 스레드에 넘긴다(`send`).
+  보낸 결과는 큐로 돌아와 이 스레드가 `discord_state`를 쓴다. 표에 쓰지 못한 알림(A-29 "알림
+  저장")은 메모리에 두고 `logs/startup-errors.jsonl`에도 `"memory"` 줄로 쓴다(3.9).
 - 기다림: 할 일이 없으면 다음 할 때(2의 1의 (라), 2의 3의 `blocked_until`, 설정을 읽지 못했을 때의
   다시 읽기)까지의 초를 `Clock`의 단조 시각으로 셈하고 `Clock.wait(event, 초)`로 기다린다. 다음
   할 때가 없으면 `IDLE_SECONDS`를 기다리고, 깨어나도 할 일이 없으면 다시 셈해 기다린다. `event`는
@@ -14,17 +17,22 @@
 
 import logging
 import math
+import sqlite3
 import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from coin_report_trader.core import (
+    SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_SETTINGS,
     AlertCategory,
+    AlertsView,
+    AlertView,
     CandleUnit,
     Clock,
     CoinView,
@@ -47,9 +55,12 @@ from coin_report_trader.core.texts import (
     ERROR_BLOCKED,
     ERROR_NOT_ENOUGH_CANDLES,
     ERROR_STORAGE,
+    ERROR_VAULT,
     SETTINGS_COIN_NOT_LISTED,
     SETTINGS_SAVE_FAILED,
     SETTINGS_SAVED,
+    STAGE_ALERT_DELETE,
+    STAGE_ALERT_SAVE,
     STAGE_CANDLE_SAVE,
     STAGE_CANDLES,
     STAGE_MARKETS,
@@ -60,7 +71,9 @@ from coin_report_trader.core.texts import (
     after_candles_retry,
     content_candles_failed,
     kst_when_text,
+    text_save_failed,
 )
+from coin_report_trader.notify import alert_message
 from coin_report_trader.stats import CandleStats, compute_candle_stats
 from coin_report_trader.storage import alerts as alert_store
 from coin_report_trader.storage.candles import last_candle_start, read_candles, write_candles
@@ -75,7 +88,21 @@ from coin_report_trader.storage.states import DiscordState
 from coin_report_trader.trading.quote import HttpQuoteSource, QuoteClient
 
 from . import alert_rules, startup_errors
-from .alert_rules import AlertSpec, RepeatRules
+from .alert_rules import (
+    ALERT_WRITE_INSERT,
+    ALERT_WRITE_SEEN,
+    ALERT_WRITE_STATE,
+    AlertSpec,
+    RepeatRules,
+)
+from .memory_alerts import MemoryAlert, MemoryAlerts
+from .send_types import (
+    AddressState,
+    DeliveryResult,
+    SendJob,
+    SendPort,
+    WebhookResult,
+)
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +119,11 @@ BACKOFF_SECONDS: Final = (300.0, 600.0, 1200.0, 2400.0, 3600.0)
 UNITS: Final = (CandleUnit.DAY, CandleUnit.MINUTE_60)
 """한 코인은 일봉, 60분봉의 차례로 받는다."""
 MAX_COINS: Final = 3
+CLEANUP_INTERVAL: Final = 3600.0
+"""오래된 알림 지우기(3.9): 창이 뜬 직후, 보관 기간을 저장한 직후, 그 뒤로 60분마다."""
+STATES_WAIT_SECONDS: Final = 30.0
+"""켤 때 차례 1에서 보내기 스레드의 주소 상태를 기다리는 가장 긴 실제 시간. 지나면 모두 읽지
+못한 것으로 보고 이어간다(보내기 스레드가 보관소에서 막혀도 받기가 시작되도록)."""
 
 
 @dataclass
@@ -117,7 +149,32 @@ class _SaveTask:
     first_setup: bool
 
 
-type _Task = str | _SaveTask
+@dataclass(frozen=True)
+class _Seen:
+    ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _Delete:
+    alert_id: int
+
+
+@dataclass(frozen=True)
+class _Clear:
+    category: AlertCategory
+
+
+@dataclass(frozen=True)
+class _Delivery:
+    result: DeliveryResult
+
+
+@dataclass(frozen=True)
+class _Webhook:
+    result: WebhookResult
+
+
+type _Task = str | _SaveTask | _Seen | _Delete | _Clear | _Delivery | _Webhook
 
 
 class _WakeEvent(threading.Event):
@@ -147,7 +204,9 @@ class DataWorker:
         clock: Clock,
         quote: QuoteSource | None,
         sink: Callable[[UiUpdate], None],
+        send: SendPort | None = None,
     ) -> None:
+        self._send = send
         self._database_file = database_file
         self._logs_dir = logs_dir
         self._clock = clock
@@ -160,7 +219,7 @@ class DataWorker:
         self._idle = threading.Event()
         self._thread: threading.Thread | None = None
         # 아래는 자료 스레드만 만진다.
-        self._conn = None
+        self._conn: sqlite3.Connection | None = None
         self._client: QuoteClient | None = None
         self._owned_source: HttpQuoteSource | None = None
         self._rules = RepeatRules()
@@ -175,6 +234,14 @@ class DataWorker:
         self._fetched: dict[str, datetime | None] = {}
         self._last_stats: dict[str, CandleStats] = {}
         self._last_view: dict[str, CoinView] = {}
+        self._memory = MemoryAlerts()
+        self._alerts_open = False
+        self._alerts_posting = False
+        self._steps_done = False
+        self._next_cleanup_mono: float | None = None
+        self._states_ready = threading.Event()
+        self._states_late = False
+        self._address_states: dict[AlertCategory, AddressState] | None = None
 
     # --- 주 스레드: 시작, 끝, 동작 ------------------------------------------------------------
 
@@ -186,6 +253,7 @@ class DataWorker:
         """멈춤을 알린다. 하던 일이 끝나기를 기다리지 않는다."""
         self._stop.set()
         self._wake.set()
+        self._states_ready.set()
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -220,22 +288,28 @@ class DataWorker:
         self._put("retry")
 
     def mark_seen(self, alert_ids: tuple[int, ...]) -> None:
-        """27번의 동작. 아무 일도 하지 않는다."""
+        self._put(_Seen(tuple(alert_ids)))
 
     def delete_alert(self, alert_id: int) -> None:
-        """27번의 동작. 아무 일도 하지 않는다."""
+        self._put(_Delete(alert_id))
 
     def clear_alerts(self, category: AlertCategory) -> None:
-        """27번의 동작. 아무 일도 하지 않는다."""
+        self._put(_Clear(AlertCategory(category)))
 
-    def save_webhook(self, category: AlertCategory, url: str) -> None:
-        """27번의 동작. 아무 일도 하지 않는다."""
+    # --- 보내기 스레드가 부르는 길(`DataPort`). 어느 스레드에서나 부르고 바로 돌아온다 ---------
 
-    def delete_webhook(self, category: AlertCategory) -> None:
-        """27번의 동작. 아무 일도 하지 않는다."""
+    def address_states(self, states: dict[AlertCategory, AddressState]) -> None:
+        """켤 때 분류마다의 주소 상태(켤 때 차례 1). 상태만 받고 주소는 받지 않는다."""
+        if self._states_late:
+            return
+        self._address_states = dict(states)
+        self._states_ready.set()
 
-    def send_test(self, category: AlertCategory) -> None:
-        """27번의 동작. 아무 일도 하지 않는다."""
+    def delivery_result(self, result: DeliveryResult) -> None:
+        self._put(_Delivery(result))
+
+    def webhook_result(self, result: WebhookResult) -> None:
+        self._put(_Webhook(result))
 
     def _put(self, task: _Task) -> None:
         with self._lock:
@@ -287,34 +361,93 @@ class DataWorker:
     # --- 켤 때 차례(3.8) ----------------------------------------------------------------------
 
     def _startup(self) -> None:
+        self._await_address_states()  # 차례 1
         try:
             self._conn = open_database(self._database_file)
         except StorageError as exc:
             log.error("자료 스레드가 DB를 열지 못했습니다: %s", exc)
             self._settings_unreadable()
+            self._publish_alerts_first()
             return
-        try:  # 차례 3: `"startup"` 줄을 알림으로 옮긴다.
-            startup_errors.move_to_alerts(self._conn, self._logs_dir)
+        self._alert_steps()  # 차례 2, 3
+        self._read_settings_and_start()  # 차례 4, 5, 6
+
+    def _await_address_states(self) -> None:
+        """차례 1: 보내기 스레드가 넘긴 분류마다의 주소 상태를 받는다. 보내기 스레드가 없으면
+        기다리지 않는다. 너무 오래 오지 않으면 모두 읽지 못한 것으로 보고 이어간다."""
+        if self._send is None:
+            return
+        if not self._states_ready.wait(STATES_WAIT_SECONDS) and not self._stop.is_set():
+            log.warning("보내기 스레드의 주소 상태가 오지 않아 모두 읽지 못한 것으로 봅니다")
+            self._states_late = True
+            self._address_states = dict.fromkeys(AlertCategory, AddressState.UNREADABLE)
+
+    def _settled_state(self, category: AlertCategory) -> DiscordState:
+        """앞 실행에서 남은 `"not_sent"`를 바꿀 값: 주소가 저장되어 있거나 보관소를 읽지
+        못했으면 `"failed"`, 없으면 `"no_address"`."""
+        states = self._address_states
+        if states is not None and states.get(category) in (
+            AddressState.SAVED,
+            AddressState.UNREADABLE,
+        ):
+            return DiscordState.FAILED
+        return DiscordState.NO_ADDRESS
+
+    def _alert_steps(self) -> None:
+        """차례 2: 남은 `"not_sent"`를 바꾼다(보내지 않는다). 차례 3: `startup-errors.jsonl`을
+        알림으로 옮긴다."""
+        assert self._conn is not None
+        self._steps_done = True
+        failure: StorageError | None = None
+        if self._send is not None:
+            for category in AlertCategory:
+                try:
+                    alert_store.settle_not_sent(
+                        self._conn, category, self._settled_state(category)
+                    )
+                except StorageError as exc:
+                    log.warning("남은 알림의 디스코드 결과를 바꾸지 못했습니다: %s", exc)
+                    failure = failure or exc
+        try:
+            startup_errors.move_to_alerts(self._conn, self._logs_dir, self._settled_state)
         except Exception as exc:
             log.warning("startup-errors.jsonl을 옮기지 못했습니다: %s", type(exc).__name__)
-        self._read_settings_and_start()  # 차례 5, 6
+        # 차례 2의 실패의 A-29는 차례 3 뒤에 한 번 만든다(첫 `AlertsView` 앞이다). 앞 실행에서
+        # 남은 알림만 바꾸므로 이 실행에서 만든 알림은 바꾸지 않고, 표에 쓰지 못해 메모리에
+        # 두며 쓴 `"memory"` 줄은 같은 켤 때의 차례 3이 옮기지 않는다(다음에 켤 때 옮긴다).
+        if self._send is not None:
+            if failure is None:
+                self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
+            else:
+                self._emit_alert_save_failed(ALERT_WRITE_STATE, failure)
+
+    def _publish_alerts_first(self) -> None:
+        """차례 5의 `AlertsView`. 차례 2~4가 끝난 뒤에 처음 보내고, 그 뒤로는 알림이 바뀔 때
+        보낸다."""
+        if not self._alerts_open:
+            self._alerts_open = True
+            self._post_alerts(STAGE_STARTUP)
 
     def _read_settings_and_start(self) -> None:
         if self._conn is None:
             self._settings_unreadable()
+            self._publish_alerts_first()
             return
         try:
             view = read_settings(self._conn)
         except Exception as exc:  # 읽기의 실패와 그 밖의 예외 모두 "설정을 읽지 못함"이다
             self._emit_unexpected(STAGE_STARTUP, None, exc)
             self._settings_unreadable()
+            self._publish_alerts_first()
             return
         self._settings = view
         self._settings_failed = False
         self._settings_retry_mono = None
+        self._cleanup_old()  # 차례 4
         self._post(view)
         for market in view.coins:
             self._send_initial_view(market)
+        self._publish_alerts_first()
         if view.first_setup_done and view.coins:
             self._guard(self._fetch_round)
 
@@ -366,6 +499,18 @@ class DataWorker:
             self._emit_unexpected(stage, None, exc)
 
     def _run_task(self, task: _Task) -> None:
+        if isinstance(task, _Seen):
+            self._guard(lambda: self._mark_seen(task), STAGE_ALERT_SAVE)
+            return
+        if isinstance(task, _Delete | _Clear):
+            self._guard(lambda: self._delete_alerts(task), STAGE_ALERT_DELETE)
+            return
+        if isinstance(task, _Delivery):
+            self._guard(lambda: self._on_delivery(task.result), STAGE_ALERT_SAVE)
+            return
+        if isinstance(task, _Webhook):
+            self._guard(lambda: self._on_webhook(task.result), STAGE_ALERT_SAVE)
+            return
         if self._settings_failed or self._settings is None:
             return  # 설정을 읽지 못한 동안은 아무것도 하지 않는다.
         if isinstance(task, _SaveTask):
@@ -388,6 +533,9 @@ class DataWorker:
             return self._retry_settings if due is not None and now >= due else None
         if self._settings is None:
             return None
+        cleanup = self._next_cleanup_mono
+        if cleanup is not None and now >= cleanup:
+            return self._cleanup_old
         if self._blocked_mono is not None:
             return self._scheduled_round if now >= self._blocked_mono else None
         due = self._next_round_mono
@@ -401,6 +549,9 @@ class DataWorker:
             due = self._blocked_mono
         else:
             due = self._next_round_mono
+        cleanup = self._next_cleanup_mono
+        if cleanup is not None and not self._settings_failed:
+            due = cleanup if due is None else min(due, cleanup)
         if due is None:
             return IDLE_SECONDS
         seconds = due - now
@@ -416,6 +567,10 @@ class DataWorker:
                 self._settings_retry_mono = self._clock.monotonic() + SETTINGS_RETRY_SECONDS
                 return
         self._settings_retry_mono = self._clock.monotonic() + SETTINGS_RETRY_SECONDS
+        if not self._steps_done:  # DB를 처음 열었다: 켤 때 차례 2, 3을 지금 한다
+            self._alert_steps()
+            if self._alerts_open:
+                self._post_alerts(STAGE_STARTUP)
         self._read_settings_and_start()
 
     def _scheduled_round(self) -> None:
@@ -489,6 +644,7 @@ class DataWorker:
         self._rules.a29_succeeded(STAGE_SETTINGS_SAVE, None)
         self._post(SaveResult(SAVE_TARGET_SETTINGS, True, SETTINGS_SAVED))
         self._post(new)
+        self._cleanup_old(always_post=True)  # 보관 기간을 저장한 직후(3.9)
         if new.coins:
             if self._is_blocked():
                 self._send_blocked_views()
@@ -766,14 +922,16 @@ class DataWorker:
             state, markets, error_name, self._blocked_until if blocked else None, self._clock.now()
         )
 
-    # --- 알림 저장 ------------------------------------------------------------------------------
+    # --- 알림 저장, 보내기, 보았다는 표시, 지우기 -----------------------------------------------
 
     def _insert(self, spec: AlertSpec, created_at: datetime | None = None) -> bool:
-        """알림을 표에 쓴다. 쓰지 못하면 로그에만 남긴다(메모리 알림은 27번의 몫)."""
+        """알림을 `"not_sent"`로 표에 쓰고 보내기 스레드에 넘긴다. 되풀이가 막은 알림은 여기
+        오기 전에 걸러진다(만들지 않은 알림은 보내지도 않는다). 표에 쓰지 못하면 그 알림은 로그에만
+        남기고, 알림 저장 실패(A-29)를 메모리 알림으로 둔다(3.9)."""
         if self._conn is None:
             return False
         try:
-            alert_store.insert_alert(
+            alert_id = alert_store.insert_alert(
                 self._conn,
                 created_at=created_at or self._clock.now(),
                 mode=Mode.PAPER,
@@ -783,17 +941,204 @@ class DataWorker:
                 text=spec.text,
                 detail=spec.detail,
                 seen=False,
-                discord_state=DiscordState.NO_ADDRESS,
+                discord_state=DiscordState.NOT_SENT,
             )
         except StorageError as exc:
             log.warning("알림 %s을 저장하지 못했습니다: %s", spec.code, exc)
+            self._keep_in_memory(exc)
             return False
+        self._rules.alert_save_succeeded(ALERT_WRITE_INSERT)
+        self._submit(alert_id, spec)
+        if self._alerts_open:
+            self._post_alerts(STAGE_ALERT_SAVE)
         return True
+
+    def _keep_in_memory(self, exc: BaseException) -> None:
+        """알림 저장 실패의 A-29를 메모리에 둔다. 화면에 보이고 디스코드로도 보내고,
+        `startup-errors.jsonl`에 `"memory"` 줄도 쓴다(쓰지 못하면 이 실행 동안만 보인다).
+        표에 쓰지 못한 원래의 알림은 두지 않는다(로그에만 남는다)."""
+        if not self._rules.want_alert_save(ALERT_WRITE_INSERT):
+            return
+        spec = alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc)))
+        alert = self._memory.add(
+            created_at=self._clock.now(),
+            mode=Mode.PAPER,
+            category=spec.category,
+            code=spec.code,
+            coin=spec.coin,
+            text=spec.text,
+            detail=spec.detail,
+        )
+        startup_errors.append_line(self._logs_dir, startup_errors.memory_line(alert))
+        self._submit(alert.id, spec)
+        if self._alerts_open:
+            self._post_alerts(STAGE_ALERT_SAVE)
+
+    def _submit(self, alert_id: int, spec: AlertSpec) -> None:
+        """보내기 스레드에 알림의 번호, 분류, 가린 글만 넘긴다."""
+        if self._send is None or self._stop.is_set():
+            return
+        message = alert_message(
+            mode=Mode.PAPER,
+            category=spec.category,
+            coin=spec.coin,
+            text=spec.text,
+            detail=spec.detail,
+        )
+        try:
+            self._send.submit(SendJob(alert_id, spec.category, redact(message)))
+        except Exception as exc:
+            log.warning("보내기 스레드에 넘기지 못했습니다: %s", type(exc).__name__)
+
+    def _db(self) -> sqlite3.Connection:
+        if self._conn is None:
+            raise StorageError("DB가 열려 있지 않습니다")
+        return self._conn
+
+    def _post_alerts(self, stage: str) -> None:
+        """`AlertsView`를 보낸다. 읽지 못하면 `FAILED`(줄 없음)이고 A-30(`stage`)을 만든다."""
+        if self._alerts_posting:
+            return
+        self._alerts_posting = True
+        try:
+            self._post(self._alerts_view(stage))
+        finally:
+            self._alerts_posting = False
+
+    def _alerts_view(self, stage: str) -> AlertsView:
+        try:
+            conn = self._db()
+            rows = alert_store.list_alerts(conn)
+            unseen = dict(alert_store.count_unseen(conn))
+        except Exception as exc:
+            self._emit_unexpected(stage, None, exc)
+            return AlertsView((), state=LoadState.FAILED)
+        views: list[AlertView] = [*rows, *(item.view() for item in self._memory.all())]
+        views.sort(key=lambda view: (view.created_at, view.id), reverse=True)
+        for category, count in self._memory.unseen().items():
+            unseen[category] = unseen.get(category, 0) + count
+        return AlertsView(tuple(views), MappingProxyType(unseen))
+
+    def _mark_seen(self, task: _Seen) -> None:
+        """줄이 이미 지워졌으면 아무것도 바꾸지 않고 `AlertsView`만 다시 보낸다."""
+        stored: list[int] = []
+        for alert_id in dict.fromkeys(task.ids):
+            if alert_id >= 0:
+                stored.append(alert_id)
+                continue
+            item = self._memory.get(alert_id)
+            if item is not None and not item.seen:
+                item.seen = True
+                self._update_memory_line(item)
+        if stored:
+            try:
+                conn = self._db()
+                for alert_id in stored:
+                    alert_store.mark_seen(conn, alert_id)
+            except StorageError as exc:
+                self._emit_alert_save_failed(ALERT_WRITE_SEEN, exc)
+            else:
+                self._rules.alert_save_succeeded(ALERT_WRITE_SEEN)
+        self._post_alerts(STAGE_ALERT_SAVE)
+
+    def _delete_alerts(self, task: _Delete | _Clear) -> None:
+        """손으로 지우기(3.9): 그 줄이나 그 분류의 모든 줄을 지우고 `AlertsView`를 보낸다."""
+        try:
+            if isinstance(task, _Delete):
+                removed = self._delete_one(task.alert_id)
+            else:
+                removed = self._clear_category(task.category)
+        except StorageError as exc:
+            text = text_save_failed(STAGE_ALERT_DELETE, ERROR_STORAGE)
+            self._post(SaveResult(SAVE_TARGET_ALERT_DELETE, False, text))
+            self._emit_save_failed(STAGE_ALERT_DELETE, None, exc)
+        else:
+            self._rules.a29_succeeded(STAGE_ALERT_DELETE, None)
+            if removed:
+                self._post(SaveResult(SAVE_TARGET_ALERT_DELETE, True))
+        self._post_alerts(STAGE_ALERT_DELETE)
+
+    def _delete_one(self, alert_id: int) -> bool:
+        """지운 줄이 있었으면 참. 메모리 알림은 메모리에서 지우고 그 줄도 뺀다."""
+        if alert_id < 0:
+            item = self._memory.remove(alert_id)
+            if item is None:
+                return False
+            startup_errors.remove_memory_line(self._logs_dir, item)
+            return True
+        return alert_store.delete_alert(self._db(), alert_id)
+
+    def _clear_category(self, category: AlertCategory) -> bool:
+        alert_store.delete_category(self._db(), category)
+        for item in self._memory.of_category(category):
+            self._memory.remove(item.id)
+            startup_errors.remove_memory_line(self._logs_dir, item)
+        return True
+
+    def _update_memory_line(self, item: MemoryAlert) -> None:
+        startup_errors.update_memory_line(self._logs_dir, item)
+
+    def _on_delivery(self, result: DeliveryResult) -> None:
+        """보낸 결과를 쓴다. 그 사이에 알림이 지워졌으면 로그에만 남긴다."""
+        if result.alert_id < 0:
+            item = self._memory.get(result.alert_id)
+            if item is None:
+                log.info("지운 메모리 알림 %s의 보낸 결과(%s)", result.alert_id, result.state.value)
+                return
+            item.discord_state = result.state
+            self._update_memory_line(item)
+        else:
+            try:
+                found = alert_store.set_discord_state(self._db(), result.alert_id, result.state)
+            except StorageError as exc:
+                log.warning("보낸 결과를 쓰지 못했습니다: %s", exc)
+                self._emit_alert_save_failed(ALERT_WRITE_STATE, exc)
+                return
+            self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
+            if not found:
+                log.info("지운 알림 %s의 보낸 결과(%s)", result.alert_id, result.state.value)
+                return
+        if self._alerts_open:
+            self._post_alerts(STAGE_ALERT_SAVE)
+
+    def _on_webhook(self, result: WebhookResult) -> None:
+        """주소 저장·지우기의 결과. 실패하면 A-29(분류마다 되풀이를 센다), 성공하면 푼다."""
+        if result.ok:
+            self._rules.a29_webhook_succeeded(result.stage, result.category)
+            return
+        if self._rules.want_a29_webhook(result.stage, result.category):
+            name = redact(result.error_name or ERROR_VAULT)
+            self._insert(alert_rules.vault_failed(result.stage, name, name))
+
+    def _cleanup_old(self, *, always_post: bool = False) -> None:
+        """오래된 알림 지우기(3.9). 보관 기간을 고르기 전과 설정을 읽지 못하는 동안은 하지
+        않는다. 한 뒤에는 60분 뒤로 다시 잡는다."""
+        settings = self._settings
+        if self._settings_failed or settings is None or settings.retention_days is None:
+            self._next_cleanup_mono = None
+            return
+        self._next_cleanup_mono = self._clock.monotonic() + CLEANUP_INTERVAL
+        try:
+            deleted = alert_store.delete_expired(
+                self._db(), retention_days=settings.retention_days, now=self._clock.now()
+            )
+        except StorageError as exc:
+            self._emit_save_failed(STAGE_ALERT_DELETE, None, exc)
+            return
+        self._rules.a29_succeeded(STAGE_ALERT_DELETE, None)
+        if (deleted or always_post) and self._alerts_open:
+            self._post_alerts(STAGE_ALERT_DELETE)
 
     def _emit_save_failed(self, stage: str, coin: str | None, exc: BaseException) -> None:
         """A-29: 쓰기의 실패."""
         if self._rules.want_a29(stage, coin):
             self._insert(alert_rules.save_failed(stage, coin, redact(str(exc))))
+
+    def _emit_alert_save_failed(self, kind: str, exc: BaseException) -> None:
+        """A-29("알림 저장"): 알림 표의 쓰기(표시, 보낸 결과, 남은 `"not_sent"` 바꾸기)의 실패.
+        쓰기의 종류마다 따로 센다. 이 A-29를 표에 쓰지 못하면 `_insert`가 메모리에 둔다."""
+        if self._rules.want_alert_save(kind):
+            self._insert(alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc))))
 
     def _emit_unexpected(self, stage: str, coin: str | None, exc: BaseException) -> None:
         """A-30: 읽기의 실패와 그 밖의 예외."""

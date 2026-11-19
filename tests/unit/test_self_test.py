@@ -436,12 +436,15 @@ def test_the_real_pyside6_plugin_folders_hold_the_offscreen_plugin(
 
 
 def test_import_lists_cover_the_new_folders_and_modules() -> None:
-    assert {"trading", "stats"} <= set(st.SUBPACKAGES)
+    assert {"trading", "stats", "vault", "notify"} <= set(st.SUBPACKAGES)
     assert {"httpx", "certifi", "keyring"} <= set(st.THIRD_PARTY_MODULES)
     names = set(st._package_module_names())
     assert "coin_report_trader.trading.quote.client" in names
     assert "coin_report_trader.stats.compute" in names
     assert "coin_report_trader.app.data_thread" in names
+    assert "coin_report_trader.app.send_thread" in names
+    assert "coin_report_trader.vault.store" in names
+    assert "coin_report_trader.notify.sender" in names
 
 
 def test_tls_check_names_only_the_bundle_file() -> None:

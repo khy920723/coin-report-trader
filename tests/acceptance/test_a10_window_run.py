@@ -5,7 +5,9 @@ from typing import Any
 
 import pytest
 from fakes.clock import FakeClock
+from fakes.discord import FakeDiscord
 from fakes.quote import FakeQuoteSource
+from fakes.vault import FakeVault
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
@@ -45,7 +47,15 @@ def test_a10_main_without_options_opens_the_window_and_logs(
 
     QTimer.singleShot(0, look_then_quit)
     try:
-        code = main([], services=Services(quote=FakeQuoteSource(), clock=FakeClock()))
+        code = main(
+            [],
+            services=Services(
+                quote=FakeQuoteSource(),
+                webhook=FakeDiscord(),
+                vault=FakeVault(),
+                clock=FakeClock(),
+            ),
+        )
     finally:
         state["armed"] = False
         safety.stop()
