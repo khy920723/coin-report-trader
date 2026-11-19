@@ -263,8 +263,8 @@ def test_a_tab_shows_the_unseen_count_after_its_name(make_window):
             unseen={AlertCategory.ERROR: 2, AlertCategory.OTHER: 1},
         )
     )
-    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림 (2)"
-    assert _tab(screen, AlertCategory.OTHER).text() == "기타 알림 (1)"
+    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림(2)"
+    assert _tab(screen, AlertCategory.OTHER).text() == "기타 알림(1)"
     assert _tab(screen, AlertCategory.TRADE).text() == "매매 알림"  # 키가 없으면 0이다.
 
 
@@ -354,6 +354,55 @@ def test_a_click_on_the_status_name_opens_the_first_tab_with_unseen_alerts(make_
     _tab(screen, AlertCategory.TRADE).click()
     nav.itemClicked.emit(item)
     assert _tab(screen, AlertCategory.ERROR).font().underline()
+
+
+def _click_nav(window: MainWindow, screen_id: ScreenId, *, release: bool = True) -> None:
+    """화면 이름 목록의 줄을 실제 마우스 이벤트로 누른다(누르면 줄이 바뀌고, 떼면 `itemClicked`)."""
+    nav = _find(window, QListWidget, "screenNav")
+    item = nav.item(list(ScreenId).index(screen_id))
+    pos = nav.visualItemRect(item).center()
+    viewport = nav.viewport()
+    if release:
+        QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, pos)
+    else:
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, pos)
+
+
+def test_a_real_click_on_the_status_name_marks_only_the_tab_it_opens(make_window, actions):
+    window = make_window(actions)
+    window.apply(SettingsView(("KRW-AAA",), 30, True))
+    # 기타 탭을 고른 채 설정 화면으로 간다. 그동안 기타와 오류에 보지 않은 알림이 하나씩 들어온다.
+    select_screen(window, ScreenId.STATUS)
+    _tab(_status(window), AlertCategory.OTHER).click()
+    select_screen(window, ScreenId.SETTINGS)
+    window.apply(
+        _view(
+            _alert(1, AlertCategory.OTHER, seen=False),
+            _alert(2, AlertCategory.ERROR, seen=False),
+        )
+    )
+    assert actions.count("mark_seen") == 0
+    _click_nav(window, ScreenId.STATUS)
+    screen = _status(window)
+    assert current_screen(window) is ScreenId.STATUS
+    # 열린 탭은 오류 알림이고, 열지 않은 기타 알림의 알림은 본 것으로 알리지 않는다.
+    assert _tab(screen, AlertCategory.ERROR).font().underline()
+    assert [c for c in actions.calls if c[0] == "mark_seen"] == [("mark_seen", (2,))]
+
+
+def test_a_press_that_ends_elsewhere_still_marks_the_shown_tab_later(make_window, actions):
+    window = make_window(actions)
+    window.apply(SettingsView(("KRW-AAA",), 30, True))
+    select_screen(window, ScreenId.SETTINGS)
+    window.apply(_view(_alert(1, seen=False)))
+    _click_nav(window, ScreenId.STATUS, release=False)  # 누르고 아직 떼지 않았다.
+    assert actions.count("mark_seen") == 0
+    # 다른 곳에서 손을 떼면 `itemClicked`가 오지 않는다. 손을 뗀 뒤의 다음 값에서 알린다.
+    QTest.mouseRelease(
+        _find(window, QListWidget, "screenNav").viewport(), Qt.MouseButton.LeftButton
+    )
+    window.apply(_view(_alert(1, seen=False)))
+    assert [c for c in actions.calls if c[0] == "mark_seen"] == [("mark_seen", (1,))]
 
 
 def test_a_click_without_unseen_alerts_keeps_the_chosen_tab(make_window):
@@ -642,6 +691,18 @@ def test_the_list_area_states(make_window):
     assert _rows(screen) == [2]
 
 
+def test_a_failed_alerts_view_removes_the_lines_of_the_chosen_tab(make_window):
+    window = make_window(FakeActions())
+    screen = _open(window, _view(_alert(1)))
+    assert _rows(screen) == [1]
+    assert _text(screen, "alertListMessage") is None
+    # 골라진 탭(매매 알림)의 알림이 든 채 읽지 못함이 오면 줄은 없어지고 글만 보인다.
+    window.apply(_view(_alert(1), state=LoadState.FAILED))
+    assert _rows(screen) == []
+    assert screen.findChild(QWidget, "alertRow_1") is None
+    assert _text(screen, "alertListMessage") == "알림을 읽지 못했습니다."
+
+
 # --- 알림센터는 글 하나만 보이는 현황에서도 보인다 ---
 
 
@@ -654,9 +715,11 @@ def test_the_alert_center_stays_when_the_status_screen_shows_one_line(make_windo
         window.apply(SettingsView(state=LoadState.FAILED))
     window.apply(_view(_alert(1, text="먼저 온 알림")))
     screen = _status(window)
-    assert _find(screen, QWidget, "statusContent").isHidden()
-    assert not _find(screen, QWidget, "statusMessage").isHidden()
-    assert not _find(screen, QWidget, "alertCenter").isHidden()
+    assert not _find(screen, QWidget, "statusContent").isVisibleTo(screen)
+    assert _find(screen, QWidget, "statusMessage").isVisibleTo(screen)
+    # 부모가 숨겨진 것까지 보는 `isVisibleTo`로, 알림센터가 숨겨진 묶음 안에 있지 않음을 확인한다.
+    assert _find(screen, QWidget, "alertCenter").isVisibleTo(screen)
+    assert _find(screen, QLabel, "alertLine_1").isVisibleTo(screen)
     assert _rows(screen) == [1]
     assert "먼저 온 알림" in _text(screen, "alertLine_1")
     assert actions.count("retry_candles") == 0
@@ -745,6 +808,28 @@ def test_a_good_address_calls_save_webhook_with_the_trimmed_text_and_clears_the_
     token = url.rsplit("/", 1)[1]
     assert not any(token in text for text in _all_texts(window))
     assert not any("webhooks" in text for text in _all_texts(window))
+
+
+def test_the_box_keeps_no_undo_history_of_the_address(make_window, actions):
+    window = make_window(actions)
+    screen = _webhook_screen(window, WebhookView(AlertCategory.TRADE, saved=False))
+    edit = _find(screen, QLineEdit, "alertWebhookInput")
+    edit.setText(make_url())
+    _find(screen, QPushButton, "alertWebhookSave").click()
+    assert edit.text() == ""
+    # 칸을 보통 글 모양으로 바꾸고 되돌리기를 해도 넣었던 주소가 돌아오지 않는다.
+    edit.setEchoMode(QLineEdit.EchoMode.Normal)
+    edit.setEnabled(True)
+    edit.undo()
+    assert edit.text() == ""
+    # 바꾸기, 그만두기, 탭 바꾸기로 비운 칸도 같다.
+    window.apply(WebhookView(AlertCategory.TRADE, saved=True))
+    _find(screen, QPushButton, "alertWebhookChange").click()
+    edit.setText(make_url())
+    _find(screen, QPushButton, "alertWebhookCancel").click()
+    edit.setEchoMode(QLineEdit.EchoMode.Normal)
+    edit.undo()
+    assert edit.text() == ""
 
 
 def test_the_save_result_shows_through_the_webhook_view_and_unlocks_the_box(make_window, actions):
@@ -938,6 +1023,6 @@ def test_other_updates_and_odd_values_raise_nothing(make_window, actions):
     window.apply(AlertsView((_alert(1, AlertCategory.ERROR),), {AlertCategory.ERROR: 3}))
     _tab(screen, AlertCategory.ERROR).click()
     assert _rows(screen) == [1]
-    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림 (3)"
+    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림(3)"
     # 새 `AlertsView`가 오기 전 지운 줄의 id로 `mark_seen`을 불러도 된다(조립이 처리한다).
     assert actions.count("save_settings") == 0

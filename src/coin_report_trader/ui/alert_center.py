@@ -152,6 +152,7 @@ class AlertCenter(QWidget):
         self._alerts: AlertsView | None = None
         self._webhooks: dict[AlertCategory, WebhookView] = {}
         self._active = False
+        self._hold = False
         self._requested: set[int] = set()
         self._expanded: set[int] = set()
         self._rows: list[QWidget] = []
@@ -232,15 +233,21 @@ class AlertCenter(QWidget):
         if category is not self._selected:
             self._selected = category
             self._requested.clear()
-            self._input.clear()
+            self._input.setText("")
         self._refresh()
 
     def select_first_unseen_tab(self) -> None:
-        """보지 않은 알림이 있는 탭 가운데 맨 앞 탭을 고른다(설계서 8.2). 없으면 그대로 둔다."""
+        """보지 않은 알림이 있는 탭 가운데 맨 앞 탭을 고른다(설계서 8.2). 없으면 그대로 둔다.
+
+        사용자가 현황을 누른 때 부른다. 누르는 동안 미룬 본 알림 알림(`hold_seen`)을 이 탭이 정해진
+        뒤에 푼다.
+        """
+        self._hold = False
         for category in CATEGORIES:
             if self._unseen(category) > 0:
                 self.select_tab(category)
                 return
+        self._refresh()
 
     def render(
         self,
@@ -249,11 +256,17 @@ class AlertCenter(QWidget):
         webhooks: Mapping[AlertCategory, WebhookView],
         active: bool,
         delete_message: Message | None,
+        hold_seen: bool = False,
     ) -> None:
-        """`active`는 현황 화면이 지금 보이는 자리인지다. 아닐 때는 본 알림으로 알리지 않는다."""
+        """`active`는 현황 화면이 지금 보이는 자리인지다. 아닐 때는 본 알림으로 알리지 않는다.
+
+        `hold_seen`이 참이면 보이는 줄이 있어도 본 알림으로 알리지 않는다(사용자가 현황을 누르는
+        중이라 어느 탭이 열릴지 아직 모른다).
+        """
         if active and not self._active:
             self._requested.clear()
         self._active = active
+        self._hold = hold_seen
         self._alerts = alerts
         for category, view in webhooks.items():
             if self._webhooks.get(category) is not view:
@@ -358,7 +371,9 @@ class AlertCenter(QWidget):
         다섯 줄 밖으로 넘겨 가린 줄도 목록에 든 것으로 본다. 같은 id는 탭을 바꾸거나 현황 화면을
         다시 열기 전에는 다시 알리지 않는다.
         """
-        if not self._active or self._alerts is None or self._alerts.state is not LoadState.READY:
+        if self._hold or not self._active:
+            return
+        if self._alerts is None or self._alerts.state is not LoadState.READY:
             return
         ids = tuple(a.id for a in self._tab_alerts() if not a.seen and a.id not in self._requested)
         if not ids:
@@ -436,7 +451,7 @@ class AlertCenter(QWidget):
             self._render_webhook()
             return
         self._bad_format.discard(category)
-        self._input.clear()
+        self._input.setText("")
         self._changing.discard(category)
         self._pending.add(category)
         self._render_webhook()
@@ -444,13 +459,13 @@ class AlertCenter(QWidget):
 
     def _on_change(self) -> None:
         self._changing.add(self._selected)
-        self._input.clear()
+        self._input.setText("")
         self._render_webhook()
 
     def _on_cancel(self) -> None:
         self._changing.discard(self._selected)
         self._bad_format.discard(self._selected)
-        self._input.clear()
+        self._input.setText("")
         self._render_webhook()
 
     def _on_delete(self) -> None:
@@ -460,7 +475,7 @@ class AlertCenter(QWidget):
         """주소 지우기를 확인했다: 결과가 올 때까지 단추를 누를 수 없다."""
         self._pending.add(category)
         self._changing.discard(category)
-        self._input.clear()
+        self._input.setText("")
         self._render_webhook()
 
     def _on_test(self) -> None:

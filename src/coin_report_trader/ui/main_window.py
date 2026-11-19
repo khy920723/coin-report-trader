@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -96,6 +97,8 @@ class MainWindow(QMainWindow):
         self._alerts: AlertsView | None = None
         self._webhooks: dict[AlertCategory, WebhookView] = {}
         self._delete_message: Message | None = None
+        self._status_was_active = False
+        self._hold_seen = False
         self._markets_loading = False
         self._pending_saves: list[ScreenId] = []
         self._messages: dict[ScreenId, Message] = {}
@@ -303,6 +306,8 @@ class MainWindow(QMainWindow):
     def _on_nav_clicked(self, item) -> None:
         """사용자가 화면 이름 목록의 줄을 눌렀다. 현황이면 보지 않은 알림이 있는 맨 앞 탭을 연다."""
         if self._nav.row(item) == list(ScreenId).index(ScreenId.STATUS):
+            # 누르는 동안 미룬 본 알림 알림은 열릴 탭이 정해진 뒤에 푼다.
+            self._hold_seen = False
             self._status.alert_center.select_first_unseen_tab()
 
     def _on_seen(self, ids: object) -> None:
@@ -456,11 +461,21 @@ class MainWindow(QMainWindow):
         self._nav.item(status_index).setText(
             status_nav_text(SCREEN_TITLES[ScreenId.STATUS], unseen)
         )
+        active = current_screen(self) is ScreenId.STATUS
+        pressed = bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+        if active and not self._status_was_active and pressed:
+            # 사용자가 현황을 누르는 중이다. 손을 뗄 때(`itemClicked`) 열릴 탭이 정해지므로,
+            # 그 전에 이전에 고른 탭의 줄을 본 것으로 알리지 않는다.
+            self._hold_seen = True
+        elif self._hold_seen and not pressed:
+            self._hold_seen = False  # 다른 곳에서 손을 뗐다(`itemClicked`가 오지 않는다).
+        self._status_was_active = active
         self._status.alert_center.render(
             alerts=self._alerts,
             webhooks=self._webhooks,
-            active=current_screen(self) is ScreenId.STATUS,
+            active=active,
             delete_message=self._delete_message,
+            hold_seen=self._hold_seen,
         )
 
 

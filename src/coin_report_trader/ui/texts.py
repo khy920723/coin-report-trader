@@ -131,8 +131,8 @@ def no_alerts_text(category_title: str) -> str:
 
 
 def tab_title_text(category_title: str, unseen: int) -> str:
-    """탭 이름. 아직 보지 않은 알림이 있으면 뒤에 " ({n})"."""
-    return f"{category_title} ({unseen})" if unseen > 0 else category_title
+    """탭 이름. 아직 보지 않은 알림이 있으면 뒤에 "({n})"(설계서 8.2. 빈칸은 없다)."""
+    return f"{category_title}({unseen})" if unseen > 0 else category_title
 
 
 def status_nav_text(screen_title: str, unseen: int) -> str:
