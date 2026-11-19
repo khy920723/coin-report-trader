@@ -24,6 +24,13 @@ from coin_report_trader.core.texts import (
     text_unexpected,
 )
 
+ALERT_WRITE_INSERT: Final = "insert"
+"""알림 한 줄을 표에 쓰기."""
+ALERT_WRITE_SEEN: Final = "seen"
+"""보았다는 표시를 쓰기(`mark_seen`)."""
+ALERT_WRITE_STATE: Final = "state"
+"""`discord_state`를 쓰기(보낸 결과, 켤 때 남은 `"not_sent"` 바꾸기)."""
+
 A30_QUIET_SECONDS: Final = 3600.0
 """같은 단계에 같은 예외 종류의 A-30은 이 초 안에 다시 만들지 않는다."""
 
@@ -96,6 +103,7 @@ class RepeatRules:
         self._a1: dict[str, set[str]] = {}
         self._a29: set[tuple[str, str | None]] = set()
         self._a29_webhook: set[tuple[str, AlertCategory]] = set()
+        self._alert_save: set[str] = set()
         self._a31: set[str] = set()
         self._a30: dict[tuple[str, str | None, str], float] = {}
 
@@ -121,6 +129,18 @@ class RepeatRules:
 
     def a29_succeeded(self, stage: str, coin: str | None) -> None:
         self._a29.discard((stage, coin))
+
+    def want_alert_save(self, kind: str) -> bool:
+        """A-29("알림 저장")는 실패한 쓰기의 종류(`ALERT_WRITE_*`)마다 따로 센다. 같은 종류의
+        쓰기가 한 번 성공하기 전에는 다시 만들지 않는다. 다른 종류의 쓰기(그 A-29 자신을 표에 쓴
+        것 포함)의 성공은 풀지 않는다."""
+        if kind in self._alert_save:
+            return False
+        self._alert_save.add(kind)
+        return True
+
+    def alert_save_succeeded(self, kind: str) -> None:
+        self._alert_save.discard(kind)
 
     def want_a29_webhook(self, stage: str, category: AlertCategory) -> bool:
         """주소 저장·지우기의 A-29는 분류마다 따로 센다. 그 저장(지우기)이 성공하기 전에는 다시

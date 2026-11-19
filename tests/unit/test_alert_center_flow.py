@@ -870,6 +870,9 @@ def test_old_alerts_are_deleted_at_window_up_and_every_sixty_minutes(
     )
     rig.start()
     assert {row[0] for row in rig.rows()} == {soon}  # 창이 뜬 직후
+    first = rig.sink.of(AlertsView)[0]  # 차례 4(지우기)는 첫 `AlertsView`보다 앞이다
+    assert [v.id for v in first.alerts] == [soon]
+    assert old not in {v.id for v in first.alerts}
     rig.advance(3600)  # 60분 뒤
     assert rig.rows() == []
     assert rig.last_alerts_view().alerts == ()
@@ -1360,3 +1363,104 @@ def test_the_settings_view_and_coin_views_still_come_first(build: Callable[..., 
     rig.start()
     others = [type(u).__name__ for u in rig.sink.items if not isinstance(u, WebhookView)]
     assert others[:3] == ["SettingsView", "CoinView", "AlertsView"]
+
+
+# --- 알림 표의 쓰기 실패는 쓰기의 종류마다 A-29 하나("알림 저장", 3.9의 되풀이) ------------------
+
+
+def alert_save_a29(rig: Rig) -> list[Any]:
+    return rig.rows(
+        "SELECT id, discord_state FROM alerts WHERE code = 'A-29' AND stage = '알림 저장'"
+    )
+
+
+def test_a_failing_seen_mark_makes_one_a29_until_a_seen_mark_succeeds(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build()
+    target = make_stored_alert(rig, category=TRADE, state=DiscordState.NO_ADDRESS)
+    rig.start()
+    real = data_thread.alert_store.mark_seen
+    failing = {"on": True}
+
+    def maybe(conn: Any, alert_id: int) -> bool:
+        if failing["on"]:
+            raise StorageError("보았다는 표시 쓰기에 실패했습니다: OperationalError")
+        return real(conn, alert_id)
+
+    monkeypatch.setattr(data_thread.alert_store, "mark_seen", maybe)
+    rig.data.mark_seen((target,))
+    rig.settle()
+    rig.data.mark_seen((target,))  # 그 A-29를 표에 쓴 것은 되풀이를 풀지 않는다
+    rig.settle()
+    assert len(alert_save_a29(rig)) == 1
+    failing["on"] = False
+    rig.data.mark_seen((target,))  # 같은 쓰기가 성공하면 푼다
+    rig.settle()
+    failing["on"] = True
+    rig.data.mark_seen((target,))
+    rig.settle()
+    assert len(alert_save_a29(rig)) == 2
+
+
+def test_a_seen_mark_that_fails_together_with_the_alert_write_is_kept_in_memory_once(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(saved={ERROR: webhook_url("q")})
+    target = make_stored_alert(rig, category=TRADE, state=DiscordState.NO_ADDRESS)
+    rig.start()
+
+    def refuse_mark(conn: Any, alert_id: int) -> bool:
+        raise StorageError("보았다는 표시 쓰기에 실패했습니다: OperationalError")
+
+    def refuse_insert(conn: Any, **kwargs: Any) -> int:
+        raise StorageError("알림 저장에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread.alert_store, "mark_seen", refuse_mark)
+    monkeypatch.setattr(data_thread.alert_store, "insert_alert", refuse_insert)
+    rig.data.mark_seen((target,))
+    rig.settle()
+    shown = [v for v in rig.last_alerts_view().alerts if v.id < 0]
+    assert [(v.code, v.detail.stage if v.detail else None) for v in shown] == [
+        ("A-29", "알림 저장")
+    ]
+    assert [line["kind"] for line in rig.jsonl()] == ["memory"]
+    assert alert_save_a29(rig) == []  # 표와 메모리를 합쳐 A-29("알림 저장")는 하나다
+    rig.data.mark_seen((target,))
+    rig.settle()
+    assert len([v for v in rig.last_alerts_view().alerts if v.id < 0]) == 1
+    assert len(rig.discord.alerts) == 1  # 디스코드로도 보낸다
+
+
+def test_a_discord_state_that_cannot_be_written_is_one_a29_and_its_own_result_adds_none(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(saved={ERROR: webhook_url("r")})
+
+    def refuse(conn: Any, alert_id: int, state: Any) -> bool:
+        raise StorageError("디스코드 결과 저장에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread.alert_store, "set_discord_state", refuse)
+    candles_fail(rig, QuoteError(ERROR_NETWORK))
+    rig.start()
+    assert len(alert_save_a29(rig)) == 1
+    assert len(rig.discord.alerts) == 2  # A-1과 그 A-29를 보냈다. 결과를 쓰지 못해도 더는 안 는다
+
+
+def test_leftover_not_sent_that_cannot_be_settled_is_an_a29_in_the_first_alerts_view(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(saved={ERROR: webhook_url("s")})
+    make_stored_alert(rig, category=ERROR)
+
+    def refuse(conn: Any, category: AlertCategory, state: Any) -> int:
+        raise StorageError("디스코드 결과 정리에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread.alert_store, "settle_not_sent", refuse)
+    rig.start()
+    first = rig.sink.of(AlertsView)[0]
+    made = [v for v in first.alerts if v.code == "A-29"]
+    assert [v.detail.stage if v.detail else None for v in made] == [
+        "알림 저장"
+    ]  # 분류마다 늘지 않는다
+    assert len(alert_save_a29(rig)) == 1

@@ -88,7 +88,13 @@ from coin_report_trader.storage.states import DiscordState
 from coin_report_trader.trading.quote import HttpQuoteSource, QuoteClient
 
 from . import alert_rules, startup_errors
-from .alert_rules import AlertSpec, RepeatRules
+from .alert_rules import (
+    ALERT_WRITE_INSERT,
+    ALERT_WRITE_SEEN,
+    ALERT_WRITE_STATE,
+    AlertSpec,
+    RepeatRules,
+)
 from .memory_alerts import MemoryAlert, MemoryAlerts
 from .send_types import (
     AddressState,
@@ -400,6 +406,9 @@ class DataWorker:
                     )
                 except StorageError as exc:
                     log.warning("남은 알림의 디스코드 결과를 바꾸지 못했습니다: %s", exc)
+                    self._emit_alert_save_failed(ALERT_WRITE_STATE, exc)
+                else:
+                    self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
         try:
             startup_errors.move_to_alerts(self._conn, self._logs_dir, self._settled_state)
         except Exception as exc:
@@ -931,7 +940,7 @@ class DataWorker:
             log.warning("알림 %s을 저장하지 못했습니다: %s", spec.code, exc)
             self._keep_in_memory(exc)
             return False
-        self._rules.a29_succeeded(STAGE_ALERT_SAVE, None)
+        self._rules.alert_save_succeeded(ALERT_WRITE_INSERT)
         self._submit(alert_id, spec)
         if self._alerts_open:
             self._post_alerts(STAGE_ALERT_SAVE)
@@ -941,7 +950,7 @@ class DataWorker:
         """알림 저장 실패의 A-29를 메모리에 둔다. 화면에 보이고 디스코드로도 보내고,
         `startup-errors.jsonl`에 `"memory"` 줄도 쓴다(쓰지 못하면 이 실행 동안만 보인다).
         표에 쓰지 못한 원래의 알림은 두지 않는다(로그에만 남는다)."""
-        if not self._rules.want_a29(STAGE_ALERT_SAVE, None):
+        if not self._rules.want_alert_save(ALERT_WRITE_INSERT):
             return
         spec = alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc)))
         alert = self._memory.add(
@@ -1020,9 +1029,9 @@ class DataWorker:
                 for alert_id in stored:
                     alert_store.mark_seen(conn, alert_id)
             except StorageError as exc:
-                self._emit_save_failed(STAGE_ALERT_SAVE, None, exc)
+                self._emit_alert_save_failed(ALERT_WRITE_SEEN, exc)
             else:
-                self._rules.a29_succeeded(STAGE_ALERT_SAVE, None)
+                self._rules.alert_save_succeeded(ALERT_WRITE_SEEN)
         self._post_alerts(STAGE_ALERT_SAVE)
 
     def _delete_alerts(self, task: _Delete | _Clear) -> None:
@@ -1076,7 +1085,9 @@ class DataWorker:
                 found = alert_store.set_discord_state(self._db(), result.alert_id, result.state)
             except StorageError as exc:
                 log.warning("보낸 결과를 쓰지 못했습니다: %s", exc)
+                self._emit_alert_save_failed(ALERT_WRITE_STATE, exc)
                 return
+            self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
             if not found:
                 log.info("지운 알림 %s의 보낸 결과(%s)", result.alert_id, result.state.value)
                 return
@@ -1115,6 +1126,12 @@ class DataWorker:
         """A-29: 쓰기의 실패."""
         if self._rules.want_a29(stage, coin):
             self._insert(alert_rules.save_failed(stage, coin, redact(str(exc))))
+
+    def _emit_alert_save_failed(self, kind: str, exc: BaseException) -> None:
+        """A-29("알림 저장"): 알림 표의 쓰기(표시, 보낸 결과, 남은 `"not_sent"` 바꾸기)의 실패.
+        쓰기의 종류마다 따로 센다. 이 A-29를 표에 쓰지 못하면 `_insert`가 메모리에 둔다."""
+        if self._rules.want_alert_save(kind):
+            self._insert(alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc))))
 
     def _emit_unexpected(self, stage: str, coin: str | None, exc: BaseException) -> None:
         """A-30: 읽기의 실패와 그 밖의 예외."""

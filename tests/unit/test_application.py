@@ -312,7 +312,10 @@ def test_the_first_run_asks_for_the_market_list_and_applies_on_the_main_thread(
 
     updates = _record_updates(monkeypatch)
     quote = FakeQuoteSource()
-    held = _quit_when(env.app, lambda: any(isinstance(u, MarketsView) for _, u in updates))
+    held = _quit_when(
+        env.app,
+        lambda: any(isinstance(u, MarketsView) and u.state is LoadState.READY for _, u in updates),
+    )  # 받는 중(`LOADING`)이 아니라 받음(`READY`)까지 기다린다
     assert run_gui([], services=_services(quote)) == 0
     _release(held)
     # 보내기 스레드의 `WebhookView`(분류마다 하나)와 알림센터의 `AlertsView`는 따로 센다.
@@ -660,10 +663,11 @@ def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
     assert len(discord.sent) == 1
     reopened = open_database(paths.database_file)
     try:
-        states = {row[0] for row in reopened.execute("SELECT discord_state FROM alerts")}
+        earlier = dict(reopened.execute("SELECT id, discord_state FROM alerts"))
     finally:
         reopened.close()
-    assert states == {"not_sent"}  # 멈춘 뒤의 결과는 버렸다(다음에 켤 때 "failed"가 된다)
+    assert earlier
+    assert set(earlier.values()) == {"not_sent"}  # 멈춘 뒤의 결과는 버렸다(다음에 켤 때 바뀐다)
     later = Services(
         quote=FakeQuoteSource(), webhook=FakeDiscord(), vault=FakeVault(), clock=FakeClock()
     )
@@ -677,7 +681,9 @@ def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
     assert len(vault.calls) == reads
     reopened = open_database(paths.database_file)
     try:
-        states = {row[0] for row in reopened.execute("SELECT discord_state FROM alerts")}
+        later_states = dict(reopened.execute("SELECT id, discord_state FROM alerts"))
     finally:
         reopened.close()
-    assert states == {"no_address"}  # 켤 때 차례 2: 뒤 실행의 보관소에는 주소가 없다
+    # 켤 때 차례 2: 뒤 실행의 보관소에는 주소가 없다. 뒤 실행이 새로 만든 알림은 그 실행이 끝나는
+    # 때에 따라 아직 결과가 없을 수 있으므로 앞 실행에서 만든 알림만 본다.
+    assert {later_states[alert_id] for alert_id in earlier} == {"no_address"}
