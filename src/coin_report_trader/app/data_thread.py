@@ -398,8 +398,8 @@ class DataWorker:
         알림으로 옮긴다."""
         assert self._conn is not None
         self._steps_done = True
+        failure: StorageError | None = None
         if self._send is not None:
-            failure: StorageError | None = None
             for category in AlertCategory:
                 try:
                     alert_store.settle_not_sent(
@@ -408,16 +408,18 @@ class DataWorker:
                 except StorageError as exc:
                     log.warning("남은 알림의 디스코드 결과를 바꾸지 못했습니다: %s", exc)
                     failure = failure or exc
-            # 앞 실행에서 남은 알림만 바꾼다. 실패의 A-29는 분류를 다 바꾼 뒤에 한 번 만들므로
-            # 이 실행에서 만든 알림은 뒤 분류의 바꾸기에 걸리지 않는다(`"not_sent"`로 남아 보낸다).
-            if failure is None:
-                self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
-            else:
-                self._emit_alert_save_failed(ALERT_WRITE_STATE, failure)
         try:
             startup_errors.move_to_alerts(self._conn, self._logs_dir, self._settled_state)
         except Exception as exc:
             log.warning("startup-errors.jsonl을 옮기지 못했습니다: %s", type(exc).__name__)
+        # 차례 2의 실패의 A-29는 차례 3 뒤에 한 번 만든다(첫 `AlertsView` 앞이다). 앞 실행에서
+        # 남은 알림만 바꾸므로 이 실행에서 만든 알림은 바꾸지 않고, 표에 쓰지 못해 메모리에
+        # 두며 쓴 `"memory"` 줄은 같은 켤 때의 차례 3이 옮기지 않는다(다음에 켤 때 옮긴다).
+        if self._send is not None:
+            if failure is None:
+                self._rules.alert_save_succeeded(ALERT_WRITE_STATE)
+            else:
+                self._emit_alert_save_failed(ALERT_WRITE_STATE, failure)
 
     def _publish_alerts_first(self) -> None:
         """차례 5의 `AlertsView`. 차례 2~4가 끝난 뒤에 처음 보내고, 그 뒤로는 알림이 바뀔 때

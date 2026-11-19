@@ -1554,3 +1554,27 @@ def test_a_successful_seen_mark_does_not_free_the_repeat_of_a_discord_state_writ
     rig.data.retry_candles()
     rig.settle()
     assert len(alert_save_a29(rig)) == 1
+
+
+def test_the_memory_a29_of_a_failed_step_two_is_not_moved_to_the_table_in_the_same_start(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = build(saved={ERROR: webhook_url("v")})
+    make_stored_alert(rig, category=TRADE)
+
+    def refuse_settle(conn: Any, category: AlertCategory, state: Any) -> int:
+        raise StorageError("디스코드 결과 정리에 실패했습니다: OperationalError")
+
+    def refuse_insert(conn: Any, **kwargs: Any) -> int:
+        raise StorageError("알림 저장에 실패했습니다: OperationalError")
+
+    monkeypatch.setattr(data_thread.alert_store, "settle_not_sent", refuse_settle)
+    monkeypatch.setattr(
+        data_thread.alert_store, "insert_alert", refuse_insert
+    )  # 자료 스레드의 쓰기만
+    rig.start()
+    first = rig.sink.of(AlertsView)[0]
+    made = [v for v in first.alerts if v.code == "A-29"]
+    assert [(v.id < 0, v.detail.stage if v.detail else None) for v in made] == [(True, "알림 저장")]
+    assert alert_save_a29(rig) == []  # 표에는 없다
+    assert [line["kind"] for line in rig.jsonl()] == ["memory"]  # 다음에 켤 때 옮긴다
