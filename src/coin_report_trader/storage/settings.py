@@ -40,7 +40,8 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
     `SettingsView`로 읽는다.
 
     값이 없는 키는 기본값(코인 없음, 보관 기간·봉 단위·봉 개수 `None`, 처음 설정 안 마침)이다.
-    `first_setup_done`은 지금처럼 `first_setup_level`만 본다(그 뜻을 바꾸는 것은 39번이다).
+    `first_setup_done`은 `first_setup_level`이 있고 `candle_unit`과 `candle_count`가 모두 저장되어
+    있을 때만 참이다(3.7. 1단계 보완 전에 마친 기록은 `"1"`만 있어 거짓이다).
     저장된 글이 맞지 않으면 `StorageError`다.
     """
     with translate_errors("설정 읽기"):
@@ -56,22 +57,36 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
                 ),
             ).fetchall()
         )
+    unit = _decode_unit(rows.get(KEY_CANDLE_UNIT))
+    count = _decode_count(rows.get(KEY_CANDLE_COUNT))
+    level_present = _decode_level(rows.get(KEY_FIRST_SETUP_LEVEL))
     return SettingsView(
         coins=_decode_coins(rows.get(KEY_COINS)),
         retention_days=_decode_retention(rows.get(KEY_RETENTION_DAYS)),
-        first_setup_done=_decode_level(rows.get(KEY_FIRST_SETUP_LEVEL)),
-        candle_unit=_decode_unit(rows.get(KEY_CANDLE_UNIT)),
-        candle_count=_decode_count(rows.get(KEY_CANDLE_COUNT)),
+        first_setup_done=level_present and unit is not None and count is not None,
+        candle_unit=unit,
+        candle_count=count,
     )
 
 
-def write_settings(conn: sqlite3.Connection, settings: SettingsView) -> None:
+def write_settings(
+    conn: sqlite3.Connection,
+    settings: SettingsView,
+    *,
+    drop_other_unit_candles: bool = False,
+    clear_fetched_at: bool = False,
+) -> None:
     """`SettingsView`의 다섯 값을 한 트랜잭션으로 쓴다.
 
     `retention_days`, `candle_unit`, `candle_count`가 `None`이면 그 키를 지운다.
     `first_setup_done`이 거짓이면 `first_setup_level`을 지우고, 참이면 봉 단위와 봉 개수가 모두
     있을 때(1단계 보완에서 마침) `"2"`, 아니면(1단계 보완 전에 마침) `"1"`을 쓴다. 보관 기간이
     7, 30, 90이 아니거나 봉 개수가 100, 200, 500이 아니면 `ValueError`다.
+
+    `drop_other_unit_candles`가 참이면 같은 트랜잭션에서 `settings.candle_unit`이 아닌 단위의 봉을
+    지운다(봉 단위가 바뀔 때. 3.5.4). `clear_fetched_at`이 참이면 모든 코인의 `fetched_at`도
+    같은 트랜잭션에서 지운다. 둘 다 봉 단위가 있을 때만 뜻이 있고, 단위가 `None`이면 봉을 지우지
+    않는다.
     """
     if settings.retention_days is not None and settings.retention_days not in RETENTION_CHOICES:
         raise ValueError(f"보관 기간은 {RETENTION_CHOICES} 가운데 하나여야 합니다")
@@ -99,6 +114,13 @@ def write_settings(conn: sqlite3.Connection, settings: SettingsView) -> None:
             _put(conn, KEY_FIRST_SETUP_LEVEL, level)
         else:
             conn.execute("DELETE FROM settings WHERE key = ?", (KEY_FIRST_SETUP_LEVEL,))
+        if drop_other_unit_candles and unit is not None:
+            conn.execute("DELETE FROM candles WHERE unit <> ?", (unit.value,))
+        if clear_fetched_at:
+            conn.execute(
+                "DELETE FROM settings WHERE substr(key, 1, ?) = ?",
+                (len(KEY_FETCHED_AT_PREFIX), KEY_FETCHED_AT_PREFIX),
+            )
 
 
 def read_fetched_at(conn: sqlite3.Connection, market: str) -> datetime | None:
