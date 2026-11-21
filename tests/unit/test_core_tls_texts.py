@@ -150,15 +150,17 @@ def test_error_names_follow_the_spec() -> None:
 def test_alert_contents() -> None:
     from coin_report_trader.core import CandleUnit
 
-    assert texts.content_candles_failed((CandleUnit.DAY,)) == "실패한 봉: 일봉"
-    assert texts.content_candles_failed((CandleUnit.MINUTE_60,)) == "실패한 봉: 60분봉"
-    both = (CandleUnit.DAY, CandleUnit.MINUTE_60)
-    assert texts.content_candles_failed(both) == "실패한 봉: 일봉, 60분봉"
-    assert texts.content_candles_failed(both[::-1]) == "실패한 봉: 60분봉, 일봉"
-    assert (
-        texts.CONTENT_NOT_ENOUGH_CANDLES
-        == "완성된 봉이 모자라 다섯 기간 모두 통계를 셈하지 못했습니다."
+    assert texts.content_candles_failed(CandleUnit.DAY) == "실패한 봉: 일봉"
+    assert texts.content_candles_failed(CandleUnit.MINUTE_60) == "실패한 봉: 60분봉"
+    assert texts.content_candles_failed(CandleUnit.MINUTE_30) == "실패한 봉: 30분봉"
+    assert texts.content_candles_failed(CandleUnit.MINUTE_240) == "실패한 봉: 240분봉"
+    assert texts.content_not_enough_candles(37, 100) == (
+        "완성된 봉이 고른 개수(100개)보다 적어 봉 통계를 셈하지 못했습니다(완성된 봉 37개)."
     )
+    assert texts.content_not_enough_candles(0, 500) == (
+        "완성된 봉이 고른 개수(500개)보다 적어 봉 통계를 셈하지 못했습니다(완성된 봉 0개)."
+    )
+    assert not hasattr(texts, "CONTENT_NOT_ENOUGH_CANDLES")  # 새 글은 함수다
     assert texts.CONTENT_BLOCKED == "거래소가 공개 시세 요청을 잠시 막았습니다."
     assert (
         texts.CONTENT_BLOCKED_NOT_REQUESTED

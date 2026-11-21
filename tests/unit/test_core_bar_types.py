@@ -208,7 +208,7 @@ def test_the_new_names_are_exported_from_core() -> None:
         assert name in core.__all__  # 옛 이름은 남긴다
 
 
-def test_the_data_thread_takes_unit_and_count_and_does_not_use_them_yet(tmp_path: Any) -> None:
+def test_the_data_thread_takes_unit_and_count_and_queues_them(tmp_path: Any) -> None:
     from coin_report_trader.app.data_thread import DataWorker
     from coin_report_trader.core import SystemClock
 
@@ -226,5 +226,7 @@ def test_the_data_thread_takes_unit_and_count_and_does_not_use_them_yet(tmp_path
         ("KRW-AAA",), 7, first_setup=True, candle_unit=CandleUnit.MINUTE_30, candle_count=500
     )
     worker.save_settings(("KRW-AAA",), 7, first_setup=True)
-    first, second = list(worker._queue)  # 39번까지 쓰지 않으므로 두 일이 같다
-    assert first == second
+    first, second = list(worker._queue)  # 39번부터 두 값을 일에 담는다
+    assert first != second
+    assert (first.candle_unit, first.candle_count) == (CandleUnit.MINUTE_30, 500)
+    assert (second.candle_unit, second.candle_count) == (None, None)

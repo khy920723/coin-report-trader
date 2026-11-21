@@ -21,18 +21,21 @@ import sqlite3
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
 from coin_report_trader.core import (
+    CANDLE_COUNTS,
+    CANDLE_UNIT_LENGTHS,
     SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_SETTINGS,
     AlertCategory,
     AlertsView,
     AlertView,
+    BarStats,
     CandleUnit,
     Clock,
     CoinView,
@@ -51,7 +54,6 @@ from coin_report_trader.core.texts import (
     CONTENT_BLOCKED,
     CONTENT_BLOCKED_NOT_REQUESTED,
     CONTENT_MARKETS_FAILED,
-    CONTENT_NOT_ENOUGH_CANDLES,
     ERROR_BLOCKED,
     ERROR_NOT_ENOUGH_CANDLES,
     ERROR_STORAGE,
@@ -70,13 +72,21 @@ from coin_report_trader.core.texts import (
     after_candles_blocked,
     after_candles_retry,
     content_candles_failed,
+    content_not_enough_candles,
     kst_when_text,
     text_save_failed,
 )
 from coin_report_trader.notify import alert_message
-from coin_report_trader.stats import CandleStats, compute_candle_stats
+from coin_report_trader.stats import compute_bar_stats
 from coin_report_trader.storage import alerts as alert_store
-from coin_report_trader.storage.candles import last_candle_start, read_candles, write_candles
+from coin_report_trader.storage.candles import (
+    count_complete_candles,
+    first_candle_start,
+    has_candles,
+    last_candle_start,
+    read_latest_complete_candles,
+    write_candles,
+)
 from coin_report_trader.storage.database import open_database
 from coin_report_trader.storage.settings import (
     read_fetched_at,
@@ -108,22 +118,27 @@ log = logging.getLogger(__name__)
 
 DATA_THREAD_NAME: Final = "crt-data"
 """자료 스레드의 이름. 시험이 SQLite를 쓰는 스레드와 `apply`를 부르는 스레드를 가린다."""
-FETCH_INTERVAL: Final = 3600.0
-"""2의 1의 (라): 앞 받기가 끝난 때부터 60분마다 받는다."""
+FETCH_MARGIN: Final = timedelta(seconds=10)
+"""2의 1의 (라): 봉이 끝난 때에서 이만큼 뒤에 받는다(3.5.3)."""
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
+"""저장된 봉이 없을 때 봉의 경계를 세는 기준(UTC 1970-01-01 00:00)."""
 SETTINGS_RETRY_SECONDS: Final = 3600.0
 """설정을 읽지 못했을 때 다시 읽는 간격(60분)."""
 IDLE_SECONDS: Final = 3600.0
 """다음 할 때가 하나도 없을 때 한 번에 기다리는 초. 깨어나도 할 일이 없으면 다시 기다린다."""
 BACKOFF_SECONDS: Final = (300.0, 600.0, 1200.0, 2400.0, 3600.0)
 """기다릴 시간을 주지 않은 일시 차단의 늘리는 차례(2의 3). 마지막 값 다음도 같은 값이다."""
-UNITS: Final = (CandleUnit.DAY, CandleUnit.MINUTE_60)
-"""한 코인은 일봉, 60분봉의 차례로 받는다."""
 MAX_COINS: Final = 3
 CLEANUP_INTERVAL: Final = 3600.0
 """오래된 알림 지우기(3.9): 창이 뜬 직후, 보관 기간을 저장한 직후, 그 뒤로 60분마다."""
 STATES_WAIT_SECONDS: Final = 30.0
 """켤 때 차례 1에서 보내기 스레드의 주소 상태를 기다리는 가장 긴 실제 시간. 지나면 모두 읽지
 못한 것으로 보고 이어간다(보내기 스레드가 보관소에서 막혀도 받기가 시작되도록)."""
+
+
+def _has_values(stats: BarStats) -> bool:
+    """완성된 봉이 고른 개수 이상이라 값이 났는가(`READY`의 기준. 3.4)."""
+    return stats.bar_count >= stats.requested_count
 
 
 @dataclass
@@ -147,6 +162,8 @@ class _SaveTask:
     coins: tuple[str, ...]
     retention_days: int
     first_setup: bool
+    candle_unit: CandleUnit | None = None
+    candle_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -232,7 +249,10 @@ class DataWorker:
         self._blocked_until: datetime | None = None
         self._backoff = 0
         self._fetched: dict[str, datetime | None] = {}
-        self._last_stats: dict[str, CandleStats] = {}
+        self._last_stats: dict[str, tuple[BarStats, bool]] = {}
+        self._reached_oldest: set[tuple[str, CandleUnit]] = set()
+        """거슬러 받기가 가장 이른 봉에 닿은 (코인, 단위). 단위가 바뀌면 비우고 다시 켜면 잃는다."""
+        self._next_due: datetime | None = None
         self._last_view: dict[str, CoinView] = {}
         self._memory = MemoryAlerts()
         self._alerts_open = False
@@ -288,8 +308,8 @@ class DataWorker:
         candle_unit: CandleUnit | None = None,
         candle_count: int | None = None,
     ) -> None:
-        """`candle_unit`과 `candle_count`는 받기만 하고 쓰지 않는다(39번이 저장한다. 3.8)."""
-        self._put(_SaveTask(tuple(coins), retention_days, first_setup))
+        """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4)."""
+        self._put(_SaveTask(tuple(coins), retention_days, first_setup, candle_unit, candle_count))
 
     def retry_candles(self) -> None:
         self._put("retry")
@@ -357,6 +377,8 @@ class DataWorker:
 
     def _post(self, update: UiUpdate) -> None:
         if isinstance(update, CoinView):
+            if self._chosen() is None:
+                return  # 봉 단위가 저장되지 않은 동안은 `CoinView`를 보내지 않는다(3.5.4).
             self._last_view[update.market] = update
         if self._stop.is_set():
             return
@@ -467,15 +489,17 @@ class DataWorker:
 
     def _send_initial_view(self, market: str) -> None:
         """켤 때 처음의 `CoinView`: 저장된 봉으로 셈한 값(없으면 `NO_DATA`)."""
+        if self._chosen() is None:
+            return
         try:
-            stats = self._read_stats(market)
+            stats, incomplete = self._read_stats(market)
         except Exception as exc:  # 읽기의 실패와 셈의 예외 모두 A-30으로 알리고 다음 코인으로 간다
             self._emit_unexpected(STAGE_STARTUP, market, exc)
             name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
             self._post(self._build_view(market, LoadState.FAILED, None, error_name=name))
             return
-        state = LoadState.READY if stats.has_values else LoadState.NO_DATA
-        self._post(self._build_view(market, state, stats))
+        state = LoadState.READY if _has_values(stats) else LoadState.NO_DATA
+        self._post(self._build_view(market, state, (stats, incomplete)))
 
     # --- 반복 ---------------------------------------------------------------------------------
 
@@ -583,7 +607,7 @@ class DataWorker:
     def _scheduled_round(self) -> None:
         """(라)의 때와 `blocked_until`의 저절로 받기."""
         settings = self._settings
-        if settings is None or not settings.coins:
+        if settings is None or not settings.coins or self._chosen() is None:
             self._next_round_mono = None
             self._blocked_mono = None
             return
@@ -593,7 +617,7 @@ class DataWorker:
 
     def _retry_candles(self) -> None:
         settings = self._settings
-        if settings is None or not settings.coins:
+        if settings is None or not settings.coins or self._chosen() is None:
             return
         if self._is_blocked():
             self._send_blocked_views()
@@ -634,11 +658,29 @@ class DataWorker:
         if task.coins != current.coins and not self._coins_listed(task.coins):
             self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_COIN_NOT_LISTED))
             return
-        done = True if task.first_setup else current.first_setup_done
-        new = SettingsView(task.coins, task.retention_days, done)
+        if task.candle_count is not None and task.candle_count not in CANDLE_COUNTS:
+            self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
+            return
+        unit = current.candle_unit if task.candle_unit is None else CandleUnit(task.candle_unit)
+        count = current.candle_count if task.candle_count is None else task.candle_count
         assert self._conn is not None
+        unit_changed = unit is not None and unit != current.candle_unit
+        fresh = False  # 고른 단위의 봉이 어느 코인에도 없다(3.5.4)
+        if unit is not None and unit_changed:
+            try:
+                fresh = not has_candles(self._conn, unit)
+            except StorageError as exc:
+                self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
+                self._emit_save_failed(STAGE_SETTINGS_SAVE, None, exc)
+                return
+        done = True if task.first_setup else current.first_setup_done
+        new = SettingsView(
+            task.coins, task.retention_days, done, candle_unit=unit, candle_count=count
+        )
         try:
-            write_settings(self._conn, new)
+            write_settings(
+                self._conn, new, drop_other_unit_candles=unit_changed, clear_fetched_at=fresh
+            )
         except StorageError as exc:
             self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
             self._emit_save_failed(STAGE_SETTINGS_SAVE, None, exc)
@@ -647,11 +689,21 @@ class DataWorker:
             self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
             self._emit_unexpected(STAGE_SETTINGS_SAVE, None, exc)
             return
+        # 처음 설정을 마쳤다는 것은 단위와 개수가 모두 저장된 것이다(3.7).
+        new = replace(new, first_setup_done=done and unit is not None and count is not None)
         self._settings = new
+        if unit_changed:
+            self._reached_oldest.clear()
+            self._last_stats.clear()
+            if fresh:
+                self._fetched.clear()
         self._rules.a29_succeeded(STAGE_SETTINGS_SAVE, None)
         self._post(SaveResult(SAVE_TARGET_SETTINGS, True, SETTINGS_SAVED))
         self._post(new)
         self._cleanup_old(always_post=True)  # 보관 기간을 저장한 직후(3.9)
+        if unit_changed:
+            for market in new.coins:  # 받기 앞의 값: 고른 단위의 저장된 봉으로 셈한 것
+                self._send_initial_view(market)
         if new.coins:
             if self._is_blocked():
                 self._send_blocked_views()
@@ -698,16 +750,53 @@ class DataWorker:
     # --- 받기(2의 1, 3.8의 "받기가 끝나는 모습") --------------------------------------------------
 
     def _fetch_round(self) -> None:
-        """한 번의 받기. 어떻게 끝나든(예외 포함) 다음 (라)의 때를 끝난 때 + 60분으로 정한다.
+        """한 번의 받기. 어떻게 끝나든(예외 포함) 다음 (라)의 때를 정한다(3.5.3).
 
-        멈추려고 끝난 받기는 정하지 않는다. 요청하지 않는 일(차단 중의 `retry_candles` 등)은 이
-        함수를 부르지 않으므로 (라)를 새로 세지 않는다. `_backoff`, `blocked_*`는 건드리지 않는다.
+        고른 봉 단위가 없으면 받지 않는다. 멈추려고 끝난 받기는 정하지 않는다. 요청하지 않는
+        일(차단 중의 `retry_candles` 등)은 이 함수를 부르지 않으므로 (라)를 새로 세지 않는다.
+        `_backoff`, `blocked_*`는 건드리지 않는다.
         """
+        if self._chosen() is None:
+            return
         try:
             self._fetch_round_body()
         finally:
             if not self._stop.is_set():
-                self._next_round_mono = self._clock.monotonic() + FETCH_INTERVAL
+                self._schedule_next()
+
+    def _compute_next_due(self, unit: CandleUnit) -> datetime:
+        """다음 (라)의 때(3.5.3): 고른 코인들의 저장된 마지막 봉의 시작 시각 가운데 가장 늦은 것에
+        봉의 길이 × m(m은 결과가 지금보다 뒤가 되는 1 이상의 가장 작은 정수)을 더한 때에 10초를
+        더한다. 저장된 봉이 하나도 없으면 UTC 1970-01-01 00:00부터 단위의 길이로 센 다음 경계다.
+        (가)(나)(다)의 받기는 이 때를 바꾸지 않으므로 한 받기가 끝난 뒤에 다시 셈해도 같다."""
+        length = CANDLE_UNIT_LENGTHS[unit]
+        now = self._clock.now()
+        latest: datetime | None = None
+        settings = self._settings
+        if self._conn is not None and settings is not None:
+            for market in settings.coins:
+                try:
+                    start = last_candle_start(self._conn, market, unit)
+                except StorageError:
+                    continue
+                if start is not None and (latest is None or start > latest):
+                    latest = start
+        if latest is None:
+            end = _EPOCH + length * ((now - _EPOCH) // length + 1)
+        else:
+            end = latest + length * max(1, (now - latest) // length + 1)
+        return end + FETCH_MARGIN
+
+    def _schedule_next(self) -> datetime | None:
+        """(라)의 때를 셈해 자료 스레드의 기다림("다음 할 때")에 넣는다."""
+        chosen = self._chosen()
+        if chosen is None:
+            return None
+        due = self._compute_next_due(chosen[0])
+        self._next_due = due
+        delay = (due - self._clock.now()).total_seconds()
+        self._next_round_mono = self._clock.monotonic() + max(0.0, delay)
+        return due
 
     def _fetch_round_body(self) -> None:
         settings = self._settings
@@ -735,12 +824,12 @@ class DataWorker:
         if self._stop.is_set():
             return
         ended = self._clock.now()
+        due = self._schedule_next()
         if blocked and self._blocked_until is not None:
             after = after_candles_blocked(kst_when_text(self._blocked_until, ended))
         else:
-            after = after_candles_retry(
-                kst_when_text(ended + timedelta(seconds=FETCH_INTERVAL), ended)
-            )
+            assert due is not None
+            after = after_candles_retry(kst_when_text(due, ended))
         for result in results:
             a1 = result.a1
             if a1 is not None and self._rules.want_a1(result.market, a1.error_name):
@@ -752,50 +841,60 @@ class DataWorker:
     def _fetch_coin(self, market: str) -> _CoinResult:
         assert self._client is not None
         assert self._conn is not None
+        chosen = self._chosen()
+        assert chosen is not None
+        unit, count = chosen
         result = _CoinResult(market)
         self._post(self._coin_view(market, LoadState.LOADING))
-        requests: list[tuple[CandleUnit, str, BaseException | None]] = []
-        db_failure: tuple[str, BaseException] | None = None  # (단계, 예외). 먼저 난 것
-        for unit in UNITS:
+        request: tuple[str, BaseException | None] | None = None
+        db_failure: tuple[str, BaseException] | None = None  # (단계, 예외)
+        try:
+            last = last_candle_start(self._conn, market, unit)
+            first = first_candle_start(self._conn, market, unit)
+            have = count_complete_candles(self._conn, market, unit, self._clock.now())
+        except StorageError as exc:
+            db_failure = (STAGE_CANDLES, exc)
+        else:
+            missing = 0 if (market, unit) in self._reached_oldest else max(0, count - have)
             try:
-                last = last_candle_start(self._conn, market, unit)
-            except StorageError as exc:
-                db_failure = db_failure or (STAGE_CANDLES, exc)
-                continue
-            try:
-                candles = self._client.fetch_candles(market, unit, last_start=last)
+                recent = self._client.fetch_recent(
+                    market, unit, count=count, last_start=last, first_start=first, missing=missing
+                )
             except QuoteError as exc:
                 if exc.error_name == ERROR_BLOCKED:
                     self._set_block(exc.retry_after)
                     result.blocked = True
-                    break
-                requests.append((unit, exc.error_name, None))
-                continue
+                else:
+                    request = (exc.error_name, None)
             except Exception as exc:
-                requests.append((unit, type(exc).__name__, exc))
-                continue
-            try:
-                write_candles(self._conn, candles)
-            except StorageError as exc:
-                db_failure = db_failure or (STAGE_CANDLE_SAVE, exc)
+                request = (type(exc).__name__, exc)
+            else:
+                try:
+                    write_candles(self._conn, recent.candles)
+                except StorageError as exc:
+                    db_failure = (STAGE_CANDLE_SAVE, exc)
+                else:
+                    if recent.reached_oldest:
+                        self._reached_oldest.add((market, unit))
         if result.blocked:
             self._post(
                 self._coin_view(market, LoadState.FAILED, error_name=ERROR_BLOCKED, blocked=True)
             )
             result.a1 = _A1(ERROR_BLOCKED, STAGE_CANDLES, CONTENT_BLOCKED)
             return result
-        if db_failure is None and not requests:
+        if db_failure is None and request is None:
             self._finish_success(market, result)
             return result
-        error_name = self._record_failure(market, result, requests, db_failure)
+        error_name = self._record_failure(market, unit, result, request, db_failure)
         self._post(self._coin_view(market, LoadState.FAILED, error_name=error_name))
         return result
 
     def _record_failure(
         self,
         market: str,
+        unit: CandleUnit,
         result: _CoinResult,
-        requests: list[tuple[CandleUnit, str, BaseException | None]],
+        request: tuple[str, BaseException | None] | None,
         db_failure: tuple[str, BaseException] | None,
     ) -> str:
         """한 받기의 알림의 차례(DB, 요청)로 알림 하나를 정하고 오류 이름을 돌려준다."""
@@ -806,18 +905,14 @@ class DataWorker:
             else:
                 self._emit_unexpected(stage, market, exc)
             return ERROR_STORAGE
-        first_unit, name, error = requests[0]
-        del first_unit
-        if error is None:
-            units = tuple(unit for unit, _, _ in requests)
-            content = content_candles_failed(units)
-        else:
-            content = redact(str(error))
+        assert request is not None
+        name, error = request
+        content = content_candles_failed(unit) if error is None else redact(str(error))
         result.a1 = _A1(name, STAGE_CANDLES, content)
         return name
 
     def _finish_success(self, market: str, result: _CoinResult) -> None:
-        """두 단위 모두 요청과 저장이 끝났다. `fetched_at`을 쓰고 값을 셈한다."""
+        """요청과 저장이 끝났다. `fetched_at`을 쓰고 값을 셈한다."""
         assert self._conn is not None
         moment = self._clock.now()
         try:
@@ -830,30 +925,44 @@ class DataWorker:
         self._rules.a29_succeeded(STAGE_CANDLE_SAVE, market)
         self._backoff = 0
         try:
-            stats = self._read_stats(market)
+            stats, _ = self._read_stats(market)
         except Exception as exc:
             # 값은 그 코인에 마지막으로 보낸 `CoinView`의 값이다(3.8). 새로 읽거나 셈하지 않는다.
             self._emit_unexpected(STAGE_STATS, market, exc)
             name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
             self._post(self._view_with_last_values(market, LoadState.FAILED, name))
             return
-        if stats.has_values:
+        if _has_values(stats):
             self._rules.a1_succeeded(market)
-            self._post(self._build_view(market, LoadState.READY, stats))
+            self._post(self._build_view(market, LoadState.READY, self._last_stats[market]))
             return
-        self._post(self._build_view(market, LoadState.NO_DATA, stats))
-        result.a1 = _A1(ERROR_NOT_ENOUGH_CANDLES, STAGE_STATS, CONTENT_NOT_ENOUGH_CANDLES)
+        self._post(self._build_view(market, LoadState.NO_DATA, self._last_stats[market]))
+        content = content_not_enough_candles(stats.bar_count, stats.requested_count)
+        result.a1 = _A1(ERROR_NOT_ENOUGH_CANDLES, STAGE_STATS, content)
 
     # --- 값과 `CoinView`, `MarketsView` ---------------------------------------------------------
 
-    def _read_stats(self, market: str) -> CandleStats:
+    def _chosen(self) -> tuple[CandleUnit, int] | None:
+        """저장된 봉 단위와 봉 개수. 둘 중 하나라도 없으면 `None`(받지도 `CoinView`를 보내지도
+        않는다. 3.5.4)."""
+        settings = self._settings
+        if settings is None or settings.candle_unit is None or settings.candle_count is None:
+            return None
+        return CandleUnit(settings.candle_unit), settings.candle_count
+
+    def _read_stats(self, market: str) -> tuple[BarStats, bool]:
+        """저장된 봉으로 봉 통계와 `last_incomplete`를 셈한다."""
         assert self._conn is not None
-        candles = []
-        for unit in UNITS:
-            candles.extend(read_candles(self._conn, market, unit))
-        stats = compute_candle_stats(candles, self._clock.now())
-        self._last_stats[market] = stats
-        return stats
+        chosen = self._chosen()
+        assert chosen is not None
+        unit, count = chosen
+        now = self._clock.now()
+        candles = read_latest_complete_candles(self._conn, market, unit, now, count)
+        last = last_candle_start(self._conn, market, unit)
+        stats, _ = compute_bar_stats(candles, now, market=market, unit=unit, count=count)
+        incomplete = last is not None and last + CANDLE_UNIT_LENGTHS[unit] > now
+        self._last_stats[market] = (stats, incomplete)
+        return stats, incomplete
 
     def _fetched_at(self, market: str) -> datetime | None:
         if market not in self._fetched:
@@ -875,31 +984,35 @@ class DataWorker:
     ) -> CoinView:
         """저장된 봉으로 값을 다시 셈해 담는다. 읽지 못하면 마지막으로 셈한 값을 담는다."""
         try:
-            stats: CandleStats | None = self._read_stats(market)
+            computed: tuple[BarStats, bool] | None = self._read_stats(market)
         except Exception:
-            stats = self._last_stats.get(market)
-        return self._build_view(market, state, stats, error_name=error_name, blocked=blocked)
+            computed = self._last_stats.get(market)
+        return self._build_view(market, state, computed, error_name=error_name, blocked=blocked)
 
     def _view_with_last_values(
         self, market: str, state: LoadState, error_name: str | None
     ) -> CoinView:
-        """그 코인에 마지막으로 보낸 `CoinView`의 값(없으면 모두 `None`)을 담는다."""
+        """그 코인에 마지막으로 보낸 `CoinView`의 값(없으면 `stats`가 `None`)을 담는다."""
         last = self._last_view.get(market)
         fetched_at, as_of = self._fetched_at(market), self._clock.now()
         if last is None:
             return CoinView(
                 market, state, fetched_at=fetched_at, error_name=error_name, as_of=as_of
             )
-        return CoinView(
-            market, state, last.periods, last.indicator, last.last_incomplete, fetched_at,
-            error_name, None, as_of,
-        )  # fmt: skip
+        return replace(
+            last,
+            state=state,
+            fetched_at=fetched_at,
+            error_name=error_name,
+            blocked_until=None,
+            as_of=as_of,
+        )
 
     def _build_view(
         self,
         market: str,
         state: LoadState,
-        stats: CandleStats | None,
+        computed: tuple[BarStats, bool] | None,
         *,
         error_name: str | None = None,
         blocked: bool = False,
@@ -907,14 +1020,15 @@ class DataWorker:
         blocked_until = self._blocked_until if blocked else None
         fetched_at = self._fetched_at(market)
         as_of = self._clock.now()
-        if stats is None:
+        if computed is None:
             return CoinView(
                 market, state, fetched_at=fetched_at, error_name=error_name,
                 blocked_until=blocked_until, as_of=as_of,
             )  # fmt: skip
+        stats, last_incomplete = computed
         return CoinView(
-            market, state, stats.periods, stats.indicator, stats.last_incomplete, fetched_at,
-            error_name, blocked_until, as_of,
+            market, state, last_incomplete=last_incomplete, fetched_at=fetched_at,
+            error_name=error_name, blocked_until=blocked_until, as_of=as_of, stats=stats,
         )  # fmt: skip
 
     def _markets_view(

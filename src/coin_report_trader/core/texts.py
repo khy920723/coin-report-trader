@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import Final
 
 from coin_report_trader.core.clock import KST
-from coin_report_trader.core.market import CandleUnit
+from coin_report_trader.core.market import CANDLE_UNIT_TITLES, CandleUnit
 
 # --- 단계 이름("단계"에 쓴다) ---
 STAGE_MARKETS: Final = "코인 목록 받기"
@@ -94,15 +94,19 @@ def text_markets_failed(error_name: str) -> str:
 
 
 # --- 알림의 내용(`AlertDetail.content`, 3.9) ---
-_UNIT_NAMES: Final = {CandleUnit.DAY: "일봉", CandleUnit.MINUTE_60: "60분봉"}
+def content_candles_failed(unit: CandleUnit) -> str:
+    """A-1(요청의 실패)의 내용: 실패한 봉의 단위 이름(예: "실패한 봉: 60분봉")."""
+    return f"실패한 봉: {CANDLE_UNIT_TITLES[CandleUnit(unit)]}"
 
 
-def content_candles_failed(units: tuple[CandleUnit, ...]) -> str:
-    """A-1(요청의 실패)의 내용: 실패한 봉의 단위를 받은 차례로 ", "로 잇는다."""
-    return "실패한 봉: " + ", ".join(_UNIT_NAMES[CandleUnit(unit)] for unit in units)
+def content_not_enough_candles(have: int, count: int) -> str:
+    """A-1("봉이 모자람")의 내용: 완성된 봉이 고른 개수보다 적어 봉 통계를 셈하지 못했다."""
+    return (
+        f"완성된 봉이 고른 개수({count}개)보다 적어 봉 통계를 셈하지 못했습니다"
+        f"(완성된 봉 {have}개)."
+    )
 
 
-CONTENT_NOT_ENOUGH_CANDLES: Final = "완성된 봉이 모자라 다섯 기간 모두 통계를 셈하지 못했습니다."
 CONTENT_BLOCKED: Final = "거래소가 공개 시세 요청을 잠시 막았습니다."
 CONTENT_BLOCKED_NOT_REQUESTED: Final = (
     "앞 코인에서 일시 차단을 받아 이 코인은 요청하지 않았습니다."
