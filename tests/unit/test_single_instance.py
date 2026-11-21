@@ -147,6 +147,19 @@ def test_the_first_start_takes_the_lock_makes_only_the_root_and_the_lock_file(
     assert sorted(path.name for path in root.iterdir()) == ["instance.lock"]  # data, logs는 없다
 
 
+def test_the_server_is_opened_for_the_user_only(
+    started: list[single_instance.Started], tmp_path: Path
+) -> None:
+    from PySide6.QtNetwork import QLocalServer
+
+    first = begin(started, tmp_path / "data-root")
+    server = first._server
+    assert server is not None
+    assert server.socketOptions() == QLocalServer.SocketOption.UserAccessOption
+    if sys.platform != "win32":  # 소켓 파일을 그 사용자만 쓴다(같은 PC의 다른 사용자가 못 붙는다)
+        assert (Path(server.fullServerName()).stat().st_mode & 0o777) == 0o700
+
+
 def test_a_second_start_asks_the_first_to_show_the_window_and_makes_nothing(
     started: list[single_instance.Started], tmp_path: Path
 ) -> None:
