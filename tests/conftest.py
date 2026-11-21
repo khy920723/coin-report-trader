@@ -1,4 +1,4 @@
-"""시험 공통 설정(M0 명세 3.5절, 4절 5번, M1 명세 3.13).
+"""시험 공통 설정(M0 명세 3.5절, 4절 5번, M1 명세 3.13, M2 명세 3.15).
 
 - 자료 폴더: autouse 픽스처가 모든 시험에서 `LOCALAPPDATA`(Windows)와 `XDG_DATA_HOME`(Linux)를
   그 시험의 `tmp_path`로 바꾼다. 실제 사용자 폴더를 쓰는 시험은 없다. 시험이 이 값을 다시 바꿔도
@@ -29,17 +29,37 @@
   - 부르면 `KeyringBlocked`(AssertionError의 하위)를 낸다. 네트워크 차단처럼 부를 때마다 기록하고,
     시험의 정리 단계에서 기록이 남아 있으면 그 시험을 실패로 만든다(예외가 삼켜졌어도). 일부러
     부르는 시험은 `keyring_guard.expect_blocked()`로 감싼다.
+- `claude` 실행 장치(M2 명세 3.15): `pytest_configure`에서 걸고 `pytest_unconfigure`에서
+  푼다. 세션과 CI는 진짜 `claude`를 부르지 않는다(네트워크 차단은 자식 프로세스를 막지 못한다).
+  - 막는 것: `subprocess.Popen`이 띄우는 실행 파일의 이름이 `claude`, `claude.exe`,
+    `claude.cmd`인 것(대소문자 무관, 경로째 적어도 이름만 본다). `subprocess.run`·`call`·
+    `check_call`·`check_output`, `os.popen`, asyncio의 자식 프로세스처럼 `Popen`을 거치는 것은
+    모두 걸린다. 보는 곳은 `executable`, 인자 목록의 첫 항목, 글 하나로 준 명령(그 글 전체와 첫
+    낱말), `shell=True`이면 명령 글의 모든 낱말이다. `Popen`을 만들기 전에 막으므로 프로세스가
+    뜨지 않는다.
+  - 막지 않는 것: `[sys.executable, 가짜 실행 파일]`(가짜 실행기의 시험. 3.15), 이름이 다른
+    실행 파일.
+  - 막으면 `ClaudeBlocked`(AssertionError의 하위)를 낸다. 다른 두 장치처럼 막을 때마다 기록하고
+    세며(`claude_guard.blocked_by_test`), 시험의 정리 단계에서 기록이 남아 있으면 그 시험을
+    실패로 만든다(예외가 삼켜졌어도). 일부러 막는 시험은 `claude_guard.expect_blocked()`로
+    감싼다.
+  - 한계: `subprocess`를 거치지 않고 프로세스를 띄우는 것(`os.system`, `os.exec*`,
+    `os.spawn*`, `os.posix_spawn`, `_posixsubprocess`, Qt의 `QProcess`), 다른 이름으로 바꾼
+    사본, 원래 함수를 일부러 되돌리는 코드는 막지 못한다.
 - 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12(M0)와 B22(M1 명세 6절)
   시험은 수집한 시험의 맨 끝으로 옮겨(`LAST_SCENARIOS`), 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
 
-시험은 `network_guard`, `keyring_guard` 픽스처로 두 장치를 받는다. `pythonpath = ["tests"]`(M1 명세
-3.12)로 시험 파일이 `tests/` 아래 모듈을 import할 수는 있지만, 이 파일은 pytest가 따로 읽어 들이는
-설정 파일이므로 import하지 않고 픽스처로 받는다.
+시험은 `network_guard`, `keyring_guard`, `claude_guard` 픽스처로 세 장치를 받는다.
+`pythonpath = ["tests"]`(M1 명세 3.12)로 시험 파일이 `tests/` 아래 모듈을 import할 수는 있지만, 이
+파일은 pytest가 따로 읽어 들이는 설정 파일이므로 import하지 않고 픽스처로 받는다.
 """
 
+import inspect
 import ipaddress
 import os
+import re
 import socket
+import subprocess
 import sys
 import threading
 import urllib.request
@@ -67,6 +87,10 @@ class RealNetworkBlocked(AssertionError):
 
 class KeyringBlocked(AssertionError):
     """시험이 keyring의 값 읽기·쓰기·지우기를 불렀다(M1 명세 3.13)."""
+
+
+class ClaudeBlocked(AssertionError):
+    """시험이 이름이 `claude`인 실행 파일을 띄우려 했다(M2 명세 3.15)."""
 
 
 # --- 자료 폴더 -------------------------------------------------------------------------------
@@ -469,8 +493,141 @@ class KeyringGuard:
         patch.setattr(meta, "__init__", init)
 
 
+# --- claude 실행 장치 ------------------------------------------------------------------------
+
+CLAUDE_NAMES = frozenset({"claude", "claude.exe", "claude.cmd"})
+# `shell=True`의 명령 글을 낱말로 나누는 자리: 빈칸, 따옴표, 셸의 이음표.
+_SHELL_SPLIT = re.compile(r"[\s;&|()<>\"'`]+")
+
+
+def _base_name(program: object) -> str:
+    """경로째 적은 실행 파일의 이름(소문자). `/`와 `\\`를 모두 경로의 구분으로 본다."""
+    text = os.fsdecode(program) if isinstance(program, str | bytes | os.PathLike) else str(program)
+    return re.split(r"[\\/]", text.strip())[-1].lower()
+
+
+def claude_program(args: Any, executable: Any = None, shell: bool = False) -> str | None:
+    """`Popen(args, executable=…, shell=…)`이 띄울 실행 파일 가운데 이름이 `claude`인 것.
+
+    없으면 None. 보는 곳은 모듈의 글(`claude` 실행 장치)에 적었다.
+    """
+    candidates: list[Any] = []
+    if executable is not None:
+        candidates.append(executable)
+    if isinstance(args, str | bytes | os.PathLike):
+        command = os.fsdecode(args)
+        if shell:
+            candidates.extend(_SHELL_SPLIT.split(command))
+        else:
+            candidates.append(command)  # POSIX에서는 글 전체가 실행 파일이다
+            stripped = command.strip()
+            if stripped.startswith('"'):  # Windows의 명령 줄: 따옴표로 감싼 첫 낱말
+                candidates.append(stripped[1:].split('"', 1)[0])
+            elif stripped:
+                candidates.append(stripped.split(maxsplit=1)[0])
+    else:
+        items = list(args) if args is not None else []
+        if items:
+            if shell:
+                candidates.extend(_SHELL_SPLIT.split(os.fsdecode(items[0])))
+            else:
+                candidates.append(items[0])
+    for candidate in candidates:
+        if candidate and _base_name(candidate) in CLAUDE_NAMES:
+            return os.fsdecode(candidate) if not isinstance(candidate, str) else candidate
+    return None
+
+
+class ClaudeGuard:
+    """이름이 `claude`인 실행 파일을 띄우는 `subprocess` 호출을 막고 세는 장치(M2 명세 3.15).
+
+    시험은 `claude_guard` 픽스처로 받는다.
+    """
+
+    Blocked = ClaudeBlocked
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._attempts: list[str] = []
+        self._installed: dict[tuple[object, str], object] = {}
+        # 시험(nodeid)마다 정리 단계에서 본 막힌 호출 수(M2 명세 C30이 본다).
+        self.blocked_by_test: dict[str, int] = {}
+
+    def take_attempts(self) -> list[str]:
+        with self._lock:
+            taken = list(self._attempts)
+            self._attempts.clear()
+        return taken
+
+    @contextmanager
+    def expect_blocked(self) -> Iterator[list[str]]:
+        """안에서 막힌 호출을 기대한 것으로 보고 기록에서 뺀다. 하나도 없으면 AssertionError."""
+        with self._lock:
+            start = len(self._attempts)
+        caught: list[str] = []
+        try:
+            yield caught
+        finally:
+            with self._lock:
+                caught.extend(self._attempts[start:])
+                del self._attempts[start:]
+        if not caught:
+            raise AssertionError("expect_blocked() 안에서 막힌 claude 실행이 없었다")
+
+    @staticmethod
+    def report(attempts: list[str]) -> str:
+        lines = [f"- {item}" for item in attempts[:_REPORT_LIMIT]]
+        if len(attempts) > _REPORT_LIMIT:
+            lines.append(f"- 외 {len(attempts) - _REPORT_LIMIT}건")
+        return (
+            f"claude 실행을 {len(attempts)}번 막았다(예외가 삼켜졌어도 실패로 본다. 시험은 가짜 "
+            "실행기나 [sys.executable, 가짜 실행 파일]을 쓴다. 일부러 띄우는 시험은 "
+            "claude_guard.expect_blocked()로 감싼다):\n" + "\n".join(lines)
+        )
+
+    def is_installed(self) -> bool:
+        return bool(self._installed) and all(
+            getattr(owner, name, None) is wrapper
+            for (owner, name), wrapper in self._installed.items()
+        )
+
+    def install(self, patch: pytest.MonkeyPatch) -> None:
+        """장치를 건다. `patch.undo()`로 풀린다.
+
+        `Popen.__init__`을 감싼다. 클래스는 그대로이므로 `isinstance`와, 장치를 걸기 전에 가져간
+        `Popen`의 이름도 모두 이 장치를 거친다.
+        """
+        self._installed.clear()
+        original = subprocess.Popen.__init__
+        signature = inspect.signature(original)
+        guard = self
+
+        def init(popen: Any, *args: Any, **kwargs: Any) -> None:
+            try:
+                bound = signature.bind(popen, *args, **kwargs)
+            except TypeError:
+                original(popen, *args, **kwargs)  # 인자가 틀리면 원래의 오류를 그대로 낸다
+                return
+            values = bound.arguments
+            program = claude_program(
+                values.get("args"), values.get("executable"), bool(values.get("shell", False))
+            )
+            if program is not None:
+                message = f"이름이 claude인 실행 파일({_base_name(program)})을 띄우는 것을 막았다"
+                with guard._lock:
+                    guard._attempts.append(message)
+                raise ClaudeBlocked(message)
+            original(popen, *args, **kwargs)
+
+        init.__name__ = "__init__"
+        init.__qualname__ = "Popen.__init__"
+        patch.setattr(subprocess.Popen, "__init__", init)
+        self._installed[(subprocess.Popen, "__init__")] = init
+
+
 GUARD = NetworkGuard()
 KEYRING_GUARD = KeyringGuard()
+CLAUDE_GUARD = ClaudeGuard()
 _PATCH = pytest.StashKey[pytest.MonkeyPatch]()
 
 
@@ -486,11 +643,18 @@ def keyring_guard() -> KeyringGuard:
     return KEYRING_GUARD
 
 
+@pytest.fixture
+def claude_guard() -> ClaudeGuard:
+    """이 세션의 claude 실행 장치."""
+    return CLAUDE_GUARD
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", f"{SCENARIO_MARKER}(id): 명세의 수용 시나리오 번호")
     patch = pytest.MonkeyPatch()
     GUARD.install(patch)
     KEYRING_GUARD.install(patch)
+    CLAUDE_GUARD.install(patch)
     config.stash[_PATCH] = patch
 
 
@@ -515,6 +679,9 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     keyring_attempts = KEYRING_GUARD.take_attempts()
     if keyring_attempts:
         raise pytest.UsageError("수집 중 " + KEYRING_GUARD.report(keyring_attempts))
+    claude_attempts = CLAUDE_GUARD.take_attempts()
+    if claude_attempts:
+        raise pytest.UsageError("수집 중 " + CLAUDE_GUARD.report(claude_attempts))
     items = session.items
     last = [item for name in LAST_SCENARIOS for item in items if _scenario(item) == name]
     if last:
@@ -536,6 +703,8 @@ def _guard_problem() -> str | None:
         return "실제 네트워크 차단이 풀려 있다(socket 함수를 되돌린 코드가 있다)"
     if not KEYRING_GUARD.is_installed():
         return "keyring 장치가 풀려 있다(keyring 함수를 되돌린 코드가 있다)"
+    if not CLAUDE_GUARD.is_installed():
+        return "claude 실행 장치가 풀려 있다(subprocess.Popen.__init__을 되돌린 코드가 있다)"
     problems = []
     attempts = GUARD.take_attempts()
     if attempts:
@@ -543,6 +712,9 @@ def _guard_problem() -> str | None:
     keyring_attempts = KEYRING_GUARD.take_attempts()
     if keyring_attempts:
         problems.append(KEYRING_GUARD.report(keyring_attempts))
+    claude_attempts = CLAUDE_GUARD.take_attempts()
+    if claude_attempts:
+        problems.append(CLAUDE_GUARD.report(claude_attempts))
     return "\n".join(problems) or None
 
 
@@ -562,25 +734,32 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
         # 정리 단계는 함수·모듈·세션 범위 픽스처의 정리까지 담는다.
         installed = GUARD.is_installed()
         keyring_installed = KEYRING_GUARD.is_installed()
+        claude_installed = CLAUDE_GUARD.is_installed()
         attempts = GUARD.take_attempts()
         keyring_attempts = KEYRING_GUARD.take_attempts()
+        claude_attempts = CLAUDE_GUARD.take_attempts()
         GUARD.blocked_by_test[item.nodeid] = len(attempts)
         KEYRING_GUARD.blocked_by_test[item.nodeid] = len(keyring_attempts)
+        CLAUDE_GUARD.blocked_by_test[item.nodeid] = len(claude_attempts)
         if not installed:
             pytest.fail("실제 네트워크 차단이 풀려 있다", pytrace=False)
         if not keyring_installed:
             pytest.fail("keyring 장치가 풀려 있다", pytrace=False)
+        if not claude_installed:
+            pytest.fail("claude 실행 장치가 풀려 있다", pytrace=False)
         problems = []
         if attempts:
             problems.append(GUARD.report(attempts))
         if keyring_attempts:
             problems.append(KEYRING_GUARD.report(keyring_attempts))
+        if claude_attempts:
+            problems.append(CLAUDE_GUARD.report(claude_attempts))
         if problems:
             pytest.fail("\n".join(problems), pytrace=False)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    for guard in (GUARD, KEYRING_GUARD):
+    for guard in (GUARD, KEYRING_GUARD, CLAUDE_GUARD):
         attempts = guard.take_attempts()
         if attempts:
             sys.stderr.write(f"\n세션 끝: {guard.report(attempts)}\n")
