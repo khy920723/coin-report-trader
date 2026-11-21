@@ -12,15 +12,16 @@
   `/api/v숫자/webhooks/`, 숫자로만 된 번호(17자에서 20자), `/`, 영문·숫자·`-`·`_`·`.`로 된
   60자 이상의 토큰. 대소문자는 가리지 않고, JSON에서 이스케이프한 `\\/`도 본다. 앞의 `https://`는
   있어도 없어도 잡는다(토큰이 드러나는 것이 문제이므로). 뒤에 무엇이 이어지든 잡는다.
+- 꼴의 식(`WEBHOOK`)은 Office 부분 이름을 찍을지 가릴 때도 쓰므로 `personal_info.py`에 둔다.
 - 시험의 가짜 주소는 소스에 통째로 적지 않고 실행 중에 이어 붙여 만든다(M1 명세 3.13).
 - 찾은 값은 출력하지 않는다. 파일, 줄, 종류만 쓴다.
 """
 
-import re
 from pathlib import Path
 
 from personal_info import (
     OFFICE_SUFFIXES,
+    WEBHOOK,
     _listed_files,
     _part_name_problems,
     _read_text,
@@ -31,25 +32,6 @@ from personal_info import (
 TITLE = "웹후크 주소"
 
 EXCLUDED_PREFIXES = ("legacy/", "packaging/licenses/")
-
-_SLASH = r"(?:\\?/)"
-# 호스트 바로 앞에 글자, 숫자, `.`, `-`가 오면 다른 호스트(이름이 `discord.com`으로 끝나는 것, 다른
-# 하위 도메인)이므로 잡지 않는다. `canary.`와 `ptb.`는 호스트에 든다.
-_HOST = r"(?<![A-Za-z0-9.-])(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com"
-WEBHOOK = re.compile(
-    _HOST
-    + _SLASH
-    + "api"
-    + _SLASH
-    + r"(?:v[0-9]+"
-    + _SLASH
-    + r")?webhooks"
-    + _SLASH
-    + r"[0-9]{17,20}"
-    + _SLASH
-    + r"[A-Za-z0-9._-]{60,}",
-    re.IGNORECASE,
-)
 
 
 def check(root: Path) -> list[str]:
@@ -92,7 +74,7 @@ def _check_office(path: Path, name: str) -> list[str]:
     for part in office.parts:
         texts, unreadable = office_texts(part)
         if unreadable:
-            problems.append(f"{name}:{part.name}: 읽을 수 없는 XML")
+            problems.append(f"{name}:{part.label}: 읽을 수 없는 XML")
         if any(WEBHOOK.search(text) for text in texts):
-            problems.append(f"{name}:{part.name}: 디스코드 웹후크 주소 꼴")
+            problems.append(f"{name}:{part.label}: 디스코드 웹후크 주소 꼴")
     return problems

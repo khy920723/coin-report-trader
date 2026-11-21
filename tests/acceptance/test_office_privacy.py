@@ -88,7 +88,7 @@ def _status(output: str) -> dict[str, str]:
 
 
 def _fake_address() -> str:
-    return "kim.min" + "su" + "@" + "personal-mail" + ".net"
+    return "kim.min" + "su" + "@" + "personal-mail" + ".invalid"
 
 
 def _fake_user_dir() -> str:
@@ -248,7 +248,7 @@ def test_a_user_folder_path_in_a_speaker_note_fails(make_copy: Callable[[str], P
 def test_an_email_split_over_two_text_runs_fails(make_copy: Callable[[str], Path]) -> None:
     """(가) 한 낱말이 글 마디 둘로 나뉘어도(PowerPoint가 흔히 나눈다) 이은 글로 잡는다."""
     copy = make_copy("office-split")
-    user, domain = "kim.minsu", "@" + "personal-mail" + ".net"
+    user, domain = "kim.minsu", "@" + "personal-mail" + ".invalid"
     parts = _pptx()
     parts["ppt/slides/slide1.xml"] = (
         _DECLARATION + f"<p:sld {_P} {_A}><a:p><a:r><a:t>{user}</a:t></a:r>"
@@ -400,7 +400,12 @@ def test_a_slide_whose_xml_cannot_be_read_fails(make_copy: Callable[[str], Path]
     parts = _pptx()
     parts["ppt/slides/slide1.xml"] = _DECLARATION + f"<p:sld {_P} {_A}><a:p></p:sld>"
     _write_office(copy / "docs" / "design" / "screens.pptx", parts)
-    _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 XML")
+    output = _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 XML")
+    # 웹후크 주소 항목도 같은 부분을 읽을 수 없는 XML로 적어 실패한다(그 항목의 줄로 본다).
+    assert _status(output)[WEBHOOK_ITEM] == "실패"
+    assert _item_lines(output, WEBHOOK_ITEM) == [
+        "docs/design/screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 XML"
+    ]
 
 
 def test_a_stored_part_with_a_changed_byte_fails(make_copy: Callable[[str], Path]) -> None:
@@ -599,6 +604,19 @@ def _expect_webhook(copy: Path, *lines: str, forbidden: tuple[str, ...] = ()) ->
     return output
 
 
+def _item_lines(output: str, item: str) -> list[str]:
+    """`run_all.py` 출력에서 그 항목의 `[실패]` 줄 밑에 들여 쓴 줄들."""
+    lines: list[str] = []
+    inside = False
+    for line in output.splitlines():
+        if line.startswith(("[통과] ", "[실패] ", "결과: ")):
+            inside = line.startswith(f"[실패] {item}:")
+            continue
+        if inside and line.startswith("    - "):
+            lines.append(line.removeprefix("    - "))
+    return lines
+
+
 def test_a_part_chosen_by_its_override_content_type_is_checked(
     make_copy: Callable[[str], Path],
 ) -> None:
@@ -687,6 +705,9 @@ def test_a_part_whose_decompression_raises_another_error_fails(
     target.write_bytes(bytes(data))
     output = _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 부분")
     assert "검사를 끝까지 하지 못했다" not in output
+    assert _item_lines(output, WEBHOOK_ITEM) == [
+        "docs/design/screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 부분"
+    ]
 
 
 def test_a_zip_that_raises_another_error_when_opened_fails(
@@ -703,6 +724,9 @@ def test_a_zip_that_raises_another_error_when_opened_fails(
     target.write_bytes(bytes(data))
     output = _expect(copy, "docs/design/screens.pptx: 열 수 없는 Office 파일")
     assert "검사를 끝까지 하지 못했다" not in output
+    assert _item_lines(output, WEBHOOK_ITEM) == [
+        "docs/design/screens.pptx: 열 수 없는 Office 파일(ZIP이 아니거나 깨졌다)"
+    ]
 
 
 def test_an_email_and_a_path_written_as_character_references_fail(
@@ -762,9 +786,10 @@ def test_values_hidden_in_part_names_fail_without_printing_the_name(
         ("docs/design/macro.xlsm", lambda v: _xlsx(cell=v), "xl/sharedStrings.xml"),
         ("docs/design/show.ppsx", lambda v: _pptx(slide=v), "ppt/slides/slide1.xml"),
         ("docs/design/template.POTX", lambda v: _pptx(slide=v), "ppt/slides/slide1.xml"),
-        ("docs/design/drawing.vsdx", lambda v: {"visio/pages/page1.xml": _slide([v])},
+        ("docs/design/drawing.vsdx", lambda v: {"visio/pages/page1.xml": _visio_page(v)},
          "visio/pages/page1.xml"),
-        ("docs/design/note.odt", lambda v: {"content.xml": _slide([v])}, "content.xml"),
+        ("docs/design/note.odt", lambda v: {"content.xml": _odf_content(_odf_p(v))},
+         "content.xml"),
     ],
     ids=["docm", "dotx", "xlsm", "ppsx", "POTX", "vsdx", "odt"],
 )  # fmt: skip
@@ -834,3 +859,171 @@ def test_a_clean_office_file_passes_the_webhook_check(make_copy: Callable[[str],
     )
     _expect_pass(copy)
     assert _status(_run_all(copy)[1])[WEBHOOK_ITEM] == "통과"
+
+
+# --- 지휘 검토(고칠 것 4개): 웹후크 항목, ODF·Visio의 모양, `.xml` 이름, 부분 이름 ---
+
+_ODF_NS = (
+    'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+    'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+    'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+    'xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" '
+    'xmlns:dc="http://purl.org/dc/elements/1.1/"'
+)
+_VISIO_NS = 'xmlns="http://schemas.microsoft.com/office/visio/2012/main"'
+
+
+def _odf_p(first: str, *rest: str) -> str:
+    """ODF 문단: 첫 조각은 `text:span` 안에, 나머지는 그 뒤의 꼬리 글이다(ODF가 흔히 쓰는 꼴)."""
+    return f"<text:p><text:span>{first}</text:span>" + "".join(rest) + "</text:p>"
+
+
+def _odf_content(body: str) -> str:
+    return (
+        _DECLARATION + f"<office:document-content {_ODF_NS}><office:body><office:text>{body}"
+        "</office:text></office:body></office:document-content>"
+    )
+
+
+def _visio_page(*pieces: str) -> str:
+    """Visio 쪽: 글은 서식 표시 `cp` 뒤의 꼬리 글로 이어진다."""
+    text = "".join(f'<cp IX="{i}"/>{piece}' for i, piece in enumerate(pieces))
+    return (
+        _DECLARATION + f'<PageContents {_VISIO_NS}><Shapes><Shape ID="1"><Text>{text}</Text>'
+        "</Shape></Shapes></PageContents>"
+    )
+
+
+def test_xml_and_text_xml_content_types_on_other_names_are_read_as_xml(
+    make_copy: Callable[[str], Path],
+) -> None:
+    """고칠 것 1: 이름이 `.dat`인 부분도 내용 형식이 `text/xml`, `application/xml`이면 XML로 읽어
+    조각으로 나뉜 웹후크 주소를 잡는다."""
+    copy = make_copy("office-xml-types")
+    webhook = _fake_webhook()
+    half = len(webhook) // 2
+    parts = _pptx()
+    parts["[Content_Types].xml"] = _types(
+        overrides={"/ppt/a.dat": "text/xml", "/ppt/b.dat": "application/xml"}
+    )
+    parts["ppt/a.dat"] = _slide([webhook[:half], webhook[half:]])
+    parts["ppt/b.dat"] = _slide([webhook[:half], webhook[half:]])
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    output = _expect_webhook(copy, forbidden=(webhook, webhook[half:]))
+    assert _item_lines(output, WEBHOOK_ITEM) == [
+        "docs/design/screens.pptx:ppt/a.dat: 디스코드 웹후크 주소 꼴",
+        "docs/design/screens.pptx:ppt/b.dat: 디스코드 웹후크 주소 꼴",
+    ]
+
+
+def test_a_clean_odt_table_with_a_noreply_cell_passes(make_copy: Callable[[str], Path]) -> None:
+    """고칠 것 2: ODT 본문(`office:text`) 전체를 한 글로 잇지 않는다. 표의 칸 `user.email` 다음
+    칸에 홀로 있는 허용 주소는 통과한다."""
+    copy = make_copy("office-odt-table")
+    allowed = "noreply" + "@" + "anthropic.com"
+    cells = "".join(
+        f"<table:table-cell>{_odf_p(text)}</table:table-cell>" for text in ("user.email", allowed)
+    )
+    body = f"<table:table><table:table-row>{cells}</table:table-row></table:table>"
+    _write_office(copy / "docs" / "design" / "note.odt", {"content.xml": _odf_content(body)})
+    _expect_pass(copy)
+
+
+def test_odf_and_visio_text_split_after_markers_fails(make_copy: Callable[[str], Path]) -> None:
+    """고칠 것 2: `text:span` 뒤 꼬리 글로 나뉜 경로와, Visio의 `cp` 뒤로 나뉜 주소를 잡는다."""
+    copy = make_copy("office-odf-visio-split")
+    design = copy / "docs" / "design"
+    path = _fake_user_dir()
+    user, domain = _fake_address().split("@")
+    odt = {"content.xml": _odf_content(_odf_p(path[:5], path[5:]))}
+    _write_office(design / "note.odt", odt)
+    _write_office(
+        design / "drawing.vsdx", {"visio/pages/page1.xml": _visio_page(user, "@" + domain)}
+    )
+    _expect(
+        copy,
+        "note.odt:content.xml: 사용자 폴더 경로",
+        "drawing.vsdx:visio/pages/page1.xml: 허용 목록 밖의 이메일 주소",
+        forbidden=(path, _fake_address()),
+    )
+
+
+def test_odf_comment_authors_and_printed_by_fail(make_copy: Callable[[str], Path]) -> None:
+    """고칠 것 2: ODF 댓글의 `dc:creator`(`content.xml`)와 `meta:printed-by`(`meta.xml`)를 본다."""
+    copy = make_copy("office-odf-people")
+    person = _fake_person()
+    note = (
+        f"<text:p>본문<office:annotation><dc:creator>{person}</dc:creator>"
+        "<text:p>댓글</text:p></office:annotation></text:p>"
+    )
+    meta = (
+        _DECLARATION + f"<office:document-meta {_ODF_NS}><office:meta>"
+        f"<meta:printed-by>{person}</meta:printed-by></office:meta></office:document-meta>"
+    )
+    _write_office(
+        copy / "docs" / "design" / "note.odt",
+        {"content.xml": _odf_content(note), "meta.xml": meta},
+    )
+    _expect(
+        copy,
+        "note.odt:content.xml: 문서 속성의 사람 이름",
+        "note.odt:meta.xml: 문서 속성의 사람 이름",
+        forbidden=(person,),
+    )
+
+
+def test_an_xml_named_part_is_read_as_xml_whatever_its_content_type(
+    make_copy: Callable[[str], Path],
+) -> None:
+    """고칠 것 3: 이름이 `.xml`이면 내용 형식이 `text/plain`이나 VML이어도 XML로 읽는다(사람 이름과
+    조각을 이은 글을 본다)."""
+    copy = make_copy("office-xml-name")
+    person = _fake_person()
+    user, domain = _fake_address().split("@")
+    parts = _pptx(creator=person)
+    parts["[Content_Types].xml"] = _types(
+        overrides={"/docProps/core.xml": "text/plain", "/ppt/slides/slide1.xml": _VML_TYPE}
+    )
+    parts["ppt/slides/slide1.xml"] = _slide([user, "@" + domain])
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    _expect(
+        copy,
+        "screens.pptx:docProps/core.xml: 문서 속성의 사람 이름",
+        "screens.pptx:ppt/slides/slide1.xml: 허용 목록 밖의 이메일 주소",
+        forbidden=(person, _fake_address()),
+    )
+
+
+def test_a_part_whose_name_hides_a_value_is_never_printed(make_copy: Callable[[str], Path]) -> None:
+    """고칠 것 4: 이름에 값이 숨은 부분에 다른 문제(읽을 수 없는 XML, 이메일, 읽을 수 없는 부분)가
+    있어도, 두 항목 모두 그 이름 대신 `(몇째 부분)`으로 적는다."""
+    copy = make_copy("office-hidden-label")
+    design = copy / "docs" / "design"
+    address = _fake_address()
+    webhook = _fake_webhook().removeprefix("https://")
+    parts = _pptx()
+    first = len(parts) + 1
+    parts[f"ppt/slides/{address}.xml"] = _DECLARATION + f"<p:sld {_P} {_A}><a:p></p:sld>"
+    parts[f"ppt/notes/{webhook}.xml"] = _slide(["연락: " + address])
+    _write_office(design / "named.pptx", parts)
+    stored = {f"ppt/media/{address}.xml": _slide(["화면QQ"])}
+    _write_office(design / "broken.pptx", stored, compression=zipfile.ZIP_STORED)
+    target = design / "broken.pptx"
+    data = bytearray(target.read_bytes())
+    spot = data.index("QQ".encode("ascii"))
+    data[spot] = ord("R")
+    target.write_bytes(bytes(data))
+    output = _expect(
+        copy,
+        f"named.pptx:({first}째 부분): 읽을 수 없는 XML",
+        f"named.pptx:({first + 1}째 부분): 허용 목록 밖의 이메일 주소",
+        f"named.pptx:({first}째 부분의 이름): 허용 목록 밖의 이메일 주소",
+        "broken.pptx:(1째 부분): 읽을 수 없는 부분",
+        forbidden=(address, webhook, address.replace("@", "%40")),
+    )
+    assert f"docs/design/named.pptx:({first}째 부분): 읽을 수 없는 XML" in _item_lines(
+        output, WEBHOOK_ITEM
+    )
+    assert f"docs/design/named.pptx:({first + 1}째 부분의 이름): 디스코드 웹후크 주소 꼴" in (
+        _item_lines(output, WEBHOOK_ITEM)
+    )

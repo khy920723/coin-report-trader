@@ -16,21 +16,24 @@
   (`read_office`) 같은 길로 본다.
   웹후크 주소 항목(`webhook_urls.py`)도 이 읽는 법(`office_texts`)을 쓴다.
   - 볼 부분: `[Content_Types].xml`의 내용 형식(`Default`의 확장자, `Override`의 부분 이름.
-    대소문자와 `%` 인코딩은 가리지 않는다)으로 고른다. XML 형식(`+xml`, `application/xml`,
-    `text/xml`)은 XML로 읽고, 그 밖의 글 형식(`text/…`, VML 그림)은 글로만 본다. 내용 형식 목록에
-    없어도 이름이 `.xml`·`.rels`로 끝나는 부분은 XML로 읽는다(목록이 없거나 비었거나 틀린 파일,
-    ODF).
+    대소문자와 `%` 인코딩은 가리지 않는다)으로 고른다. 이름이 `.xml`·`.rels`로 끝나는 부분은
+    내용 형식과 상관없이 늘 XML로 읽는다(목록이 없거나 비었거나 틀린 파일, ODF 포함). 그 밖의
+    이름은 XML 형식(`+xml`, `application/xml`, `text/xml`)이면 XML로 읽고, 그 밖의 글 형식
+    (`text/…`, VML 그림)이면 글로만 본다.
   - XML 그대로의 글(줄마다): 속성 값(관계의 `Target`, 통합 문서의 `absPath` 등)도 여기서
     본다. 문자 참조(`&#64;`, `&#x40;` 등)를 푼 줄도 본다.
-  - 문단 같은 마디(지역 이름 `p`, `si`, `is`, `text`)마다 그 안의 글 조각(`.text`)만 이은 글: 한
-    낱말이 여러 조각으로 나뉜 경우를 본다. 마디를 넘어 잇지 않는다(표의 칸끼리, 문단끼리 이어지지
-    않는다).
+  - 문단 같은 마디(지역 이름 `p`, `h`, `si`, `is`, `text`, `Text`. ODF office 이름공간의 본문
+    `text`는 뺀다)마다 그 안의 글 조각(`.text`)만 이은 글과, 마디 사이의 꼬리 글까지 이은 글
+    (`itertext()`. ODF의 `span` 뒤, Visio의 `cp` 뒤): 한 낱말이 여러 조각으로 나뉜 경우를 본다.
+    마디를 넘어 잇지 않는다(표의 칸끼리, 문단끼리 이어지지 않는다).
   - 부분 이름: 모든 부분(그림 등 글이 아닌 것도)의 이름과 `%` 인코딩을 푼 이름을 본다. 출력에는 이름
-    대신 몇째 부분인지만 쓴다.
+    대신 몇째 부분인지만 쓴다. 이름에 이메일 꼴, 사용자 폴더 경로, 웹후크 주소 꼴이 든 부분은 다른
+    문제를 적을 때도 이름 대신 `(몇째 부분)`으로 쓴다(`name_hides_value`).
   - 문서 속성: 핵심 속성 부분(내용 형식이 `…core-properties+xml`인 부분. 옛 꼴의 `.psmdcp`
     포함. 또는 이름이 `docProps/core.xml`)의 작성자(`creator`)와 마지막 수정자
-    (`lastModifiedBy`), ODF `meta.xml`의 `creator`·`initial-creator`가 비어 있지 않고 허용
-    이름(`ALLOWED_AUTHORS`)도 아니면 실패다. 확장 속성 부분(`…extended-properties+xml`이나
+    (`lastModifiedBy`), 어느 부분에서든 `dc:creator`(ODF의 `meta.xml`, 댓글과 변경 기록 포함),
+    ODF의 `meta:initial-creator`·`meta:printed-by`가 비어 있지 않고 허용 이름(`ALLOWED_AUTHORS`)도
+    아니면 실패다. 확장 속성 부분(`…extended-properties+xml`이나
     `docProps/app.xml`)의 회사(`Company`)와 관리자(`Manager`)는 비어 있지 않으면 실패다. 마디는
     지역 이름으로 고르므로 Transitional과 Strict의 이름공간을 모두 본다.
   - 댓글과 변경 기록의 사람 이름: 비어 있지 않고 허용 이름도 아니면 실패다. 보는 곳은
@@ -41,9 +44,10 @@
   - XML은 바이트로 읽어(BOM과 선언의 인코딩을 따른다) 풀고, ZIP이 아니거나 깨져서 열 수 없는 Office
     파일, 읽거나 풀 수 없는 부분(CRC가 맞지 않는 것, 압축을 풀다 난 어느 예외든), XML로 읽을 수 없는
     부분은 실패다.
-  - 보지 않는 것: 내용 형식이 글이 아니고 이름도 `.xml`·`.rels`가 아닌 부분(그림, 프린터 설정
-    등)의 내용. 안에 넣은 다른 파일(`ppt/embeddings/` 등)을 열지 않는다. 사용자 정의 속성
-    (`docProps/custom.xml`)은 이메일·경로 검사만 받고 사람 이름 검사는 받지 않는다.
+  - 보지 않는 것: 내용 형식이 글이 아니고 이름도 `.xml`·`.rels`가 아닌 부분(그림, 프린터 설정,
+    `.xlsb`의 셀 `.bin`, 매크로 `vbaProject.bin` 등)의 내용. 안에 넣은 다른 파일
+    (`ppt/embeddings/` 등)을 열지 않는다. 사용자 정의 속성(`docProps/custom.xml`)은 이메일·경로
+    검사만 받고 사람 이름 검사는 받지 않는다.
 - 찾은 값은 출력하지 않는다(공개 기록에 다시 남지 않게). 파일, 줄(Office 파일은 안의 부분 이름),
   종류만 쓴다.
 """
@@ -70,6 +74,26 @@ EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.ASCII)
 # 이름 자리는 글자·숫자·밑줄로 시작해야 한다. 앞에 글자가 붙은 경로(`/srv/home/...`)는 빼려고
 # 바로 앞이 글자·숫자·`.`·`-`·`~`가 아닌 것만 본다.
 _NAME = r"[^\W][\w.-]*"
+_SLASH = r"(?:\\?/)"
+# 호스트 바로 앞에 글자, 숫자, `.`, `-`가 오면 다른 호스트(이름이 `discord.com`으로 끝나는 것, 다른
+# 하위 도메인)이므로 잡지 않는다. `canary.`와 `ptb.`는 호스트에 든다.
+_HOST = r"(?<![A-Za-z0-9.-])(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com"
+WEBHOOK = re.compile(
+    _HOST
+    + _SLASH
+    + "api"
+    + _SLASH
+    + r"(?:v[0-9]+"
+    + _SLASH
+    + r")?webhooks"
+    + _SLASH
+    + r"[0-9]{17,20}"
+    + _SLASH
+    + r"[A-Za-z0-9._-]{60,}",
+    re.IGNORECASE,
+)
+"""디스코드 웹후크 주소의 꼴(웹후크 주소 항목 `webhook_urls.py`의 설명). Office 부분 이름을 찍을지
+가릴 때도 쓰므로 두 항목이 함께 쓰는 이곳에 둔다."""
 USER_DIRS = (
     re.compile(r"(?<![\w.-])[A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]+" + _NAME),
     re.compile(r"(?<![\w.~-])/(?:home|Users)/" + _NAME),
@@ -108,7 +132,6 @@ APP = "app"
 COMMENT_AUTHORS = "comment_authors"
 XL_COMMENTS = "xl_comments"
 XL_PERSONS = "xl_persons"
-ODF_META = "odf_meta"
 _ROLE_TYPES = {
     "application/vnd.openxmlformats-package.core-properties+xml": CORE,
     "application/vnd.openxmlformats-officedocument.extended-properties+xml": APP,
@@ -124,14 +147,22 @@ _ROLE_NAMES = {
     "docprops/app.xml": APP,
     "ppt/commentauthors.xml": COMMENT_AUTHORS,
     "ppt/authors.xml": COMMENT_AUTHORS,
-    "meta.xml": ODF_META,
 }
 _XML_TYPES = frozenset({"application/xml", "text/xml"})
 _VML_TYPE = "application/vnd.openxmlformats-officedocument.vmldrawing"
-_PERSON_FIELDS = {CORE: ("creator", "lastModifiedBy"), ODF_META: ("creator", "initial-creator")}
+_PERSON_FIELDS = ("creator", "lastModifiedBy")
+"""핵심 속성 부분의 사람 이름 마디(지역 이름)."""
+_DC_CREATOR = "{http://purl.org/dc/elements/1.1/}creator"
+"""어느 부분이든 사람 이름으로 보는 마디(OOXML의 핵심 속성, ODF의 `meta.xml`과 댓글·변경 기록)."""
+_ODF_META = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0"
+_ODF_PERSON_FIELDS = frozenset(
+    {"{" + _ODF_META + "}initial-creator", "{" + _ODF_META + "}printed-by"}
+)
+_ODF_OFFICE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
 _COMPANY_FIELDS = ("Company", "Manager")
-_PARAGRAPHS = frozenset({"p", "si", "is", "text"})
-"""글 조각을 이어 볼 문단 같은 마디의 지역 이름(DrawingML·Word의 `p`, 엑셀의 `si`·`is`·`text`)."""
+_PARAGRAPHS = frozenset({"p", "h", "si", "is", "text", "Text"})
+"""글 조각을 이어 볼 문단 같은 마디의 지역 이름(DrawingML·Word·ODF의 `p`, ODF의 제목 `h`, 엑셀의
+`si`·`is`·`text`, Visio의 `Text`). ODF office 이름공간의 `text`(본문 전체)는 빼고 본다."""
 
 
 @dataclass(frozen=True)
@@ -144,6 +175,8 @@ class OfficePart:
     """XML로 읽는 부분인지(아니면 글로만 본다)."""
     role: str | None
     """문서 속성, 댓글 등 사람 이름을 볼 구실. 없으면 None."""
+    label: str
+    """출력에 쓰는 이름. 이름에 값이 숨은 부분은 이름 대신 `(몇째 부분)`이다."""
 
 
 @dataclass
@@ -222,10 +255,11 @@ def read_office(path: Path, name: str) -> OfficeFile:
         except Exception:
             office.problems.append(f"{name}: 열 수 없는 Office 파일(ZIP이 아니거나 깨졌다)")
             return office
-        for info in infos:
+        for index, info in enumerate(infos, start=1):
             office.part_names.append(info.filename)
             if info.is_dir():
                 continue
+            label = f"({index}째 부분)" if name_hides_value(info.filename) else info.filename
             content_type = types.get(info.filename)
             kind = _part_kind(info.filename, content_type)
             if kind is None:
@@ -233,10 +267,10 @@ def read_office(path: Path, name: str) -> OfficeFile:
             try:
                 data = archive.read(info)
             except Exception:  # CRC, 압축 풀기(zlib, lzma, bz2), 머리의 어긋남 등 어느 것이든
-                office.problems.append(f"{name}:{info.filename}: 읽을 수 없는 부분")
+                office.problems.append(f"{name}:{label}: 읽을 수 없는 부분")
                 continue
             role = _ROLE_TYPES.get(content_type or "") or _role_by_name(info.filename)
-            office.parts.append(OfficePart(info.filename, data, kind == "xml", role))
+            office.parts.append(OfficePart(info.filename, data, kind == "xml", role, label))
     return office
 
 
@@ -263,9 +297,23 @@ def _part_texts(part: OfficePart) -> tuple[list[str], ElementTree.Element | None
     if tree is None:
         return texts, None
     for element in tree.iter():
-        if _local(element.tag) in _PARAGRAPHS:
+        if _local(element.tag) in _PARAGRAPHS and element.tag != "{" + _ODF_OFFICE + "}text":
             texts.append("".join(piece.text or "" for piece in element.iter()))
+            texts.append("".join(element.itertext()))  # 마디 사이의 꼬리 글까지(ODF, Visio)
     return texts, tree
+
+
+def name_hides_value(part_name: str) -> bool:
+    """부분 이름(이나 `%`를 푼 이름)에 이메일 꼴, 사용자 폴더 경로, 웹후크 주소 꼴이 있는지.
+
+    허용된 주소라도 참이다(이름을 출력하지 않을지만 가린다. 실패인지는 각 항목이 정한다).
+    """
+    for text in (part_name, unquote(part_name)):
+        if EMAIL.search(text) or WEBHOOK.search(text):
+            return True
+        if any(pattern.search(text) for pattern in USER_DIRS):
+            return True
+    return False
 
 
 def _part_name_problems(office: OfficeFile, problems_of) -> list[tuple[int, str]]:
@@ -313,13 +361,13 @@ def _part_key(part_name: str) -> str:
 
 def _part_kind(part_name: str, content_type: str | None) -> str | None:
     """부분을 보는 길: `"xml"`(XML로 읽는다), `"text"`(글로만 본다), None(보지 않는다)."""
+    if part_name.lower().endswith(TEXT_PART_SUFFIXES):
+        return "xml"  # 이름이 `.xml`·`.rels`면 내용 형식과 상관없이 늘 XML로 읽는다
     if content_type is not None:
         if content_type.endswith("+xml") or content_type in _XML_TYPES:
             return "xml"
         if content_type.startswith("text/") or content_type == _VML_TYPE:
             return "text"
-    if part_name.lower().endswith(TEXT_PART_SUFFIXES):
-        return "xml"
     return None
 
 
@@ -347,12 +395,12 @@ def _check_part(name: str, part: OfficePart, allowed: re.Pattern[str]) -> list[s
     for text in texts:
         kinds.extend(_line_problems(text, allowed))
     if part.xml and tree is None:
-        return [f"{name}:{part.name}: 읽을 수 없는 XML"] + [
-            f"{name}:{part.name}: {kind}" for kind in dict.fromkeys(kinds)
+        return [f"{name}:{part.label}: 읽을 수 없는 XML"] + [
+            f"{name}:{part.label}: {kind}" for kind in dict.fromkeys(kinds)
         ]
     if tree is not None:
         kinds.extend(_people(part.role, tree))
-    return [f"{name}:{part.name}: {kind}" for kind in dict.fromkeys(kinds)]
+    return [f"{name}:{part.label}: {kind}" for kind in dict.fromkeys(kinds)]
 
 
 def _people(role: str | None, tree: ElementTree.Element) -> list[str]:
@@ -360,7 +408,8 @@ def _people(role: str | None, tree: ElementTree.Element) -> list[str]:
     kinds = []
     for element in tree.iter():
         tag = _local(element.tag)
-        if tag in _PERSON_FIELDS.get(role or "", ()) and _is_person(_filled(element)):
+        person_field = (role == CORE and tag in _PERSON_FIELDS) or element.tag == _DC_CREATOR
+        if (person_field or element.tag in _ODF_PERSON_FIELDS) and _is_person(_filled(element)):
             kinds.append("문서 속성의 사람 이름")
         if role == APP and tag in _COMPANY_FIELDS and _filled(element):
             kinds.append("문서 속성의 회사·관리자")
