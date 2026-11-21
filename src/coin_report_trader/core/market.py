@@ -1,16 +1,48 @@
 """봉과 마켓. 가격과 수량은 `Decimal`, 시각은 UTC가 붙은 `datetime`이다."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from types import MappingProxyType
 
 MARKET_PREFIX = "KRW-"
 
 
 class CandleUnit(StrEnum):
-    DAY = "day"
+    """봉 단위. 정의 순서가 화면의 차례다(M1 명세 3.4). 1단계 보완 전에는 `DAY`와 `MINUTE_60`
+    둘이었고 두 값은 그대로라 예전 DB의 봉도 읽힌다."""
+
+    MINUTE_30 = "minute30"
     MINUTE_60 = "minute60"
+    MINUTE_240 = "minute240"
+    DAY = "day"
+
+
+CANDLE_UNIT_TITLES: Mapping[CandleUnit, str] = MappingProxyType(
+    {
+        CandleUnit.MINUTE_30: "30분봉",
+        CandleUnit.MINUTE_60: "60분봉",
+        CandleUnit.MINUTE_240: "240분봉",
+        CandleUnit.DAY: "일봉",
+    }
+)
+"""화면에 보이는 봉 단위 이름."""
+
+CANDLE_UNIT_LENGTHS: Mapping[CandleUnit, timedelta] = MappingProxyType(
+    {
+        CandleUnit.MINUTE_30: timedelta(minutes=30),
+        CandleUnit.MINUTE_60: timedelta(minutes=60),
+        CandleUnit.MINUTE_240: timedelta(minutes=240),
+        CandleUnit.DAY: timedelta(days=1),
+    }
+)
+"""봉 하나의 길이. 시작 시각에 더한 때가 지금보다 뒤이면 미완성이다."""
+
+CANDLE_COUNTS: tuple[int, ...] = (100, 200, 500)
+"""사용자가 고르는 봉 개수."""
+DEFAULT_CANDLE_COUNT = 200
 
 
 @dataclass(frozen=True)
