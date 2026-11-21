@@ -487,14 +487,10 @@ def test_nothing_of_the_old_table_or_indicator_is_drawn_without_stats(make_windo
     assert screen.findChild(QWidget, f"statusCoinIndicator_{AAA}") is None
 
 
-def test_the_old_period_values_of_a_coin_view_are_not_drawn(make_window):
-    from coin_report_trader.core import PeriodStats
-    from coin_report_trader.core.stats import PERIODS
-
+def test_a_coin_view_without_stats_has_no_values_to_draw(make_window):
     window = make_window(FakeActions())
-    periods = tuple(PeriodStats(name, unit, 3, change=Decimal("0.1")) for name, unit in PERIODS)
-    screen = _open(window, CoinView(AAA, LoadState.READY, periods, fetched_at=FETCHED_AT))
-    # `stats`가 없으면 `periods`에 값이 있어도 받아 둔 값이 없는 쪽이다.
+    screen = _open(window, CoinView(AAA, LoadState.READY, fetched_at=FETCHED_AT))
+    # `stats`가 없으면 받아 둔 값이 없는 쪽이다.
     assert _text(screen, "statusStatsNote") == INSUFFICIENT
     assert not _shown(screen, "statusStatsTable")
     assert not _shown(screen, f"statusCoinStats_{AAA}")

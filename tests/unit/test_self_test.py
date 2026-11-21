@@ -440,7 +440,8 @@ def test_import_lists_cover_the_new_folders_and_modules() -> None:
     assert {"httpx", "certifi", "keyring"} <= set(st.THIRD_PARTY_MODULES)
     names = set(st._package_module_names())
     assert "coin_report_trader.trading.quote.client" in names
-    assert "coin_report_trader.stats.compute" in names
+    assert "coin_report_trader.stats.bar_stats" in names
+    assert "coin_report_trader.stats.compute" not in names  # 옛 통계는 51번이 지웠다
     assert "coin_report_trader.app.data_thread" in names
     assert "coin_report_trader.app.send_thread" in names
     assert "coin_report_trader.vault.store" in names

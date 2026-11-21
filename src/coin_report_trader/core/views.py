@@ -8,7 +8,7 @@ from types import MappingProxyType
 
 from coin_report_trader.core.alerts import AlertCategory, Mode
 from coin_report_trader.core.market import CandleUnit, Market
-from coin_report_trader.core.stats import BarStats, CandleIndicator, PeriodStats, empty_periods
+from coin_report_trader.core.stats import BarStats
 
 SAVE_TARGET_SETTINGS = "settings"
 SAVE_TARGET_ALERT_DELETE = "alert_delete"
@@ -31,12 +31,8 @@ class CoinView:
 
     market: str
     state: LoadState
-    periods: tuple[PeriodStats, ...] = field(default_factory=empty_periods)
-    """늘 다섯이고 3.5절 표의 차례다. 봉이 하나도 없으면 다섯 모두 값이 `None`이다."""
-    indicator: CandleIndicator | None = None
-    """일봉이 없으면 `None`이다."""
     last_incomplete: bool = False
-    """저장된 마지막 일봉이 미완성인지."""
+    """저장된 마지막 봉(고른 단위)이 미완성인지."""
     fetched_at: datetime | None = None
     """마지막으로 성공한 받기가 끝난 때(요청과 저장이 오류 없이 끝난 것)."""
     error_name: str | None = None
@@ -46,7 +42,8 @@ class CoinView:
     as_of: datetime | None = None
     """조립이 이 값을 만든 때(`Clock.now()`). 화면은 "오늘"의 기준으로만 쓴다. 없으면 `None`."""
     stats: BarStats | None = None
-    """그 코인의 봉 통계(1단계 보완, 3.4). 39번부터 조립이 늘 담고, 그 전에는 늘 `None`이다."""
+    """그 코인의 봉 통계(3.4). 조립이 늘 담는다(봉이 하나도 없으면 `bar_count`가 0이고 값이 모두
+    `None`). 기본값 `None`은 화면 시험이 값 없이 만들 때만 쓴다."""
 
 
 @dataclass(frozen=True)
