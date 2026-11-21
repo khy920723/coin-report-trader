@@ -556,14 +556,24 @@ def test_an_incomplete_last_candle_is_flagged_and_not_used() -> None:
     assert stats.close_last == D(110)
 
 
-def test_candles_of_other_coins_and_units_are_ignored_and_the_same_start_keeps_the_last() -> None:
+def test_candles_of_other_coins_and_units_change_no_value() -> None:
+    expected = bar_stats(example(), after(H1, 4), 5)
+    mixed = example()
+    mixed += [bar(H1, i, 1, 9, 1, 2, market="KRW-BBB") for i in range(5)]  # 다른 코인, 같은 시작
+    mixed += [bar(CandleUnit.DAY, i, 1, 9, 1, 2) for i in range(5)]  # 다른 단위, 같은 시작
+    mixed += [bar(CandleUnit.MINUTE_30, 3, 1, 9, 1, 2)]
+    assert bar_stats(mixed, after(H1, 4), 5) == expected  # `BarStats`와 `last_incomplete`까지 같다
+    only_other = [bar(H1, i, 1, 2, 1, 2, market="KRW-BBB") for i in range(5)]
+    assert bar_stats(only_other, after(H1, 4), 5) == (BarStats("KRW-AAA", H1, 5, 0), False)
+
+
+def test_the_same_start_keeps_the_last_given_candle() -> None:
     candles = example()
-    candles += [bar(H1, i, 1, 2, 1, 2, market="KRW-BBB") for i in range(5)]
-    candles += [bar(CandleUnit.DAY, i, 1, 2, 1, 2) for i in range(5)]
-    candles.append(bar(H1, 4, 110, 140, 110, 140))  # 같은 시작 시각이면 뒤의 것
+    candles.append(bar(H1, 4, 110, 140, 110, 140))
     stats, _ = bar_stats(candles, after(H1, 4), 5)
     assert stats.close_last == D(140)
     assert stats.high == D(140)
+    assert stats.bar_count == 5
 
 
 def test_the_order_of_the_given_candles_does_not_matter() -> None:
@@ -677,3 +687,10 @@ def test_from_high_uses_the_highest_high_not_the_highest_close() -> None:
     stats, _ = bar_stats(candles, after(H1, 1), 2)
     assert stats.high == D(150)
     assert stats.from_high == D("-0.3333")  # 100 ÷ 150 − 1
+
+
+def test_low_is_the_lowest_low_not_the_lowest_close() -> None:
+    candles = [bar(H1, i, 100, 110, 90, 100) for i in range(3)]
+    stats, _ = bar_stats(candles, after(H1, 2), 3)
+    assert stats.low == D(90)
+    assert stats.high == D(110)

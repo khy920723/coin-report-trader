@@ -700,3 +700,22 @@ def test_the_new_reads_and_deletes_report_a_closed_connection_as_storage_error(
     ):
         with pytest.raises(StorageError):
             call()
+
+
+@pytest.mark.parametrize("unit", list(CandleUnit))
+def test_the_latest_complete_candles_include_the_one_that_ends_exactly_now(
+    conn: sqlite3.Connection, unit: CandleUnit
+) -> None:
+    length = {
+        CandleUnit.MINUTE_30: timedelta(minutes=30),
+        CandleUnit.MINUTE_60: timedelta(hours=1),
+        CandleUnit.MINUTE_240: timedelta(hours=4),
+        CandleUnit.DAY: timedelta(days=1),
+    }[unit]
+    starts = [T0 + length * i for i in range(3)]
+    candles.write_candles(conn, [_unit_candle(unit, start) for start in starts])
+    now = T0 + length * 3  # 마지막 봉의 시작 + 길이와 꼭 같다
+    read = candles.read_latest_complete_candles
+    assert [c.start for c in read(conn, "KRW-AAA", unit, now, 3)] == starts
+    before = now - timedelta(seconds=1)  # 1초 모자라면 마지막 봉은 아직 만드는 중이다
+    assert [c.start for c in read(conn, "KRW-AAA", unit, before, 3)] == starts[:2]
