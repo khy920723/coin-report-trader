@@ -1,5 +1,8 @@
 """일반 실행: 자료 폴더, 로그, DB를 준비하고 창을 띄운다. 창을 닫으면 끝난다(트레이는 M4).
 
+한 번 더 켜기(3.8.1): `QApplication`을 만든 뒤 켜는 순서 1보다 앞에서 `single_instance`가 잠금을
+잡거나, 먼저 켠 쪽에 알리고 창 없이 0으로 끝낸다.
+
 켜는 순서(M1 명세 3.8): 1. 자료 폴더와 로그를 준비하고 DB를 열어 `migrate`한 뒤 닫는다. 2. 창을
 만든다. 3. 창을 띄운 뒤 자료 스레드와 보내기 스레드를 시작한다. 1과 2에서 난 오류는 로그에 쓰고
 `logs/startup-errors.jsonl`에 `"startup"` 줄로 남긴 뒤 다시 낸다.
@@ -9,6 +12,7 @@ import contextlib
 import logging
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from coin_report_trader import __version__
 from coin_report_trader.app.logging_setup import configure_logging, remove_log_handler
@@ -25,6 +29,9 @@ from coin_report_trader.storage.database import (
     open_database,
     schema_version,
 )
+
+if TYPE_CHECKING:
+    from .single_instance import Started
 
 from .services import Services, resolve_clock
 from .startup_errors import append_line, startup_line
@@ -45,6 +52,43 @@ def run_gui(argv: Sequence[str] | None = None, *, services: Services | None = No
     `QApplication.instance()`가 있으면 그것을 쓰고 없을 때만 만든다. 이벤트 루프가 끝나면
     종료 코드를 돌려준다. 준비나 창 만들기에서 난 오류는 로그에 쓰고 다시 낸다.
     """
+    instance = _claim_instance(argv)
+    if instance is not None and instance.later:
+        return 0  # 먼저 켠 쪽에 알렸다. 로그, DB, 창을 만들지 않는다.
+    try:
+        return _run(argv, services, instance)
+    finally:
+        if instance is not None:
+            instance.close()
+
+
+def _claim_instance(argv: Sequence[str] | None) -> "Started | None":
+    """한 번 더 켜기의 차례(3.8.1). 자료 폴더의 경로를 정하지 못하거나 이 차례에서 예외가 나면
+    건너뛰고 켜는 순서 1로 간다(그 오류는 거기서 지금처럼 다룬다)."""
+    try:
+        root = resolve_app_paths().root
+    except Exception:
+        return None
+    try:
+        from . import single_instance
+
+        _ensure_application(argv)
+        return single_instance.start(root)
+    except Exception as exc:
+        from .single_instance import Started
+
+        return Started(note=f"한 번 더 켜기를 건너뜁니다({type(exc).__name__})")
+
+
+def _ensure_application(argv: Sequence[str] | None) -> None:
+    from PySide6.QtWidgets import QApplication
+
+    if QApplication.instance() is None:
+        program = sys.argv[0] if sys.argv and sys.argv[0] else APP_ID
+        QApplication([program, *(argv or ())])
+
+
+def _run(argv: Sequence[str] | None, services: Services | None, instance: "Started | None") -> int:
     paths = resolve_app_paths()
     paths.ensure()
     handler = configure_logging(paths.log_file)
@@ -52,13 +96,15 @@ def run_gui(argv: Sequence[str] | None = None, *, services: Services | None = No
     code = 1
     try:
         log.info("시작: 버전 %s, 자료 폴더 %s", __version__, display_path(paths.root))
+        if instance is not None and instance.note:
+            log.warning("%s", instance.note)  # 그대로 켠다(한 번 더 켜기만 막지 못한다)
         try:
             _check_database(paths)
             _migrate_database(paths)
         except Exception as exc:
             _record_startup_error(paths, clock, exc)
             raise
-        code = _run_window(paths, argv, services, clock)
+        code = _run_window(paths, argv, services, clock, instance)
         return code
     except Exception as exc:
         log.error("오류: %s", describe_error(exc))
@@ -93,7 +139,11 @@ def _record_startup_error(paths: AppPaths, clock: Clock, exc: Exception) -> None
 
 
 def _run_window(
-    paths: AppPaths, argv: Sequence[str] | None, services: Services | None, clock: Clock
+    paths: AppPaths,
+    argv: Sequence[str] | None,
+    services: Services | None,
+    clock: Clock,
+    instance: "Started | None" = None,
 ) -> int:
     bridge = None
     try:
@@ -106,10 +156,8 @@ def _run_window(
         from .data_thread import DataWorker
         from .send_thread import SendWorker
 
+        _ensure_application(argv)
         app = QApplication.instance()
-        if app is None:
-            program = sys.argv[0] if sys.argv and sys.argv[0] else APP_ID
-            app = QApplication([program, *(argv or ())])
         assert isinstance(app, QApplication)
         app.setQuitOnLastWindowClosed(True)  # 창을 닫으면 프로그램이 끝난다.
         app.setApplicationName(APP_ID)
@@ -133,6 +181,8 @@ def _run_window(
         actions = AppActions(worker, sender)
         window = create_main_window(UiContext(__version__, display_path(paths.root), actions))
         bridge.set_apply(window.apply)
+        if instance is not None:
+            instance.set_window(window)
         window.show()
     except Exception as exc:
         if bridge is not None:
