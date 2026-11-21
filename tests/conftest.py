@@ -29,8 +29,8 @@
   - 부르면 `KeyringBlocked`(AssertionError의 하위)를 낸다. 네트워크 차단처럼 부를 때마다 기록하고,
     시험의 정리 단계에서 기록이 남아 있으면 그 시험을 실패로 만든다(예외가 삼켜졌어도). 일부러
     부르는 시험은 `keyring_guard.expect_blocked()`로 감싼다.
-- 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12 시험은 수집한 시험의
-  맨 끝으로 옮겨, 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
+- 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12(M0)와 B22(M1 명세 6절)
+  시험은 수집한 시험의 맨 끝으로 옮겨(`LAST_SCENARIOS`), 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
 
 시험은 `network_guard`, `keyring_guard` 픽스처로 두 장치를 받는다. `pythonpath = ["tests"]`(M1 명세
 3.12)로 시험 파일이 `tests/` 아래 모듈을 import할 수는 있지만, 이 파일은 pytest가 따로 읽어 들이는
@@ -54,7 +54,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 DATA_DIR_VARIABLES = ("LOCALAPPDATA", "XDG_DATA_HOME")
 SCENARIO_MARKER = "scenario"
-LAST_SCENARIO = "A12"
+LAST_SCENARIOS = ("A12", "B22")
 
 _INET_FAMILIES = (socket.AF_INET, socket.AF_INET6)
 _REPORT_LIMIT = 10
@@ -502,10 +502,11 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
-    """수집 중의 막힌 시도를 보고, 시나리오를 적고, A12 시험을 맨 끝으로 옮긴다.
+    """수집 중의 막힌 시도를 보고, 시나리오를 적고, A12와 B22 시험을 맨 끝으로 옮긴다.
 
-    순서는 여기서 옮긴다. `pytest_collection_modifyitems`에서 옮기면 `--ff`, `--nf`처럼 그 뒤에
-    순서를 바꾸는 플러그인이 A12를 앞으로 되돌릴 수 있다. 이 훅은 모든 정렬과 `-k` 등의 선택이
+    `LAST_SCENARIOS`의 차례(A12, 그다음 B22)로 옮기고, 같은 번호 안의 차례는 그대로 둔다. 순서는
+    여기서 옮긴다. `pytest_collection_modifyitems`에서 옮기면 `--ff`, `--nf`처럼 그 뒤에
+    순서를 바꾸는 플러그인이 두 시험을 앞으로 되돌릴 수 있다. 이 훅은 모든 정렬과 `-k` 등의 선택이
     끝난 뒤에 불리고, 실행은 `session.items`의 순서를 따른다.
     """
     attempts = GUARD.take_attempts()
@@ -515,9 +516,9 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     if keyring_attempts:
         raise pytest.UsageError("수집 중 " + KEYRING_GUARD.report(keyring_attempts))
     items = session.items
-    last = [item for item in items if _scenario(item) == LAST_SCENARIO]
+    last = [item for name in LAST_SCENARIOS for item in items if _scenario(item) == name]
     if last:
-        items[:] = [item for item in items if _scenario(item) != LAST_SCENARIO] + last
+        items[:] = [item for item in items if _scenario(item) not in LAST_SCENARIOS] + last
     GUARD.scenarios.clear()
     for item in items:
         scenario = _scenario(item)
