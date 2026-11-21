@@ -382,8 +382,12 @@ def test_b37_choosing_a_unit_on_an_old_db_keeps_only_that_unit(
 ) -> None:
     old_db(tmp_path)
     rig = rigs(fresh=False)
+    # 가장 최근 봉(미완성)의 시작: 일봉은 UTC 00:00(한국 09:00)이 경계다(M1 명세의 봉 단위).
+    latest = NOW.replace(hour=0) if unit is DAY else THIS_HOUR
     for coin in (AAA, BBB):
-        rig.quote.set_candles(coin, unit, make_candles(coin, unit, 150, last_start=THIS_HOUR))
+        fake = make_candles(coin, unit, 150, last_start=latest)
+        assert unit is not DAY or all((c.start.hour, c.start.minute) == (0, 0) for c in fake)
+        rig.quote.set_candles(coin, unit, fake)
     rig.start()
     assert rig.sink.of(CoinView) == []  # 봉 단위가 없는 동안 `CoinView`는 오지 않는다
     assert rig.quote.candle_requests() == []
