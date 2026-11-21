@@ -4,6 +4,7 @@
 """
 
 import hashlib
+import os
 import subprocess
 import sys
 import textwrap
@@ -69,6 +70,48 @@ def started(qapp: QApplication) -> Iterator[list[single_instance.Started]]:
         item.close()
 
 
+CHILD_START = textwrap.dedent(
+    """
+    import sys
+    from pathlib import Path
+    from PySide6.QtWidgets import QApplication
+    from coin_report_trader.app import single_instance
+    app = QApplication([])
+    result = single_instance.start(Path(sys.argv[1]), name=sys.argv[2])
+    print("later" if result.later else "first", flush=True)
+    result.close()
+    """
+)
+CHILD_RUN_GUI = textwrap.dedent(
+    """
+    import sys
+    from coin_report_trader.app import run_gui
+    sys.exit(run_gui([]))
+    """
+)
+
+
+def spawn(code: str, *args: str, **env: str) -> subprocess.Popen[str]:
+    """다른 프로세스의 두 번째 켜기. 같은 프로세스 안에서는 서버와 붙는 쪽이 한 이벤트 루프를
+    나눠 쓰므로 Windows의 이름 있는 파이프에서 흐름이 막힌다."""
+    child_env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", **env}
+    return subprocess.Popen(
+        [sys.executable, "-c", code, *args], stdout=subprocess.PIPE, text=True, env=child_env
+    )
+
+
+def finish(child: subprocess.Popen[str], seconds: float = 30.0) -> str:
+    """자식이 끝나기를 기다리며 이벤트를 돌린다(먼저 켠 쪽의 서버가 일한다). 첫 줄을 돌려준다."""
+    try:
+        assert pump(lambda: child.poll() is not None, seconds), "자식이 끝나지 않았다"
+        assert child.stdout is not None
+        return child.stdout.read().strip()
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(10)
+
+
 def unique_name() -> str:
     return f"crt-test-{uuid.uuid4().hex[:12]}"
 
@@ -112,8 +155,7 @@ def test_a_second_start_asks_the_first_to_show_the_window_and_makes_nothing(
     first = begin(started, root, name=name)
     window = FakeWindow(minimized=True)
     first.set_window(window)
-    second = begin(started, root, name=name)
-    assert second.later is True
+    assert finish(spawn(CHILD_START, str(root), name)) == "later"
     assert pump(lambda: "activateWindow" in window.calls)
     assert window.calls == ["showNormal", "raise_", "activateWindow"]  # 최소화는 되돌린다
     assert sorted(path.name for path in root.iterdir()) == ["instance.lock"]
@@ -127,7 +169,7 @@ def test_a_window_that_is_not_minimized_is_only_raised_and_activated(
     first = begin(started, root, name=name)
     window = FakeWindow()
     first.set_window(window)
-    assert begin(started, root, name=name).later
+    assert finish(spawn(CHILD_START, str(root), name)) == "later"
     assert pump(lambda: "activateWindow" in window.calls)
     assert window.calls == ["raise_", "activateWindow"]
 
@@ -144,11 +186,9 @@ def test_other_text_is_ignored_and_show_still_works_after_it(
     socket.connectToServer(name)
     assert socket.waitForConnected(2000)
     socket.write(b"hello\nshowx\n")
-    assert socket.waitForBytesWritten(2000)
-    pump(lambda: False, 0.3)
+    pump(lambda: False, 0.5)  # 이벤트를 돌려야 쓴 글이 간다
     assert window.calls == []
     socket.write(b"show\n")
-    assert socket.waitForBytesWritten(2000)
     assert pump(lambda: "activateWindow" in window.calls)
     socket.abort()
 
@@ -159,7 +199,7 @@ def test_a_show_that_comes_before_the_window_exists_changes_nothing(
     root = tmp_path / "data-root"
     name = unique_name()
     begin(started, root, name=name)
-    assert begin(started, root, name=name).later
+    assert finish(spawn(CHILD_START, str(root), name)) == "later"
     pump(lambda: False, 0.3)  # 창이 없으므로 아무 일도 없다(예외도 없다)
 
 
@@ -250,6 +290,7 @@ def test_a_socket_file_left_by_a_crashed_run_is_removed_before_listening(
         stale.unlink(missing_ok=True)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="이름 있는 파이프는 같은 이름으로 열 수 있다")
 def test_a_server_that_cannot_be_opened_is_noted_and_the_start_goes_on(
     started: list[single_instance.Started], tmp_path: Path
 ) -> None:
@@ -269,37 +310,57 @@ def test_an_unusable_root_raises_for_the_caller_to_skip_the_step(tmp_path: Path)
 
 
 def test_the_foreground_right_is_passed_only_on_windows_before_show_is_sent(
-    started: list[single_instance.Started],
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import ctypes
 
-    calls: list[int] = []
+    events: list[str] = []
 
     class User32:
         def AllowSetForegroundWindow(self, who: Any) -> int:
-            calls.append(who.value)
+            events.append(f"allow:{who.value}")
             return 1
 
     class Windll:
         user32 = User32()
 
+    class FakeSocket:
+        def connectToServer(self, name: str) -> None:
+            events.append("connect")
+
+        def waitForConnected(self, ms: int) -> bool:
+            return True
+
+        def write(self, data: bytes) -> int:
+            events.append(f"write:{data!r}")
+            return len(data)
+
+        def waitForBytesWritten(self, ms: int) -> bool:
+            events.append(f"wait:{ms}")
+            return True
+
+        def disconnectFromServer(self) -> None:
+            events.append("disconnect")
+
+        def abort(self) -> None:
+            events.append("abort")
+
     monkeypatch.setattr(ctypes, "windll", Windll, raising=False)
-    root = tmp_path / "data-root"
-    name = unique_name()
-    first = begin(started, root, name=name)
-    window = FakeWindow()
-    first.set_window(window)
+    monkeypatch.setattr(single_instance, "QLocalSocket", FakeSocket)
     monkeypatch.setattr(single_instance.sys, "platform", "linux")
-    assert begin(started, root, name=name).later
-    assert pump(lambda: bool(window.calls))
-    assert calls == []  # Windows가 아니면 넘기지 않는다
-    window.calls.clear()
+    assert single_instance.notify("name") is True
+    assert events == [
+        "connect",
+        "write:b'show\\n'",
+        "wait:500",
+        "disconnect",
+    ]  # 권한은 넘기지 않는다
+    events.clear()
     monkeypatch.setattr(single_instance.sys, "platform", "win32")
-    assert begin(started, root, name=name).later
-    assert pump(lambda: bool(window.calls))
-    assert calls == [0xFFFFFFFF]  # ASFW_ANY
+    assert single_instance.notify("name") is True
+    assert events == [
+        "connect", "allow:4294967295", "write:b'show\\n'", "wait:500", "disconnect",
+    ]  # fmt: skip  # 먼저 켠 쪽에 권한(ASFW_ANY)을 넘긴 뒤에 보낸다
 
 
 # --- run_gui의 차례 ------------------------------------------------------------------------
@@ -322,20 +383,16 @@ def services() -> Services:
 
 
 def test_run_gui_ends_with_zero_and_makes_no_window_log_or_database_when_already_running(
-    env: Path, started: list[single_instance.Started], monkeypatch: pytest.MonkeyPatch
+    env: Path, started: list[single_instance.Started]
 ) -> None:
-    def no_window(_context: object) -> object:
-        raise AssertionError("창을 만들면 안 된다")
-
-    from coin_report_trader import ui
-
-    monkeypatch.setattr(ui, "create_main_window", no_window)
     first = begin(started, env, name=single_instance.server_name(env))
     window = FakeWindow()
     first.set_window(window)
-    assert run_gui([], services=services()) == 0
+    child = spawn(CHILD_RUN_GUI, XDG_DATA_HOME=str(env.parent), LOCALAPPDATA=str(env.parent))
+    finish(child)
+    assert child.returncode == 0
     assert pump(lambda: "activateWindow" in window.calls)
-    assert sorted(path.name for path in env.iterdir()) == ["instance.lock"]
+    assert sorted(path.name for path in env.iterdir()) == ["instance.lock"]  # 창, 로그, DB가 없다
 
 
 def test_run_gui_holds_the_lock_while_it_runs_and_frees_it_at_the_end(
@@ -384,25 +441,27 @@ def test_a_show_during_a_run_brings_the_real_window_to_the_front(
 
     monkeypatch.setattr(ui, "create_main_window", create)
 
-    def ask() -> None:
-        started.append(single_instance.start(env, name=single_instance.server_name(env)))
-        assert started[-1].later
+    children: list[subprocess.Popen[str]] = []
 
-    def finish() -> None:
+    def ask() -> None:
+        children.append(spawn(CHILD_START, str(env), single_instance.server_name(env)))
+
+    def quit_when_raised() -> None:
         if raised:
             QApplication.quit()
         else:
-            QTimer.singleShot(20, finish)
+            QTimer.singleShot(20, quit_when_raised)
 
     safety = QTimer()
     safety.setSingleShot(True)
     safety.timeout.connect(QApplication.quit)
     safety.start(10_000)
     QTimer.singleShot(0, ask)
-    QTimer.singleShot(50, finish)
+    QTimer.singleShot(50, quit_when_raised)
     assert run_gui([], services=services()) == 0
     safety.stop()
     assert raised == ["raise_"]
+    assert finish(children[0]) == "later"
 
 
 def test_a_note_of_the_step_is_logged_and_the_start_goes_on(
