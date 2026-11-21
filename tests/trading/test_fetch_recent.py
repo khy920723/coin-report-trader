@@ -4,6 +4,7 @@
 가짜 시세와 가짜 시계로 하고, 시험 자료는 만든 숫자다(`fakes.quote.make_candles`).
 """
 
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -11,8 +12,13 @@ import pytest
 from fakes.clock import FakeClock
 from fakes.quote import CANDLES, OK, FakeQuoteSource, make_candles, with_close
 
-from coin_report_trader.core import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, QuoteError
-from coin_report_trader.core.texts import ERROR_NETWORK, ERROR_RATE_LIMIT
+from coin_report_trader.core import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, Market, QuoteError
+from coin_report_trader.core.texts import (
+    ERROR_BAD_RESPONSE,
+    ERROR_BLOCKED,
+    ERROR_NETWORK,
+    ERROR_RATE_LIMIT,
+)
 from coin_report_trader.trading.quote import MAX_CANDLES, QuoteClient, RecentCandles
 
 M = "KRW-AAA"
@@ -401,9 +407,114 @@ def test_failure_while_reaching_back_returns_nothing() -> None:
     assert len(source.requests) == 3
 
 
-def test_fetch_candles_is_kept() -> None:
-    # 지금의 `fetch_candles`는 남긴다(43번이 지운다). 네 단위 어느 것으로도 부를 수 있다.
-    candles = with_current(CandleUnit.MINUTE_240, 300)
-    client, source, _ = setup(*candles)
-    assert client.fetch_candles(M, CandleUnit.MINUTE_240, last_start=None) == candles[100:]
-    assert len(source.requests) == 1
+def test_old_fetch_is_gone() -> None:
+    # 1단계 보완 전의 받기(`fetch_candles`, 일봉의 가장 오래된 봉까지의 처음 받기)는 43번이 지웠다.
+    assert not hasattr(QuoteClient, "fetch_candles")
+    assert not hasattr(QuoteClient, "_fetch_all")
+
+
+def test_the_limit_counts_markets_and_candles_together() -> None:
+    client, source, _ = setup(*with_current(HOUR, 3))
+    for _ in range(3):
+        client.list_markets()
+    for _ in range(3):
+        recent(client, count=100)
+    times = [r.monotonic for r in source.requests]
+    assert len(times) == 6
+    assert times[5] - times[0] > 1.0
+
+
+def test_no_real_sleep_or_monotonic(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args: object) -> None:
+        raise AssertionError("time 모듈의 시계를 직접 불렀다")
+
+    candles = with_current(HOUR, 1300)
+    client, _, clock = setup(*candles)
+    monkeypatch.setattr(time, "sleep", forbidden)
+    monkeypatch.setattr(time, "monotonic", forbidden)
+    result = recent(
+        client,
+        count=500,
+        last_start=candles[-1].start,
+        first_start=candles[1200].start,
+        missing=1199,
+    )
+    assert result.candles == (*candles[1:1200], candles[-1])
+    assert clock.sleeps
+
+
+@pytest.mark.parametrize("unit", list(CandleUnit))
+def test_blocked_error_carries_retry_after(unit: CandleUnit) -> None:
+    client, source, _ = setup()
+    source.script(QuoteError(ERROR_BLOCKED, 120.0))
+    with pytest.raises(QuoteError) as caught:
+        recent(client, unit, count=200)
+    assert (caught.value.error_name, caught.value.retry_after) == (ERROR_BLOCKED, 120.0)
+
+
+def test_later_fetch_with_gaps_in_the_candles() -> None:
+    # 체결이 없던 구간에는 봉이 없다. 있는 봉만 받고, last_start에 닿을 때까지 거슬러 간다.
+    full = with_current(HOUR, 600)
+    kept = tuple(c for i, c in enumerate(full) if i % 3 != 1)
+    last_start = full[30].start
+    client, source, _ = setup(*kept)
+    result = recent(client, last_start=last_start, first_start=kept[0].start)
+    assert result.candles == tuple(c for c in kept if c.start >= last_start)
+    assert_ascending_without_overlap(result.candles)
+    assert all(r.count <= MAX_CANDLES for r in source.candle_requests())
+
+
+def test_later_fetch_when_the_clock_is_behind_the_stored_candle() -> None:
+    # PC 시계가 뒤로 갔어도 요청은 하나 이상 내고 last_start의 봉을 다시 받는다.
+    candles = with_current(HOUR, 5)
+    client, source, clock = setup(*candles)
+    clock.set_now(CURRENT_START[HOUR] - timedelta(days=3))
+    result = recent(client, last_start=candles[-1].start, first_start=candles[0].start)
+    assert result.candles == (candles[-1],)
+    assert len(source.candle_requests()) == 1
+
+
+class BrokenSource:
+    """약속을 어기는 시세: 늘 같은 봉들을 준다(`to`를 보지 않는다)."""
+
+    def __init__(self, candles: tuple[Candle, ...]) -> None:
+        self.candles = candles
+        self.calls = 0
+
+    def list_markets(self) -> tuple[Market, ...]:
+        return ()
+
+    def get_candles(
+        self, market: str, unit: CandleUnit, *, to: datetime | None, count: int
+    ) -> tuple[Candle, ...]:
+        self.calls += 1
+        return tuple(reversed(self.candles))[:count]
+
+
+@pytest.mark.parametrize(
+    "candles",
+    [
+        with_current(HOUR, 200),  # 둘째 요청에서 `to` 뒤의 봉이 온다
+        make_candles("KRW-BBB", HOUR, 200, last_start=CURRENT_START[HOUR]),  # 다른 마켓
+        with_current(CandleUnit.DAY, 200),  # 다른 단위
+    ],
+)
+def test_a_source_breaking_the_contract_gives_bad_response(candles: tuple[Candle, ...]) -> None:
+    source = BrokenSource(candles)
+    client = QuoteClient(source, FakeClock(NOW))
+    with pytest.raises(QuoteError) as caught:
+        recent(client, count=500)
+    assert caught.value.error_name == ERROR_BAD_RESPONSE
+    assert source.calls <= 2
+
+
+def test_more_candles_than_asked_is_bad_response() -> None:
+    class TooMany(BrokenSource):
+        def get_candles(self, market, unit, *, to, count):  # type: ignore[override]
+            return tuple(reversed(self.candles))
+
+    candles = with_current(HOUR, 5)
+    client = QuoteClient(TooMany(candles), FakeClock(NOW))
+    with pytest.raises(QuoteError) as caught:
+        recent(client, last_start=candles[-1].start, first_start=candles[0].start)  # count 1
+    assert caught.value.error_name == ERROR_BAD_RESPONSE
