@@ -154,10 +154,11 @@ def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_pa
 
 
 def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> None:
-    settings.write_settings(conn, SettingsView(("KRW-AAA",), 30, True))
+    done = SettingsView(("KRW-AAA",), 30, True, candle_unit=CandleUnit.DAY, candle_count=100)
+    settings.write_settings(conn, done)
     assert migrate(conn) == 1
     assert migrate(conn) == 1
-    assert settings.read_settings(conn) == SettingsView(("KRW-AAA",), 30, True)
+    assert settings.read_settings(conn) == done
     assert not conn.in_transaction
 
 
@@ -245,7 +246,8 @@ def test_settings_default_and_four_keys(conn: sqlite3.Connection) -> None:
         "first_setup_level": "1",
         "fetched_at:KRW-AAA": "2026-01-02T03:04:05Z",
     }
-    assert settings.read_settings(conn) == SettingsView(("KRW-BBB", "KRW-AAA"), 90, True)
+    # 단위와 개수 없이 마친 기록(1단계 보완 전)은 처음 설정을 마친 것으로 읽지 않는다(3.7).
+    assert settings.read_settings(conn) == SettingsView(("KRW-BBB", "KRW-AAA"), 90, False)
 
 
 def test_settings_overwrite_and_clear(conn: sqlite3.Connection) -> None:
@@ -530,14 +532,30 @@ def test_the_level_is_one_when_the_unit_or_the_count_is_missing(conn: sqlite3.Co
         )
         stored = dict(conn.execute("SELECT key, value FROM settings"))
         assert stored["first_setup_level"] == "1"  # 1단계 보완 전에 마친 모습 그대로
-        assert settings.read_settings(conn).first_setup_done is True
+        # 3.7: 단위와 개수가 모두 있어야 마친 것이다
+        assert settings.read_settings(conn).first_setup_done is False
 
 
-def test_first_setup_done_still_follows_only_the_level_key(conn: sqlite3.Connection) -> None:
+def test_first_setup_done_needs_the_level_and_both_the_unit_and_the_count(
+    conn: sqlite3.Connection,
+) -> None:
     conn.execute("INSERT INTO settings VALUES ('first_setup_level', '2')")
     conn.commit()
     view = settings.read_settings(conn)
-    assert (view.first_setup_done, view.candle_unit, view.candle_count) == (True, None, None)
+    assert (view.first_setup_done, view.candle_unit, view.candle_count) == (False, None, None)
+    conn.execute("INSERT INTO settings VALUES ('candle_unit', 'day')")
+    conn.commit()
+    assert settings.read_settings(conn).first_setup_done is False  # 개수가 없다
+    conn.execute("INSERT INTO settings VALUES ('candle_count', '100')")
+    conn.commit()
+    assert settings.read_settings(conn).first_setup_done is True
+    conn.execute("DELETE FROM settings WHERE key = 'first_setup_level'")
+    conn.commit()
+    # 단위와 개수만으로는 마치지 않는다
+    assert settings.read_settings(conn).first_setup_done is False
+    conn.execute("INSERT INTO settings VALUES ('first_setup_level', '1')")
+    conn.commit()
+    assert settings.read_settings(conn).first_setup_done is True  # 단계 값은 따지지 않는다
 
 
 def test_a_not_done_setting_clears_the_level_but_keeps_the_unit_and_the_count(
@@ -662,6 +680,76 @@ def test_delete_candles_except_keeps_only_the_chosen_unit(conn: sqlite3.Connecti
     assert conn.execute("SELECT count(*) FROM candles").fetchone() == (4,)
     assert candles.delete_candles_except(conn, CandleUnit.MINUTE_60) == 0
     assert not conn.in_transaction
+
+
+def _two_units_and_two_fetched_times(conn: sqlite3.Connection) -> None:
+    candles.write_candles(
+        conn,
+        [
+            _unit_candle(unit, T0 + timedelta(hours=i), market)
+            for unit in (CandleUnit.DAY, CandleUnit.MINUTE_60)
+            for market in ("KRW-AAA", "KRW-BBB")
+            for i in range(2)
+        ],
+    )
+    settings.write_fetched_at(conn, "KRW-AAA", T0)
+    settings.write_fetched_at(conn, "KRW-BBB", T0)
+
+
+def test_write_settings_can_drop_the_other_units_and_the_fetched_times_in_one_go(
+    conn: sqlite3.Connection,
+) -> None:
+    _two_units_and_two_fetched_times(conn)
+    new = SettingsView(("KRW-AAA",), 7, True, candle_unit=CandleUnit.DAY, candle_count=100)
+    settings.write_settings(conn, new, drop_other_unit_candles=True, clear_fetched_at=True)
+    assert {row[0] for row in conn.execute("SELECT DISTINCT unit FROM candles")} == {"day"}
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (4,)
+    assert settings.read_fetched_at(conn, "KRW-AAA") is None
+    assert settings.read_fetched_at(conn, "KRW-BBB") is None
+    assert settings.read_settings(conn) == new
+    assert not conn.in_transaction
+
+
+def test_write_settings_keeps_candles_and_fetched_times_unless_asked(
+    conn: sqlite3.Connection,
+) -> None:
+    _two_units_and_two_fetched_times(conn)
+    new = SettingsView(("KRW-AAA",), 7, True, candle_unit=CandleUnit.DAY, candle_count=100)
+    settings.write_settings(conn, new)
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (8,)
+    settings.write_settings(conn, new, drop_other_unit_candles=True)  # 받은 때는 그대로
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (4,)
+    assert settings.read_fetched_at(conn, "KRW-AAA") == T0
+    settings.write_settings(conn, new, clear_fetched_at=True)
+    assert settings.read_fetched_at(conn, "KRW-AAA") is None
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (4,)
+
+
+def test_a_failed_write_settings_leaves_the_candles_and_the_fetched_times(
+    conn: sqlite3.Connection,
+) -> None:
+    _two_units_and_two_fetched_times(conn)
+    conn.execute(
+        "CREATE TRIGGER refuse BEFORE INSERT ON settings WHEN NEW.key = 'candle_count' "
+        "BEGIN SELECT RAISE(ABORT, '쓸 수 없다'); END"
+    )
+    conn.execute("DELETE FROM settings WHERE key = 'candle_count'")
+    conn.commit()
+    new = SettingsView(("KRW-AAA",), 7, True, candle_unit=CandleUnit.DAY, candle_count=100)
+    with pytest.raises(StorageError):
+        settings.write_settings(conn, new, drop_other_unit_candles=True, clear_fetched_at=True)
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (8,)  # 같은 트랜잭션이다
+    assert settings.read_fetched_at(conn, "KRW-AAA") == T0
+    assert "candle_unit" not in dict(conn.execute("SELECT key, value FROM settings"))
+    assert not conn.in_transaction
+
+
+def test_dropping_other_units_without_a_unit_deletes_nothing(conn: sqlite3.Connection) -> None:
+    _two_units_and_two_fetched_times(conn)
+    settings.write_settings(
+        conn, SettingsView(("KRW-AAA",), 7, False), drop_other_unit_candles=True
+    )
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (8,)
 
 
 def test_delete_all_fetched_at_leaves_the_other_keys(conn: sqlite3.Connection) -> None:

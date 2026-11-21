@@ -9,8 +9,9 @@
 차례:
 1. 처음 설정 화면에서 코인 목록이 오면 코인 하나와 보관 기간 30일을 고르고 "저장하고 시작"을 누른다.
    봉 단위 칸(`firstSetupUnit_minute60`, M1 명세 3.14.1. 37번부터 있다)이 있으면 60분봉도 고른다.
-2. 봉을 받아 현황 화면의 기간별 통계 표에 기간마다(`core.PERIODS`의 차례) 이름, 2개 이상의 봉
-   수, "%"로 끝나는 변화율이 보인다. 설정 화면에는 고른 보관 기간(30일)과 코인이 남아 있다.
+2. 봉을 받아 현황 화면의 봉 통계 표에 항목마다(`core.BAR_STATS_COLUMNS`의 `bar_count`부터
+   `low`까지) 이름과 값이 보이고 "전체 변화"는 "%"로 끝난다. 설정 화면에는 고른 보관 기간(30일)과
+   코인이 남아 있다.
 3. 다음 받기에서 60분봉 요청이 "네트워크 끊김"을 내 A-1이 생기고, 알림센터의 오류 알림 탭에
    그 줄이 보인다. 다음 받기는 39번 전에는 60분 뒤의 받기이고, 39번 뒤에는 다음 60분봉이 끝나는
    때 + 10초의 받기다(3.5.3). 시계는 그 둘을 모두 넘게 옮긴다(`NEXT_FETCH_SECONDS`).
@@ -44,7 +45,8 @@ from coin_report_trader import ui
 from coin_report_trader.app import data_thread, run_gui
 from coin_report_trader.app.services import Services
 from coin_report_trader.core import (
-    PERIODS,
+    BAR_STATS_COLUMNS,
+    BAR_STATS_TITLES,
     AlertCategory,
     CandleUnit,
     Market,
@@ -53,10 +55,11 @@ from coin_report_trader.core import (
 )
 from coin_report_trader.core.texts import ERROR_NETWORK, ERROR_NOT_ENOUGH_CANDLES
 from coin_report_trader.ui import current_screen, screen_widget
-from coin_report_trader.ui.texts import count_text
 from coin_report_trader.vault import webhook_secret_name
 
 AAA = "KRW-AAA"
+TABLE_COLUMNS = BAR_STATS_COLUMNS[BAR_STATS_COLUMNS.index("bar_count") :]
+"""봉 통계 표의 줄(`bar_count`부터 `low`까지, 3.14.5)."""
 LIMIT_SECONDS = 25.0
 """이 시험 하나가 넘지 않을 실제 시간(안전 타이머). 넘으면 실패로 끝낸다."""
 NEXT_FETCH_SECONDS = 3660
@@ -145,7 +148,7 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
     quote.set_candles(
         AAA,
         CandleUnit.MINUTE_60,
-        make_candles(AAA, CandleUnit.MINUTE_60, 200, last_start=DEFAULT_START.replace(minute=0)),
+        make_candles(AAA, CandleUnit.MINUTE_60, 300, last_start=DEFAULT_START.replace(minute=0)),
     )
     url = _webhook_url()
     discord = FakeDiscord()
@@ -202,8 +205,8 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         if not _shown(table, window):
             return False
         rows = [
-            [_find(status, QLabel, f"statusStatsCell_{row}_{col}").text() for col in range(3)]
-            for row in range(len(PERIODS))
+            [_find(status, QLabel, f"statusStatsCell_{row}_{col}").text() for col in range(2)]
+            for row in range(len(TABLE_COLUMNS))
         ]
         if not all(all(cell for cell in row) for row in rows):
             return False
@@ -287,13 +290,13 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
     assert code == 0
     assert elapsed < 30.0
 
-    # 2. 통계 표: 기간마다(`core.PERIODS`의 차례) 이름, 봉 수(2개 이상), 변화율(%)이 보인다.
-    assert [row[0] for row in seen["stats"]] == [name for name, _unit in PERIODS]
-    counts = {count_text(n) for n in range(2, 1000)}
-    for _name, count, change in seen["stats"]:
-        assert count in counts
-        assert change.endswith("%")
-        assert change != ERROR_NOT_ENOUGH_CANDLES
+    # 2. 봉 통계 표: 항목마다(`bar_count`부터 `low`까지의 차례) 이름과 값이 보이고, 고른 봉
+    #    개수(200개)가 다 모였으며 전체 변화가 "%"로 끝난다.
+    assert [row[0] for row in seen["stats"]] == [BAR_STATS_TITLES[c] for c in TABLE_COLUMNS]
+    values = dict(zip(TABLE_COLUMNS, [row[1] for row in seen["stats"]], strict=True))
+    assert values["bar_count"] == "200개"  # 처음 설정의 봉 개수 기본값
+    assert values["change"].endswith("%")
+    assert ERROR_NOT_ENOUGH_CANDLES not in values.values()
     # 1. 처음 설정에서 고른 보관 기간(30일)과 코인이 설정 화면에 남는다.
     assert seen["settings"][0]
     # 3. 알림센터의 오류 알림 탭에 그 줄이 보인다(코인과 오류 이름).

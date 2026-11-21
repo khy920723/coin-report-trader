@@ -20,7 +20,14 @@ from coin_report_trader import ui
 from coin_report_trader.app import application, run_gui
 from coin_report_trader.app.services import Services
 from coin_report_trader.config.paths import resolve_app_paths
-from coin_report_trader.core import LoadState, MarketsView, QuoteError, SettingsView, StorageError
+from coin_report_trader.core import (
+    CandleUnit,
+    LoadState,
+    MarketsView,
+    QuoteError,
+    SettingsView,
+    StorageError,
+)
 from coin_report_trader.storage.database import migrate, open_database
 
 ROOT_TOKEN = "%LOCALAPPDATA%" if sys.platform == "win32" else "$XDG_DATA_HOME"
@@ -638,7 +645,12 @@ def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
     conn = open_database(paths.database_file)
     try:
         migrate(conn)
-        write_settings(conn, SettingsView(("KRW-AAA",), 30, True))
+        write_settings(
+            conn,
+            SettingsView(
+                ("KRW-AAA",), 30, True, candle_unit=CandleUnit.MINUTE_60, candle_count=100
+            ),
+        )
     finally:
         conn.close()
     discord = FakeDiscord()

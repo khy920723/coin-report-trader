@@ -216,7 +216,9 @@ def make_rig(
         conn = open_database(db)
         try:
             migrate(conn)
-            write_settings(conn, SettingsView(coins, days, True))
+            write_settings(
+                conn, SettingsView(coins, days, True, candle_unit=HOUR, candle_count=100)
+            )
         finally:
             conn.close()
     clock = clock or FakeClock()
@@ -254,7 +256,7 @@ def build(tmp_path: Path) -> Iterator[Callable[..., Rig]]:
 
 
 def candles_fail(rig: Rig, *errors: Any) -> None:
-    rig.quote.script(*errors, kind="candles", market=AAA, unit=DAY)
+    rig.quote.script(*errors, kind="candles", market=AAA, unit=HOUR)
 
 
 def make_stored_alert(
@@ -563,7 +565,7 @@ def test_a_held_send_does_not_slow_the_fetch_of_the_data_thread(
     assert rig.data.wait_idle(SAFETY)
     requests = len(rig.quote.candle_requests(AAA))
     rig.sink.clear()
-    rig.clock.advance(3600)  # (라)의 때: 보내기가 막힌 채로 받는다
+    rig.clock.advance(3610)  # (라)의 때(04:00:10): 보내기가 막힌 채로 받는다
     assert rig.data.wait_idle(SAFETY)
     assert len(rig.quote.candle_requests(AAA)) > requests
     assert [v.state for v in rig.sink.of(CoinView)][-1] is LoadState.READY
@@ -972,17 +974,17 @@ def test_the_a29_of_an_alert_save_is_made_once_until_a_save_succeeds_and_numbers
     rig.settle()
     assert rig.last_alerts_view().alerts == ()
     assert rig.jsonl() == []  # 지운 것은 파일에서도 빠진다
-    rig.quote.script(QuoteError(ERROR_TIMEOUT), kind="candles", market=AAA, unit=DAY)
+    rig.quote.script(QuoteError(ERROR_TIMEOUT), kind="candles", market=AAA, unit=HOUR)
     rig.data.retry_candles()  # 저장이 계속 실패한다: 성공하기 전에는 다시 만들지 않는다
     rig.settle()
     assert rig.last_alerts_view().alerts == ()
     refuse_a1["on"] = False  # 저장이 한 번 성공하면 푼다
-    rig.quote.script(QuoteError(ERROR_SERVER), kind="candles", market=AAA, unit=DAY)
+    rig.quote.script(QuoteError(ERROR_SERVER), kind="candles", market=AAA, unit=HOUR)
     rig.data.retry_candles()
     rig.settle()
     assert len(rig.rows()) == 1
     refuse_a1["on"] = True
-    rig.quote.script(QuoteError(ERROR_MAINTENANCE), kind="candles", market=AAA, unit=DAY)
+    rig.quote.script(QuoteError(ERROR_MAINTENANCE), kind="candles", market=AAA, unit=HOUR)
     rig.data.retry_candles()
     rig.settle()
     ids = [v.id for v in rig.last_alerts_view().alerts]
