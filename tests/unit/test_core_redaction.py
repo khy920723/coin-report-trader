@@ -142,6 +142,128 @@ def test_redact_masks_every_form_of_the_url(url: str) -> None:
     assert TOKEN not in shown
 
 
+OTHER_TOKEN = ("Zq7_-." * 12)[:64]
+THIRD_TOKEN = ("Mn3.-_" * 12)[:64]
+
+
+def _three() -> tuple[str, str, str]:
+    return (
+        webhook(),
+        webhook(number="223456789012345678", token=OTHER_TOKEN),
+        webhook(number="323456789012345678", token=THIRD_TOKEN),
+    )
+
+
+def _no_token(shown: str) -> None:
+    for token in (TOKEN, OTHER_TOKEN, THIRD_TOKEN):
+        assert token not in shown
+
+
+@pytest.mark.parametrize("join", ["", ".", "-", "_", "._-", " ", ",", "\n"])
+def test_redact_masks_each_of_two_urls_however_they_are_joined(join: str) -> None:
+    first, second, _ = _three()
+    shown = redact(first + join + second)
+    _no_token(shown)
+    assert shown.count(MASK) == 2
+
+
+@pytest.mark.parametrize("join", ["", ".", "-", "_"])
+def test_redact_masks_three_or_more_joined_urls(join: str) -> None:
+    first, second, third = _three()
+    shown = redact(join.join([first, second, third, first]))
+    _no_token(shown)
+    assert shown.count(MASK) == 4
+
+
+def test_redact_keeps_the_text_around_joined_urls() -> None:
+    first, second, _ = _three()
+    assert redact(f"앞 {first}.{second} 뒤") == f"앞 {MASK}{MASK} 뒤"  # `.`는 토큰 글자다
+    assert redact(f"앞 {first}{second}/extra 뒤") == f"앞 {MASK}{MASK}/extra 뒤"
+
+
+def test_redact_masks_joined_urls_in_mixed_case() -> None:
+    first = webhook(scheme="HTTPS", host="DISCORD.com")
+    second = webhook(host="Canary.Discord.Com", token=OTHER_TOKEN, scheme="Https")
+    for join in ("", ".", "-", "_"):
+        shown = redact(first + join + second)
+        _no_token(shown)
+        assert shown.count(MASK) == 2
+    assert redact(webhook(scheme="HtTpS", host="DiScOrD.CoM")) == MASK
+
+
+@pytest.mark.parametrize("backslashes", ["\\", "\\\\", "\\\\\\", "\\\\\\\\"])
+def test_redact_masks_a_url_whatever_the_number_of_backslashes_before_the_slashes(
+    backslashes: str,
+) -> None:
+    url = webhook().replace("/", backslashes + "/")
+    shown = redact(f"본문: {url} 끝")
+    assert shown == f"본문: {MASK} 끝"
+    assert TOKEN not in shown
+
+
+@pytest.mark.parametrize("backslashes", ["\\", "\\\\", "\\\\\\"])
+def test_redact_masks_joined_urls_with_backslashes(backslashes: str) -> None:
+    first = webhook().replace("/", backslashes + "/")
+    second = webhook(token=OTHER_TOKEN).replace("/", backslashes + "/")
+    plain = webhook(token=THIRD_TOKEN)
+    for text in (first + second, first + "." + second, second + "-" + plain, plain + first):
+        shown = redact(text)
+        _no_token(shown)
+        assert shown.count(MASK) == 2
+
+
+def test_redact_masks_a_url_inside_json_inside_json() -> None:
+    import json
+
+    inner = json.dumps({"url": webhook(), "next": webhook(token=OTHER_TOKEN)})
+    outer = json.dumps({"detail": inner})
+    shown = redact(json.dumps({"deeper": outer}))
+    _no_token(shown)
+
+
+def test_redact_stops_a_token_at_the_next_url_and_keeps_other_text() -> None:
+    url = webhook()
+    assert redact(url + "https://example.com/path") == f"{MASK}https://example.com/path"
+    assert redact(url + "http://example.com") == f"{MASK}://example.com"  # 토큰 글자는 가린다
+
+
+def test_redact_does_not_mask_more_than_before_for_text_that_is_not_a_webhook_url() -> None:
+    short = webhook(token="a" * 59)
+    other_host = webhook(host="example.com")
+    assert redact(short + short) == short + short
+    assert redact(short + " " + other_host) == short + " " + other_host
+    assert redact("https://" + "a" * 70) == "https://" + "a" * 70
+    assert redact("https:\\/\\/discord.com\\/api") == "https:\\/\\/discord.com\\/api"
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        TOKEN[:55] + "https",  # 앞이 60자에 모자라 `https`까지 세어야 토큰이 된다
+        TOKEN[:59] + "https",
+        TOKEN[:59] + "HTTPS",
+        TOKEN[:59] + "HttpS",
+    ],
+)
+def test_redact_masks_a_token_that_ends_with_https_before_a_colon(token: str) -> None:
+    for tail in (": 시간 초과", ":", ": https: 다시"):
+        shown = redact(webhook(token=token) + tail)
+        assert shown == MASK + tail
+        assert token not in shown
+
+
+def test_redact_still_splits_at_the_next_url_start_not_at_a_bare_https_colon() -> None:
+    first, second, _ = _three()
+    assert redact(first + second) == MASK + MASK
+    assert redact(first + "https: 오류") == MASK + ": 오류"  # 토큰 글자는 가린다
+
+
+def test_a_token_ends_at_https_only_when_the_colon_follows() -> None:
+    # `https`가 토큰 안의 글자일 때(뒤에 `:`가 없을 때)는 토큰에 든다.
+    token = TOKEN[:30] + "https" + TOKEN[30:]
+    assert redact(webhook(token=token)) == MASK
+
+
 def test_redact_leaves_text_that_is_not_a_webhook_url() -> None:
     short = webhook(token="a" * 59)
     assert redact(short) == short
@@ -529,7 +651,6 @@ def test_the_continuation_rule_does_not_apply_to_the_other_variables() -> None:
     env = {"LOCALAPPDATA": "D:\\AppData\\Local", "XDG_DATA_HOME": "/srv/u"}
     assert shorten_path("D:\\AppData\\Local Work\\f", env) == "%LOCALAPPDATA% Work\\f"
     assert shorten_path("/srv/u Work/f", env) == "$XDG_DATA_HOME Work/f"
-
 
 
 # --- 값이 `Users` 바로 아래가 아닐 때(3.10): 부모 폴더 아래의 이름 찾기 --------------------------

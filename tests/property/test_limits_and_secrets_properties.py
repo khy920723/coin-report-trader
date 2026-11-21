@@ -139,7 +139,6 @@ def test_a_webhook_token_never_survives_redaction(case):
             assert not any(chunk in shown for chunk in _chunks(token))
 
 
-@pytest.mark.xfail(strict=True, reason="붙어 있는 두 웹후크 주소의 뒤 토큰이 남는다")
 @pytest.mark.parametrize("joiner", ["", ".", "-", "_"], ids=["붙음", "점", "빼기", "밑줄"])
 def test_two_webhooks_side_by_side_are_both_masked(joiner):
     """맞는 주소 둘이 바로 붙거나 토큰 글자로 이어져도 두 토큰이 모두 가려진다(앱 코드의 버그)."""
