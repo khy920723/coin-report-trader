@@ -478,13 +478,36 @@ CHILD = textwrap.dedent(
     sys.exit(main(sys.argv[2:], services=fakes))
     """
 )
+# 첫 붙기가 실패한 뒤의 첫 기다림에서 표시 한 줄을 찍는다(`notify`의 다시 붙기가 돈다는 표시).
+RETRY_MARK = "B41-RETRY-WAIT"
+LATE_CHILD = (
+    textwrap.dedent(
+        f"""
+    import sys
+    import time
+    import types
+    from coin_report_trader.app import single_instance
+    marked = []
+
+    def sleep(seconds):
+        if not marked:
+            marked.append(True)
+            print("{RETRY_MARK}", flush=True)
+        time.sleep(seconds)
+
+    single_instance.time = types.SimpleNamespace(monotonic=time.monotonic, sleep=sleep)
+    """
+    )
+    + CHILD
+)
 TESTS_DIR = Path(__file__).resolve().parent.parent
+SAFE_JOIN = 10.0
 
 
-def spawn(*argv: str, cwd: Path | None = None) -> subprocess.Popen[str]:
+def spawn(*argv: str, cwd: Path | None = None, code: str = CHILD) -> subprocess.Popen[str]:
     env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
     return subprocess.Popen(
-        [sys.executable, "-c", CHILD, str(TESTS_DIR), *argv],
+        [sys.executable, "-c", code, str(TESTS_DIR), *argv],
         env=env,
         cwd=cwd,
         stdout=subprocess.PIPE,
@@ -565,21 +588,34 @@ def test_b41_a_second_start_waits_for_a_server_that_opens_late(qapp: QApplicatio
     assert holder.tryLock(0)  # 첫 앱이 잠금은 잡았지만 서버는 아직 열지 않았다
     server = QLocalServer()
     lines: list[bytes] = []
+    output: list[str] = []
     try:
-        child = spawn()
-        time.sleep(0.5)
+        child = spawn(code=LATE_CHILD)
+        reader = threading.Thread(
+            target=lambda: output.extend(child.stdout or ()), name="b41-child-output", daemon=True
+        )
+        reader.start()
+        # 서버가 없어 첫 붙기가 실패하고 다시 붙기를 기다리기 시작한 뒤에 서버를 연다.
+        assert pump_until(lambda: any(RETRY_MARK in line for line in output)), (
+            "두 번째 실행이 다시 붙기를 기다리지 않았다: " + "".join(output)
+        )
         QLocalServer.removeServer(single_instance.server_name(root()))
         assert server.listen(single_instance.server_name(root()))
+        opened = time.monotonic()
+        received: list[float] = []
 
         def read_lines() -> bool:
             while server.hasPendingConnections():
                 socket = server.nextPendingConnection()
                 socket.waitForReadyRead(1000)
                 lines.append(bytes(socket.readAll().data()).strip())
+                received.append(time.monotonic())
             return bool(lines) and child.poll() is not None
 
         assert pump_until(read_lines), "두 번째 실행이 늦게 열린 서버에 붙지 못했다"
-        assert child.returncode == 0
+        assert received[0] - opened < 3.0  # 서버가 열린 뒤 3초 안에 다시 붙어 보냈다
+        reader.join(SAFE_JOIN)
+        assert child.returncode == 0, "".join(output)
         assert lines == [b"show"]
         assert not (root() / "logs").exists()  # 로그, DB를 만들지 않는다
         assert not db_file().exists()

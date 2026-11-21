@@ -5,6 +5,7 @@
 일은 그 함수만 잠깐 바꿔 낸다.
 """
 
+import logging
 import threading
 from datetime import timedelta
 from pathlib import Path
@@ -15,10 +16,10 @@ from acceptance.m1_support import (
     BBB,
     HOUR,
     NOW,
+    SAFETY,
     THIS_HOUR,
     restart,
     token_of,
-    until,
     webhook_url,
 )
 from fakes.discord import OK
@@ -67,7 +68,7 @@ def fail_candles(rig, market: str = AAA, *errors: QuoteError) -> None:
 
 
 def everything_written(rig) -> bytes:
-    """DB(WAL 포함)와 로그 폴더의 모든 파일의 바이트."""
+    """DB(WAL 포함)와 로그 폴더의 모든 파일의 바이트. 로그 처리기가 없어 로그는 `caplog`로 본다."""
     found = b""
     for folder in (rig.db.parent, rig.logs):
         for path in sorted(Path(folder).rglob("*")):
@@ -98,8 +99,9 @@ def stored_alert(rig, category: AlertCategory) -> int:
 
 @pytest.mark.scenario("B14")
 def test_b14_the_address_is_only_in_the_vault_and_the_message_is_short(
-    rigs, monkeypatch: pytest.MonkeyPatch
+    rigs, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.DEBUG)  # 앱이 남기는 로그를 모두 받는다(Rig에는 로그 파일이 없다)
     sqlite_threads: set[str] = set()
     real_open = data_thread.open_database
 
@@ -126,7 +128,8 @@ def test_b14_the_address_is_only_in_the_vault_and_the_message_is_short(
     assert alert.detail is not None
     assert alert.detail.content not in sent.text  # 내용 전체는 보내지 않는다
     token = token_of(url)
-    assert token.encode() not in everything_written(rig)  # app.db, 로그
+    assert token.encode() not in everything_written(rig)  # app.db
+    assert token not in caplog.text  # 로그
     assert token not in alert.text
     assert token not in repr(rig.sink.items)  # 자료 스레드와 보내기 스레드가 화면에 보낸 값
     assert sqlite_threads == {DATA_THREAD_NAME}  # 자료 스레드만 SQLite를 쓴다
@@ -159,9 +162,17 @@ def test_b16_a_timed_out_send_is_tried_once_marked_and_never_sent_again(rigs, tm
     fail_candles(rig, AAA)
     rig.send.start()
     rig.data.start()
-    assert rig.discord.entered.wait(10), "보내기가 시작되지 않았다"
-    # 그동안 다른 코인의 받기가 늦어지지 않는다(자료 스레드는 보내기를 기다리지 않는다).
-    assert until(lambda: any(v.state is LoadState.READY for v in rig.sink.coin(BBB)))
+    assert rig.discord.entered.wait(SAFETY), "보내기가 시작되지 않았다"
+    assert rig.data.wait_idle(SAFETY)
+    # 그동안 다른 코인의 받기가 늦어지지 않는다(자료 스레드는 보내기를 기다리지 않는다): 보내기가
+    # 막힌 채로 다음 (라)(04:00:10)가 와서 BBB를 다시 받는다.
+    requests = len(rig.quote.candle_requests(BBB, HOUR))
+    rig.sink.clear()
+    rig.clock.advance(3610)
+    assert rig.data.wait_idle(SAFETY)
+    assert len(rig.quote.candle_requests(BBB, HOUR)) > requests
+    assert [v.state for v in rig.sink.coin(BBB)][-1] is LoadState.READY
+    assert rig.send.wait_idle(0.05) is False  # 보내기는 아직 막혀 있다
     rig.discord.release()
     rig.settle()
     (alert,) = rig.alerts()
@@ -180,7 +191,10 @@ def test_b16_a_timed_out_send_is_tried_once_marked_and_never_sent_again(rigs, tm
 
 
 @pytest.mark.scenario("B23")
-def test_b23_a_vault_that_cannot_save_shows_the_line_and_makes_one_a29(rigs) -> None:
+def test_b23_a_vault_that_cannot_save_shows_the_line_and_makes_one_a29(
+    rigs, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)  # 앱이 남기는 로그를 모두 받는다(Rig에는 로그 파일이 없다)
     rig = rigs()
     with_bars(rig, AAA)
     rig.start()
@@ -193,7 +207,9 @@ def test_b23_a_vault_that_cannot_save_shows_the_line_and_makes_one_a29(rigs) -> 
     found = [(a.code, a.detail.stage) for a in rig.alerts() if a.detail]
     assert found == [("A-29", STAGE_WEBHOOK_SAVE)]
     token = token_of(url)
-    assert token.encode() not in everything_written(rig)
+    assert token.encode() not in everything_written(rig)  # app.db
+    assert token not in caplog.text  # 로그
+    assert ERROR_VAULT in caplog.text  # 보관소의 실패는 로그에 남았다(로그를 받고 있다)
     assert all(token not in a.text and token not in repr(a.detail) for a in rig.alerts())
 
 

@@ -197,16 +197,20 @@ def test_b44_raising_the_count_reaches_back_for_the_missing_bars(rigs) -> None:
     rig.start()
     fetched = rig.fetched_at(AAA)
     assert fetched == NOW
-    stored_before = len(rig.stored(AAA, HOUR))
+    before = len(rig.quote.candle_requests(AAA, HOUR))
+    rig.sink.clear()
     rig.data.save_settings((AAA,), 30, first_setup=False, candle_unit=HOUR, candle_count=500)
     rig.settle()
-    assert rig.fetched_at(AAA) == fetched  # 봉과 `fetched_at`은 지워지지 않는다
+    # 봉과 `fetched_at`은 지워지지 않는다. 그 뒤의 받기 1번(새 봉 1개) 다음에, 가장 이른 봉 앞을
+    # 거슬러 받는다(`missing` 380 = 200 + 180).
+    later = [(r.to, r.count) for r in rig.quote.candle_requests(AAA, HOUR)[before:]]
+    assert later == [(None, 1), (candles[400].start, 200), (candles[200].start, 180)]
+    assert rig.fetched_at(AAA) == fetched
+    views = rig.sink.coin(AAA)
+    assert views
+    assert all(v.fetched_at == fetched for v in views)  # 저장 뒤에 화면에 간 값도 처음 값이다
     stored = rig.stored(AAA, HOUR)
-    assert len(stored) >= stored_before
-    complete = [c for c in stored if c.start + timedelta(hours=1) <= rig.clock.now()]
-    assert len(complete) >= 500
-    reach_back = [r for r in rig.quote.candle_requests(AAA, HOUR) if r.to is not None]
-    assert sum(r.count for r in reach_back) >= 380  # `missing` 380을 거슬러 받았다
-    last = rig.sink.coin(AAA)[-1]
+    assert stored == candles[20:]
+    last = views[-1]
     assert last.stats is not None
     assert last.stats.bar_count == 500
