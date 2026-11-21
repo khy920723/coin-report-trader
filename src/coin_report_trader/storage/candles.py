@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from coin_report_trader.core import Candle, CandleUnit, StorageError
+from coin_report_trader.core import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, StorageError
 from coin_report_trader.storage.database import transaction, translate_errors
 from coin_report_trader.storage.times import format_utc, parse_utc
 
@@ -48,6 +48,66 @@ def last_candle_start(conn: sqlite3.Connection, market: str, unit: CandleUnit) -
             (market, CandleUnit(unit).value),
         ).fetchone()
     return None if text is None else parse_utc(text)
+
+
+def first_candle_start(conn: sqlite3.Connection, market: str, unit: CandleUnit) -> datetime | None:
+    """저장된 그 코인·단위의 가장 이른 봉의 시작 시각(`first_start`, 3.5.3). 없으면 `None`."""
+    with translate_errors("가장 이른 봉 읽기"):
+        (text,) = conn.execute(
+            "SELECT min(start_utc) FROM candles WHERE market = ? AND unit = ?",
+            (market, CandleUnit(unit).value),
+        ).fetchone()
+    return None if text is None else parse_utc(text)
+
+
+def _complete_cutoff(unit: CandleUnit, now: datetime) -> str:
+    """이 시각 글보다 늦지 않게 시작한 봉이 완성된 봉이다(시작 + 단위의 길이 <= `now`)."""
+    return format_utc(now - CANDLE_UNIT_LENGTHS[CandleUnit(unit)])
+
+
+def count_complete_candles(
+    conn: sqlite3.Connection, market: str, unit: CandleUnit, now: datetime
+) -> int:
+    """저장된 그 코인·단위의 완성된 봉의 수(`missing`을 셈하는 데 쓴다. 3.5.3)."""
+    with translate_errors("완성된 봉 세기"):
+        (count,) = conn.execute(
+            "SELECT count(*) FROM candles WHERE market = ? AND unit = ? AND start_utc <= ?",
+            (market, CandleUnit(unit).value, _complete_cutoff(unit, now)),
+        ).fetchone()
+    return int(count)
+
+
+def read_latest_complete_candles(
+    conn: sqlite3.Connection, market: str, unit: CandleUnit, now: datetime, count: int
+) -> tuple[Candle, ...]:
+    """저장된 그 코인·단위의 완성된 봉 가운데 시작 시각이 가장 늦은 `count`개를 시작 시각
+    순(오래된 것이 앞)으로 읽는다. 완성된 봉이 `count`개보다 적으면 있는 만큼이다."""
+    if count <= 0:
+        return ()
+    with translate_errors("봉 읽기"):
+        rows = conn.execute(
+            f"SELECT {_COLUMNS} FROM candles WHERE market = ? AND unit = ? AND start_utc <= ?"
+            " ORDER BY start_utc DESC LIMIT ?",
+            (market, CandleUnit(unit).value, _complete_cutoff(unit, now), count),
+        ).fetchall()
+    return tuple(_from_row(row) for row in reversed(rows))
+
+
+def has_candles(conn: sqlite3.Connection, unit: CandleUnit) -> bool:
+    """어느 코인이든 그 단위의 봉이 하나라도 저장되어 있는지(3.5.4)."""
+    with translate_errors("봉 있는지 읽기"):
+        row = conn.execute(
+            "SELECT 1 FROM candles WHERE unit = ? LIMIT 1", (CandleUnit(unit).value,)
+        ).fetchone()
+    return row is not None
+
+
+def delete_candles_except(conn: sqlite3.Connection, unit: CandleUnit) -> int:
+    """그 단위가 아닌 봉을 모두 지우고 지운 수를 돌려준다(봉 단위를 저장할 때. 3.5.4)."""
+    with translate_errors("다른 단위의 봉 지우기"), transaction(conn):
+        return conn.execute(
+            "DELETE FROM candles WHERE unit <> ?", (CandleUnit(unit).value,)
+        ).rowcount
 
 
 def _to_row(candle: Candle) -> tuple[object, ...]:
