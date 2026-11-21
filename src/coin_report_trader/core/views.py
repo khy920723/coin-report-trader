@@ -7,8 +7,8 @@ from enum import StrEnum
 from types import MappingProxyType
 
 from coin_report_trader.core.alerts import AlertCategory, Mode
-from coin_report_trader.core.market import Market
-from coin_report_trader.core.stats import CandleIndicator, PeriodStats, empty_periods
+from coin_report_trader.core.market import CandleUnit, Market
+from coin_report_trader.core.stats import BarStats, CandleIndicator, PeriodStats, empty_periods
 
 SAVE_TARGET_SETTINGS = "settings"
 SAVE_TARGET_ALERT_DELETE = "alert_delete"
@@ -45,6 +45,8 @@ class CoinView:
     """일시 차단 중이면 다시 받는 때."""
     as_of: datetime | None = None
     """조립이 이 값을 만든 때(`Clock.now()`). 화면은 "오늘"의 기준으로만 쓴다. 없으면 `None`."""
+    stats: BarStats | None = None
+    """그 코인의 봉 통계(1단계 보완, 3.4). 39번부터 조립이 늘 담고, 그 전에는 늘 `None`이다."""
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,10 @@ class SettingsView:
     first_setup_done: bool = False
     state: LoadState = LoadState.READY
     """`READY`(읽었다)나 `FAILED`(켤 때 설정을 읽지 못했다). `FAILED`면 다른 세 필드는 뜻이 없다."""
+    candle_unit: CandleUnit | None = None
+    """고른 봉 단위(1단계 보완). 저장되지 않았으면 `None`."""
+    candle_count: int | None = None
+    """고른 봉 개수(1단계 보완). 저장되지 않았으면 `None`."""
 
 
 @dataclass(frozen=True)

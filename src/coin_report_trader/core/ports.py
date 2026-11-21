@@ -51,7 +51,13 @@ class UiActions(Protocol):
     def refresh_markets(self) -> None: ...
 
     def save_settings(
-        self, coins: tuple[str, ...], retention_days: int, *, first_setup: bool
+        self,
+        coins: tuple[str, ...],
+        retention_days: int,
+        *,
+        first_setup: bool,
+        candle_unit: CandleUnit | None = None,
+        candle_count: int | None = None,
     ) -> None: ...
 
     def retry_candles(self) -> None: ...

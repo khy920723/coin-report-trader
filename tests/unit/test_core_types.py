@@ -90,7 +90,7 @@ def test_modes_and_their_titles() -> None:
 
 
 def test_candle_units() -> None:
-    assert [u.value for u in CandleUnit] == ["day", "minute60"]
+    assert [u.value for u in CandleUnit] == ["minute30", "minute60", "minute240", "day"]
     assert CandleUnit("minute60") is CandleUnit.MINUTE_60
 
 
