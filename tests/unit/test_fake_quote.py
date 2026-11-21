@@ -116,6 +116,36 @@ def test_make_candles_are_consecutive_made_up_numbers() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("unit", "step"),
+    [
+        (CandleUnit.MINUTE_30, timedelta(minutes=30)),
+        (CandleUnit.MINUTE_60, timedelta(hours=1)),
+        (CandleUnit.MINUTE_240, timedelta(hours=4)),
+        (CandleUnit.DAY, timedelta(days=1)),
+    ],
+)
+def test_four_units_are_kept_apart(unit: CandleUnit, step: timedelta) -> None:
+    # 가짜 시세의 봉 단위 넷(M1 명세 3.13). 단위마다 따로 두고 따로 돌려준다.
+    groups = {u: make_candles(M, u, 3, last_start=TODAY) for u in CandleUnit}
+    source = FakeQuoteSource(candles=[c for group in groups.values() for c in group])
+    candles = groups[unit]
+    assert [b.start - a.start for a, b in itertools.pairwise(candles)] == [step, step]
+    assert candles[-1].start == TODAY
+    assert source.candles(M, unit) == candles
+    assert source.get_candles(M, unit, to=None, count=200) == tuple(reversed(candles))
+    assert source.get_candles(M, unit, to=TODAY, count=1) == (candles[1],)
+    assert [r.unit for r in source.candle_requests(M, unit)] == [unit, unit]
+
+
+def test_script_can_aim_at_one_of_the_new_units() -> None:
+    source = FakeQuoteSource(candles=make_candles(M, CandleUnit.MINUTE_30, 2, last_start=TODAY))
+    source.script(QuoteError(ERROR_NETWORK), unit=CandleUnit.MINUTE_240)
+    assert len(source.get_candles(M, CandleUnit.MINUTE_30, to=None, count=5)) == 2
+    with pytest.raises(QuoteError):
+        source.get_candles(M, CandleUnit.MINUTE_240, to=None, count=5)
+
+
 # --- 결과 정하기 ----------------------------------------------------------------------------
 
 

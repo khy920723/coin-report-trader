@@ -175,6 +175,25 @@ def test_numeric_strings_are_read_as_decimal() -> None:
     assert recorder.requests[0].url.path == "/v1/candles/minutes/60"
 
 
+@pytest.mark.parametrize(
+    ("unit", "path"),
+    [
+        (CandleUnit.MINUTE_30, "/v1/candles/minutes/30"),
+        (CandleUnit.MINUTE_60, "/v1/candles/minutes/60"),
+        (CandleUnit.MINUTE_240, "/v1/candles/minutes/240"),
+        (CandleUnit.DAY, "/v1/candles/days"),
+    ],
+)
+def test_each_of_the_four_units_has_its_path(unit: CandleUnit, path: str) -> None:
+    # 요청 경로 넷(M1 명세 3.5.3).
+    text = "[" + candle_json("KRW-AAA", "2026-01-04T04:00:00") + "]"
+    source, recorder = make_source(body(text))
+    (candle,) = source.get_candles("KRW-AAA", unit, to=None, count=200)
+    assert candle.unit is unit
+    assert recorder.requests[0].url.path == path
+    assert dict(recorder.requests[0].url.params) == {"market": "KRW-AAA", "count": "200"}
+
+
 def test_to_is_sent_as_utc_and_rounded_up_to_the_second() -> None:
     source, recorder = make_source(body("[]"))
     kst_noon = datetime.fromisoformat("2026-01-04T12:00:00+09:00")
