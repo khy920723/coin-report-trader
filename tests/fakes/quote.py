@@ -1,5 +1,7 @@
 """가짜 공개 시세(M1 명세 3.13). `core.QuoteSource`(3.4)의 약속을 진짜와 같게 지킨다.
 
+- 봉 단위는 넷이다: 30분봉, 60분봉, 240분봉, 일봉(33번이 넓혔다).
+
 - 돌려주는 것: 시험이 준 코인 목록(원화 마켓만, 준 차례대로)과 봉.
   - `get_candles(market, unit, *, to, count)`는 그 마켓·단위의 봉 가운데 `to` 앞에 시작한 봉을
     새것부터 `count`개 준다. `to`가 `None`이면 가장 최근 것부터 준다. 봉이 없으면 빈 튜플이다.
@@ -35,11 +37,18 @@ import threading
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Final
 
-from coin_report_trader.core import Candle, CandleUnit, Clock, Market, QuoteError
+from coin_report_trader.core import (
+    CANDLE_UNIT_LENGTHS,
+    Candle,
+    CandleUnit,
+    Clock,
+    Market,
+    QuoteError,
+)
 
 MARKETS: Final = "markets"
 """코인 목록 요청의 종류."""
@@ -47,7 +56,8 @@ CANDLES: Final = "candles"
 """봉 요청의 종류."""
 MAX_COUNT: Final = 200
 
-UNIT_STEP: Final = {CandleUnit.DAY: timedelta(days=1), CandleUnit.MINUTE_60: timedelta(hours=1)}
+UNIT_STEP: Final = CANDLE_UNIT_LENGTHS
+"""단위의 길이 넷(30분봉, 60분봉, 240분봉, 일봉. 3.4의 `CANDLE_UNIT_LENGTHS`)."""
 
 
 class _Ok:

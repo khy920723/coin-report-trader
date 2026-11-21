@@ -10,8 +10,21 @@
     요청 하나의 개수는 그 구간에 들 수 있는 봉의 수(200 이하)다. 받은 봉이 `last_start`에 닿거나
     요청한 개수보다 적으면 멈춘다. `last_start`보다 앞에 시작한 봉은 버린다.
   - 돌려주는 봉은 시작 시각 순이고 시작 시각이 겹치지 않는다(그 뒤의 받기는 `last_start`의 봉 포함).
-  - 받기 중간에 실패하면 그때까지 받은 봉을 돌려주지 않고 `QuoteError`를 그대로 낸다(3.5의 "끝까지
-    성공했을 때만 저장한다").
+  - 1단계 보완 전의 받기다. 39번이 `fetch_recent`로 옮긴 뒤 43번이 지운다(3.4).
+- `fetch_recent(market, unit, *, count, last_start, first_start, missing)`: 1단계 보완의
+  받기(3.5.3). `RecentCandles(candles, reached_oldest)`를 돌려준다.
+  - `last_start`가 `None`이면 처음 받기다. 가장 최근부터 200개씩 거슬러, 받은 완성된 봉이
+    `count`(N)개 모이거나 거래소가 요청한 수보다 적게 줄 때까지 받는다. 적게 주면 `reached_oldest`가
+    참이다. 완성은 봉의 시작 시각에 단위의 길이(`CANDLE_UNIT_LENGTHS`)를 더한 때가 지금
+    (`clock.now()`)보다 뒤가 아닌 것이다. 받은 미완성 봉도 돌려준다(셈에서 빼는 것은 `stats`다).
+  - 아니면 그 뒤의 받기(`fetch_candles`의 그 뒤의 받기와 같다)를 하고, `missing`이 0보다 크면
+    이어서 거슬러 받기를 한다. 거슬러 받기는 `first_start`(저장된 가장 이른 봉의 시작 시각) 앞을
+    200개씩, 모두 `missing`개만큼 받는다. 거래소가 요청한 수보다 적게 주면 거기서 멈추고
+    `reached_oldest`가 참이다. `missing`이 0이면 거슬러 받기 요청을 내지 않고 `reached_oldest`는
+    거짓이다.
+  - 돌려주는 봉은 시작 시각 순이고 시작 시각이 겹치지 않는다.
+- 두 받기 모두, 중간에 실패하면 그때까지 받은 봉을 돌려주지 않고 `QuoteError`를 그대로 낸다
+  (3.5의 "끝까지 성공했을 때만 저장한다").
 - 요청 한도(3.10)는 `RequestLimiter`가 `clock`으로 지킨다. 코인 목록과 봉 요청을 함께 센다.
 - "요청 한도 초과"를 받아도 그 자리에서 기다려 다시 보내지 않는다(3.9). 일시 차단의
   `blocked_until`은 이 부품이 들지 않는다(`app`이 든다).
@@ -20,12 +33,13 @@
 """
 
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from types import MappingProxyType
 
 from coin_report_trader.core.clock import Clock
 from coin_report_trader.core.errors import QuoteError
-from coin_report_trader.core.market import Candle, CandleUnit, Market
+from coin_report_trader.core.market import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, Market
 from coin_report_trader.core.ports import QuoteSource
 from coin_report_trader.core.texts import ERROR_BAD_RESPONSE
 from coin_report_trader.trading.quote.ratelimit import RequestLimiter
@@ -33,15 +47,32 @@ from coin_report_trader.trading.quote.ratelimit import RequestLimiter
 MAX_CANDLES = 200
 """요청 하나로 받는 봉의 수의 상한."""
 
-UNIT_LENGTH: MappingProxyType[CandleUnit, timedelta] = MappingProxyType(
-    {CandleUnit.DAY: timedelta(days=1), CandleUnit.MINUTE_60: timedelta(minutes=60)}
-)
+UNIT_LENGTH: Mapping[CandleUnit, timedelta] = CANDLE_UNIT_LENGTHS
+"""단위의 길이 넷(3.4의 `CANDLE_UNIT_LENGTHS`)."""
+
+
+@dataclass(frozen=True)
+class RecentCandles:
+    """`fetch_recent`의 결과(3.4, 3.5.3)."""
+
+    candles: tuple[Candle, ...]
+    """받은 봉. 시작 시각 순이고 시작 시각이 겹치지 않는다."""
+    reached_oldest: bool
+    """처음 받기나 거슬러 받기에서 거래소가 요청한 수보다 적게 주었다(더 이른 봉이 없다)."""
 
 
 def _aware(moment: datetime, name: str) -> datetime:
     if not isinstance(moment, datetime) or moment.tzinfo is None or moment.utcoffset() is None:
         raise ValueError(f"{name}는 시간대가 붙은 datetime이어야 한다")
     return moment
+
+
+def _count(value: int, name: str, *, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name}는 정수다")
+    if value < minimum:
+        raise ValueError(f"{name}는 {minimum} 이상이다: {value}")
+    return value
 
 
 def _slots(newer: datetime, older: datetime, unit: CandleUnit) -> int:
@@ -73,6 +104,72 @@ class QuoteClient:
                 return self._fetch_all(market, unit)
             return _ascending(self._request(market, unit, to=None, count=MAX_CANDLES))
         return self._fetch_since(market, unit, _aware(last_start, "last_start"))
+
+    def fetch_recent(
+        self,
+        market: str,
+        unit: CandleUnit,
+        *,
+        count: int,
+        last_start: datetime | None,
+        first_start: datetime | None,
+        missing: int,
+    ) -> RecentCandles:
+        """1단계 보완의 받기(모듈 설명, 3.5.3)."""
+        unit = CandleUnit(unit)
+        count = _count(count, "count", minimum=1)
+        missing = _count(missing, "missing", minimum=0)
+        if last_start is None:
+            candles, reached = self._fetch_initial(market, unit, count)
+            return RecentCandles(_ascending(candles), reached)
+        # 인자는 요청을 내기 전에 모두 본다(틀리면 아무 요청도 나가지 않는다).
+        last_start = _aware(last_start, "last_start")
+        if missing > 0:
+            if first_start is None:
+                raise ValueError("거슬러 받기(missing > 0)에는 first_start가 있어야 한다")
+            first_start = _aware(first_start, "first_start")
+        collected = list(self._fetch_since(market, unit, last_start))
+        reached = False
+        if missing > 0 and first_start is not None:
+            older, reached = self._fetch_older(market, unit, first_start, missing)
+            collected.extend(older)
+        return RecentCandles(_ascending(collected), reached)
+
+    def _fetch_initial(
+        self, market: str, unit: CandleUnit, count: int
+    ) -> tuple[list[Candle], bool]:
+        """처음 받기. (받은 봉, `reached_oldest`)."""
+        now = self._clock.now()
+        length = UNIT_LENGTH[unit]
+        collected: list[Candle] = []
+        completed = 0
+        to: datetime | None = None
+        while True:
+            batch = self._request(market, unit, to=to, count=MAX_CANDLES)
+            collected.extend(batch)
+            completed += sum(1 for candle in batch if candle.start + length <= now)
+            if len(batch) < MAX_CANDLES:
+                return collected, True
+            if completed >= count:
+                return collected, False
+            to = min(candle.start for candle in batch)
+
+    def _fetch_older(
+        self, market: str, unit: CandleUnit, first_start: datetime, missing: int
+    ) -> tuple[list[Candle], bool]:
+        """거슬러 받기. `first_start` 앞을 200개씩 모두 `missing`개. (받은 봉, `reached_oldest`)."""
+        collected: list[Candle] = []
+        remaining = missing
+        to = first_start
+        while remaining > 0:
+            asked = min(MAX_CANDLES, remaining)
+            batch = self._request(market, unit, to=to, count=asked)
+            collected.extend(batch)
+            if len(batch) < asked:
+                return collected, True
+            remaining -= asked
+            to = min(candle.start for candle in batch)
+        return collected, False
 
     def _fetch_all(self, market: str, unit: CandleUnit) -> tuple[Candle, ...]:
         collected: list[Candle] = []
