@@ -7,12 +7,18 @@
 - 목록: 받은 코인마다 한 줄(`<prefix>Coin_<마켓 코드>` 체크 상자, 유의·주의면 옆에
   `<prefix>CoinCaution_<마켓 코드>` 라벨), 고른 코인의 순서 목록(`<prefix>CoinsSelected`)과
   단추 `<prefix>CoinUp`, `<prefix>CoinDown`, `<prefix>CoinRemove`.
+
+목록의 줄은 코인 기호의 ABC 순서다(숫자로 시작하는 기호가 맨 앞. M1 명세 3.14.3). 목록 위의 찾기 칸
+`<prefix>CoinSearch`(이름 라벨 `<prefix>CoinSearchTitle`)에 넣은 글이 기호나 한글 이름에 든 줄만
+보이고, 맞는 줄이 없으면 `<prefix>CoinsNoMatch`가 보인다. 목록을 보이지 않는 모습(불러오는 중,
+받지 못함, 일시 차단 중, 보일 것이 없는 때)에서는 찾기 칸이 흐리다.
 """
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
+    QLineEdit,
     QListWidget,
     QPushButton,
     QScrollArea,
@@ -27,14 +33,23 @@ from coin_report_trader.ui.texts import (
     CAUTION_LABEL,
     MOVE_DOWN_TEXT,
     MOVE_UP_TEXT,
+    NO_COIN_FOUND,
     REMOVE_TEXT,
     RETRY_TEXT,
+    SEARCH_LABEL,
+    SEARCH_PLACEHOLDER,
 )
 from coin_report_trader.ui.widgets import make_label
 
 MAX_COINS = 3
 _MESSAGE_PAGE = 0
 _LIST_PAGE = 1
+
+
+def coin_sort_key(market: Market) -> tuple[int, str, str]:
+    """코인 목록의 차례(M1 명세 3.14.3): (첫 글자가 숫자면 0, 아니면 1, 기호의 대문자, 기호)."""
+    symbol = coin_label(market.market)
+    return (0 if symbol[:1].isdigit() else 1, symbol.upper(), symbol)
 
 
 class CoinPicker(QWidget):
@@ -51,10 +66,21 @@ class CoinPicker(QWidget):
         self._markets: tuple[Market, ...] = ()
         self._names: dict[str, str] = {}
         self._boxes: dict[str, QCheckBox] = {}
+        self._rows: dict[str, QWidget] = {}
+        self._locked = False
+        self._search_usable = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(make_label(title, f"{prefix}CoinsTitle"))
+        search_row = QHBoxLayout()
+        search_row.addWidget(make_label(SEARCH_LABEL, f"{prefix}CoinSearchTitle"))
+        self._search = QLineEdit()
+        self._search.setObjectName(f"{prefix}CoinSearch")
+        self._search.setPlaceholderText(SEARCH_PLACEHOLDER)
+        self._search.textChanged.connect(self._apply_filter)
+        search_row.addWidget(self._search, 1)
+        layout.addLayout(search_row)
         self._pages = QStackedWidget()
         self._pages.setObjectName(f"{prefix}CoinsPages")
         layout.addWidget(self._pages)
@@ -78,6 +104,9 @@ class CoinPicker(QWidget):
         self._rows_holder.setObjectName(f"{prefix}CoinsList")
         self._rows_layout = QVBoxLayout(self._rows_holder)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._no_match = make_label(NO_COIN_FOUND, f"{prefix}CoinsNoMatch")
+        self._no_match.hide()
+        self._rows_layout.addWidget(self._no_match)
         self._rows_layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -98,6 +127,7 @@ class CoinPicker(QWidget):
         self._pages.addWidget(list_page)
 
         self._sync()
+        self._update_search()
 
     def _button(self, text: str, name: str, slot) -> QPushButton:
         button = QPushButton(text)
@@ -128,6 +158,8 @@ class CoinPicker(QWidget):
         self._sync()
 
     def show_mode(self, mode: PickerMode) -> None:
+        self._search_usable = mode.kind is PickerKind.READY
+        self._update_search()
         if mode.kind is PickerKind.READY:
             self._pages.setCurrentIndex(_LIST_PAGE)
             return
@@ -136,13 +168,45 @@ class CoinPicker(QWidget):
         self._message.setVisible(bool(mode.text))
         self._retry.setVisible(mode.retry)
 
+    def set_locked(self, locked: bool) -> None:
+        """코인 고르기(찾기 칸, 위·아래 단추 포함)를 잠근다. 잠기면 흐리게 보이고 바꿀 수 없다
+        (M1 명세 3.14.4). 고른 코인은 그대로 보이고 `picks()`가 가지고 있다."""
+        self._locked = locked
+        self._update_search()
+        self._pages.widget(_LIST_PAGE).setEnabled(not locked)
+
     # --- 안쪽 ---
 
-    def _rebuild_rows(self) -> None:
-        for box in self._boxes.values():
-            box.parentWidget().deleteLater()
-        self._boxes = {}
+    def _update_search(self) -> None:
+        self._search.setEnabled(self._search_usable and not self._locked)
+
+    def _apply_filter(self, *_args) -> None:
+        """찾기 칸의 글(앞뒤 빈칸을 지운)이 기호나 한글 이름에 든 줄만 보인다.
+        빈 글이면 모두 보인다. 고른 상태는 가려진 줄에도 남는다."""
+        text = self._search.text().strip().casefold()
+        shown = 0
         for market in self._markets:
+            row = self._rows.get(market.market)
+            if row is None:
+                continue
+            hit = (
+                not text
+                or text in coin_label(market.market).casefold()
+                or text in market.name.casefold()
+            )
+            row.setVisible(hit)
+            shown += hit
+        self._no_match.setVisible(bool(text) and shown == 0)
+
+    def _rebuild_rows(self) -> None:
+        for row in self._rows.values():
+            # 다시 받은 목록의 줄과 이름이 겹치지 않게 지금 떼어 낸다.
+            row.hide()
+            row.setParent(None)
+            row.deleteLater()
+        self._rows = {}
+        self._boxes = {}
+        for market in sorted(self._markets, key=coin_sort_key):
             row = QWidget()
             row.setObjectName(f"{self._prefix}CoinRow_{market.market}")
             row_layout = QHBoxLayout(row)
@@ -159,7 +223,9 @@ class CoinPicker(QWidget):
                 )
             row_layout.addStretch(1)
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, row)
+            self._rows[market.market] = row
             self._boxes[market.market] = box
+        self._apply_filter()
 
     def _on_clicked(self, market: str, checked: bool) -> None:
         if checked and market not in self._picks and len(self._picks) < MAX_COINS:
