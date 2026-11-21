@@ -16,8 +16,9 @@
     "연결 실패"로 삼키지 않는다. 막을 때마다 기록하고, 시험의 정리 단계에서 기록이 남아 있으면 그
     시험을 실패로 만든다(예외가 삼켜졌어도). 일부러 막는 시험은 `network_guard.expect_blocked()`로
     감싼다.
-  - 한계: 자식 프로세스, Python `socket`을 거치지 않는 확장 모듈(앱은 QtNetwork를 쓰지 않는다),
-    원래 함수를 일부러 되돌리는 코드는 막지 못한다.
+  - 한계: 자식 프로세스, Python `socket`을 거치지 않는 확장 모듈(앱은 QtNetwork의 로컬
+    소켓(이름 있는 파이프, 유닉스 소켓)만 쓰고 네트워크 소켓은 쓰지 않는다), 원래 함수를 일부러
+    되돌리는 코드는 막지 못한다.
 - keyring 장치(M1 명세 3.13): `pytest_configure`에서 걸고 `pytest_unconfigure`에서 푼다.
   - 막는 것: keyring 패키지의 모듈 함수 `get_password`, `set_password`, `delete_password`,
     `get_credential`(`keyring`과 `keyring.core`의 이름 모두)과, keyring 패키지에 정의된 백엔드
