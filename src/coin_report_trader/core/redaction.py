@@ -17,14 +17,22 @@ MAX_REDACTED_LENGTH: Final = 2000
 _HOST = r"(?:(?:canary|ptb)\.)?(?:discord|discordapp)\.com"
 
 
-def _webhook_pattern(slash: str) -> str:
-    path = "{s}api{s}(?:v[0-9]+{s})?webhooks{s}[0-9]{{17,20}}{s}[A-Za-z0-9._-]{{60,}}"
-    return "https:" + slash * 2 + _HOST + path.format(s=slash)
+_TOKEN = r"[A-Za-z0-9._-]{60,}"
+# 가릴 때의 토큰: 다음 주소의 시작(`https:`)이 나오면 거기서 끝난다. 토큰 글자에는 `:`가 없으므로
+# 진짜 토큰 안에는 `https:`가 있을 수 없다. 그래서 바로 붙거나 `.`, `-`, `_`로 이어진 주소도
+# 주소마다 따로 가려진다. 끝 조건이 없는 `_TOKEN`은 `is_webhook_url`이 쓴다.
+_FIND_TOKEN = r"(?:(?!https:)[A-Za-z0-9._-]){60,}"
 
 
-_WEBHOOK_URL = re.compile(_webhook_pattern("/"))
-# 가릴 때는 더 넓게 본다: 대소문자를 가리지 않고, JSON에서 이스케이프한 `\/`도 본다.
-_FIND_WEBHOOK = re.compile(_webhook_pattern(r"(?:\\?/)"), re.IGNORECASE)
+def _webhook_pattern(slash: str, token: str) -> str:
+    path = "{s}api{s}(?:v[0-9]+{s})?webhooks{s}[0-9]{{17,20}}{s}"
+    return "https:" + slash * 2 + _HOST + path.format(s=slash) + token
+
+
+_WEBHOOK_URL = re.compile(_webhook_pattern("/", _TOKEN))
+# 가릴 때는 더 넓게 본다: 대소문자를 가리지 않고, JSON에서 이스케이프한 `\/`나 `\\/`처럼
+# `/` 앞에 역슬래시가 몇 개 붙어도 본다.
+_FIND_WEBHOOK = re.compile(_webhook_pattern(r"(?:\\*/)", _FIND_TOKEN), re.IGNORECASE)
 
 
 def is_webhook_url(text: str) -> bool:
