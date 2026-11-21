@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from coin_report_trader.core import (
+    CandleUnit,
     LoadState,
     Market,
     MarketsView,
@@ -56,6 +57,8 @@ class FakeActions:
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.candles: list[tuple] = []
+        """`save_settings`가 받은 (봉 단위, 봉 개수). `calls`의 `save_settings` 줄과 같은 차례다."""
 
     def count(self, name: str) -> int:
         return sum(1 for call in self.calls if call[0] == name)
@@ -66,8 +69,11 @@ class FakeActions:
     def refresh_markets(self) -> None:
         self.calls.append(("refresh_markets",))
 
-    def save_settings(self, coins, retention_days, *, first_setup) -> None:
+    def save_settings(
+        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+    ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
+        self.candles.append((candle_unit, candle_count))
 
     def retry_candles(self) -> None:
         self.calls.append(("retry_candles",))
@@ -177,6 +183,14 @@ def _choose_days(screen: QWidget, prefix: str, days: int) -> None:
     _find(screen, QRadioButton, f"{prefix}Retention{days}").click()
 
 
+def _choose_unit(screen: QWidget, prefix: str, unit: CandleUnit) -> None:
+    _find(screen, QRadioButton, f"{prefix}Unit_{unit.value}").click()
+
+
+def _choose_count(screen: QWidget, prefix: str, count: int) -> None:
+    _find(screen, QRadioButton, f"{prefix}Count_{count}").click()
+
+
 def _days(screen: QWidget, prefix: str) -> int | None:
     for days in (7, 30, 90):
         if _find(screen, QRadioButton, f"{prefix}Retention{days}").isChecked():
@@ -235,6 +249,7 @@ def test_without_actions_nothing_is_called_and_the_first_screen_is_first_setup(m
     window.apply(MarketsView(LoadState.READY, ALL))
     _choose(first, "firstSetup", "KRW-AAA")
     _choose_days(first, "firstSetup", 30)
+    _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     _button(first, "firstSetupStart").click()
     window.apply(MarketsView(LoadState.FAILED, error_name="시간 초과"))
     _button(first, "firstSetupCoinsRetry").click()
@@ -523,6 +538,8 @@ def test_up_down_and_remove_change_the_order(picker_ready, actions):
     assert _selected_texts(screen, prefix) == ["AAA 가짜에이", "BBB 가짜비"]
     assert not _coin_box(screen, prefix, "KRW-CCC").isChecked()
     _choose_days(screen, prefix, 90)
+    if prefix == "firstSetup":
+        _choose_unit(screen, prefix, CandleUnit.MINUTE_60)
     button = "firstSetupStart" if prefix == "firstSetup" else "settingsSave"
     _button(screen, button).click()
     expected_first = prefix == "firstSetup"
@@ -559,6 +576,7 @@ def test_first_setup_start_needs_both_a_coin_and_a_retention(make_window, action
     assert not start.isEnabled()
     _coin_box(first, "firstSetup", "KRW-AAA").click()  # 다시 빼면 코인이 없다
     _choose_days(first, "firstSetup", 7)
+    _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     assert not start.isEnabled()
     _choose(first, "firstSetup", "KRW-AAA")
     assert start.isEnabled()
@@ -571,6 +589,7 @@ def test_first_setup_start_calls_save_settings_and_goes_to_status_when_saved(mak
     first = _ready_first_setup(window)
     _choose(first, "firstSetup", "KRW-CCC", "KRW-AAA")
     _choose_days(first, "firstSetup", 30)
+    _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     confirm = Confirm(False)
     window.set_confirm_handler(confirm)
     _button(first, "firstSetupStart").click()
@@ -590,6 +609,7 @@ def test_first_setup_goes_to_status_whichever_update_comes_first(make_window, ac
     first = _ready_first_setup(window)
     _choose(first, "firstSetup", "KRW-AAA")
     _choose_days(first, "firstSetup", 7)
+    _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     _button(first, "firstSetupStart").click()
     window.apply(SettingsView(("KRW-AAA",), 7, True))
     assert current_screen(window) is ScreenId.STATUS
@@ -610,6 +630,7 @@ def test_first_setup_failed_save_stays_and_shows_the_message_in_warning_color(
     first = _ready_first_setup(window)
     _choose(first, "firstSetup", "KRW-BBB", "KRW-AAA")
     _choose_days(first, "firstSetup", 90)
+    _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     _button(first, "firstSetupStart").click()
     window.apply(SaveResult("settings", ok=False, message=message))
     assert current_screen(window) is ScreenId.FIRST_SETUP

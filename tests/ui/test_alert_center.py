@@ -87,7 +87,9 @@ class FakeActions:
     def refresh_markets(self) -> None:
         self.calls.append(("refresh_markets",))
 
-    def save_settings(self, coins, retention_days, *, first_setup) -> None:
+    def save_settings(
+        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+    ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
 
     def retry_candles(self) -> None:
