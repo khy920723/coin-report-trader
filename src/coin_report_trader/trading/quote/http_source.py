@@ -1,5 +1,7 @@
 """진짜 `QuoteSource`(M1 명세 3.4): 거래소의 공개 시세를 `httpx`로 부른다.
 
+- 봉 단위는 넷이다: 30분봉, 60분봉, 240분봉, 일봉(요청 경로는 3.5.3).
+
 - 공개 시세만 부른다(키 없음). 계정, 주문, 서명, 웹소켓은 없다.
 - 한 번 부르는 것이 요청 한 번이다. 안에서 다시 보내지 않고(`retries=0`), 리다이렉트를 따라가지
   않는다. 요청 한도는 이 부품이 아니라 `QuoteClient`가 지킨다.
@@ -41,8 +43,10 @@ MAX_COUNT = 200
 MARKETS_PATH = "/v1/market/all"
 CANDLE_PATHS: MappingProxyType[CandleUnit, str] = MappingProxyType(
     {
-        CandleUnit.DAY: "/v1/candles/days",
+        CandleUnit.MINUTE_30: "/v1/candles/minutes/30",
         CandleUnit.MINUTE_60: "/v1/candles/minutes/60",
+        CandleUnit.MINUTE_240: "/v1/candles/minutes/240",
+        CandleUnit.DAY: "/v1/candles/days",
     }
 )
 

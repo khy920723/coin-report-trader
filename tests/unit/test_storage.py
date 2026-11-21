@@ -505,3 +505,217 @@ def test_a_closed_connection_is_reported_as_storage_error(tmp_path: Path) -> Non
         alerts.delete_alert(connection, 1)
     with pytest.raises(StorageError):
         candles.write_candles(connection, [_candle()])
+
+
+# --- 1단계 보완(M1 명세 3.5.3, 3.5.4, 3.7, 35번): 봉 단위·봉 개수, 읽기와 지우기 ------------------
+
+
+def test_settings_keep_the_unit_and_the_count_and_write_level_two(conn: sqlite3.Connection) -> None:
+    done = SettingsView(("KRW-AAA",), 30, True, candle_unit=CandleUnit.MINUTE_240, candle_count=500)
+    settings.write_settings(conn, done)
+    assert dict(conn.execute("SELECT key, value FROM settings")) == {
+        "coins": '["KRW-AAA"]',
+        "retention_days": "30",
+        "candle_unit": "minute240",
+        "candle_count": "500",
+        "first_setup_level": "2",
+    }
+    assert settings.read_settings(conn) == done
+
+
+def test_the_level_is_one_when_the_unit_or_the_count_is_missing(conn: sqlite3.Connection) -> None:
+    for unit, count in ((None, None), (CandleUnit.DAY, None), (None, 100)):
+        settings.write_settings(
+            conn, SettingsView(("KRW-AAA",), 7, True, candle_unit=unit, candle_count=count)
+        )
+        stored = dict(conn.execute("SELECT key, value FROM settings"))
+        assert stored["first_setup_level"] == "1"  # 1단계 보완 전에 마친 모습 그대로
+        assert settings.read_settings(conn).first_setup_done is True
+
+
+def test_first_setup_done_still_follows_only_the_level_key(conn: sqlite3.Connection) -> None:
+    conn.execute("INSERT INTO settings VALUES ('first_setup_level', '2')")
+    conn.commit()
+    view = settings.read_settings(conn)
+    assert (view.first_setup_done, view.candle_unit, view.candle_count) == (True, None, None)
+
+
+def test_a_not_done_setting_clears_the_level_but_keeps_the_unit_and_the_count(
+    conn: sqlite3.Connection,
+) -> None:
+    settings.write_settings(
+        conn, SettingsView((), 7, True, candle_unit=CandleUnit.DAY, candle_count=200)
+    )
+    settings.write_settings(
+        conn, SettingsView((), 7, False, candle_unit=CandleUnit.MINUTE_30, candle_count=100)
+    )
+    stored = dict(conn.execute("SELECT key, value FROM settings"))
+    assert "first_setup_level" not in stored
+    assert (stored["candle_unit"], stored["candle_count"]) == ("minute30", "100")
+
+
+def test_none_unit_and_none_count_delete_their_keys(conn: sqlite3.Connection) -> None:
+    settings.write_settings(
+        conn, SettingsView(("KRW-AAA",), 7, True, candle_unit=CandleUnit.DAY, candle_count=200)
+    )
+    settings.write_settings(conn, SettingsView(("KRW-AAA",), 7, True))
+    assert set(dict(conn.execute("SELECT key, value FROM settings"))) == {
+        "coins", "retention_days", "first_setup_level",
+    }  # fmt: skip
+
+
+def test_settings_reject_a_count_that_is_not_offered(conn: sqlite3.Connection) -> None:
+    with pytest.raises(ValueError, match="봉 개수"):
+        settings.write_settings(conn, SettingsView(("KRW-AAA",), 7, False, candle_count=150))
+    assert settings.read_settings(conn) == SettingsView()
+    assert not conn.in_transaction
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("candle_unit", "minute15"),
+        ("candle_unit", ""),
+        ("candle_count", "150"),
+        ("candle_count", "x"),
+    ],
+)
+def test_settings_read_stops_on_a_stored_unit_or_count_that_does_not_fit(
+    conn: sqlite3.Connection, key: str, value: str
+) -> None:
+    conn.execute("INSERT INTO settings VALUES (?, ?)", (key, value))
+    conn.commit()
+    with pytest.raises(StorageError):
+        settings.read_settings(conn)
+
+
+def _unit_candle(unit: CandleUnit, start: datetime, market: str = "KRW-AAA") -> Candle:
+    price = Decimal("100")
+    return Candle(market, unit, start, price, price, price, price, Decimal(1), Decimal(1))
+
+
+def test_first_candle_start_per_coin_and_unit(conn: sqlite3.Connection) -> None:
+    assert candles.first_candle_start(conn, "KRW-AAA", CandleUnit.DAY) is None
+    candles.write_candles(conn, [_candle(4), _candle(2), _candle(3, market="KRW-BBB")])
+    assert candles.first_candle_start(conn, "KRW-AAA", CandleUnit.DAY) == T0
+    assert candles.first_candle_start(conn, "KRW-BBB", CandleUnit.DAY) == T0 + timedelta(days=1)
+    assert candles.first_candle_start(conn, "KRW-AAA", CandleUnit.MINUTE_60) is None
+
+
+@pytest.mark.parametrize(
+    ("unit", "length"),
+    [
+        (CandleUnit.MINUTE_30, timedelta(minutes=30)),
+        (CandleUnit.MINUTE_60, timedelta(minutes=60)),
+        (CandleUnit.MINUTE_240, timedelta(minutes=240)),
+        (CandleUnit.DAY, timedelta(days=1)),
+    ],
+)
+def test_a_candle_is_complete_when_start_plus_length_is_not_after_now(
+    conn: sqlite3.Connection, unit: CandleUnit, length: timedelta
+) -> None:
+    starts = [T0 + length * i for i in range(5)]  # 마지막 봉은 시작 + 길이가 `now`와 같다
+    candles.write_candles(conn, [_unit_candle(unit, start) for start in starts])
+    now = starts[-1] + length
+    assert candles.count_complete_candles(conn, "KRW-AAA", unit, now) == 5
+    assert candles.count_complete_candles(conn, "KRW-AAA", unit, now - timedelta(seconds=1)) == 4
+    assert candles.count_complete_candles(conn, "KRW-AAA", unit, starts[0]) == 0
+    assert candles.count_complete_candles(conn, "KRW-BBB", unit, now) == 0
+    other = next(u for u in CandleUnit if u is not unit)
+    assert candles.count_complete_candles(conn, "KRW-AAA", other, now) == 0
+
+
+def test_the_latest_complete_candles_come_oldest_first_and_skip_the_building_one(
+    conn: sqlite3.Connection,
+) -> None:
+    unit = CandleUnit.MINUTE_60
+    hour = timedelta(hours=1)
+    candles.write_candles(conn, [_unit_candle(unit, T0 + hour * i) for i in range(6)])
+    now = T0 + hour * 5 + timedelta(minutes=30)  # 봉 5는 만드는 중이다
+    latest = candles.read_latest_complete_candles(conn, "KRW-AAA", unit, now, 3)
+    assert [c.start for c in latest] == [T0 + hour * 2, T0 + hour * 3, T0 + hour * 4]
+    fewer = candles.read_latest_complete_candles(conn, "KRW-AAA", unit, now, 100)
+    assert [c.start for c in fewer] == [T0 + hour * i for i in range(5)]
+    assert candles.read_latest_complete_candles(conn, "KRW-AAA", unit, now, 0) == ()
+    assert candles.read_latest_complete_candles(conn, "KRW-BBB", unit, now, 3) == ()
+    assert latest[0] == _unit_candle(unit, T0 + hour * 2)  # 값은 쓴 그대로 읽힌다
+
+
+def test_has_candles_looks_at_any_coin_of_that_unit(conn: sqlite3.Connection) -> None:
+    assert not any(candles.has_candles(conn, unit) for unit in CandleUnit)
+    candles.write_candles(conn, [_unit_candle(CandleUnit.MINUTE_240, T0, market="KRW-BBB")])
+    assert candles.has_candles(conn, CandleUnit.MINUTE_240)
+    assert not candles.has_candles(conn, CandleUnit.DAY)
+
+
+def test_delete_candles_except_keeps_only_the_chosen_unit(conn: sqlite3.Connection) -> None:
+    given = [
+        _unit_candle(unit, T0 + timedelta(hours=i), market)
+        for unit in CandleUnit
+        for market in ("KRW-AAA", "KRW-BBB")
+        for i in range(2)
+    ]
+    candles.write_candles(conn, given)
+    assert candles.delete_candles_except(conn, CandleUnit.MINUTE_60) == 12
+    left = {(row[0], row[1]) for row in conn.execute("SELECT market, unit FROM candles")}
+    assert left == {("KRW-AAA", "minute60"), ("KRW-BBB", "minute60")}
+    assert conn.execute("SELECT count(*) FROM candles").fetchone() == (4,)
+    assert candles.delete_candles_except(conn, CandleUnit.MINUTE_60) == 0
+    assert not conn.in_transaction
+
+
+def test_delete_all_fetched_at_leaves_the_other_keys(conn: sqlite3.Connection) -> None:
+    settings.write_settings(
+        conn, SettingsView(("KRW-AAA",), 7, True, candle_unit=CandleUnit.DAY, candle_count=100)
+    )
+    settings.write_fetched_at(conn, "KRW-AAA", T0)
+    settings.write_fetched_at(conn, "KRW-BBB", T0)
+    conn.execute("INSERT INTO settings VALUES ('fetched_atX', 'keep')")
+    conn.commit()
+    assert settings.delete_all_fetched_at(conn) == 2
+    assert settings.read_fetched_at(conn, "KRW-AAA") is None
+    assert settings.read_fetched_at(conn, "KRW-BBB") is None
+    stored = dict(conn.execute("SELECT key, value FROM settings"))
+    assert set(stored) == {
+        "coins", "retention_days", "candle_unit", "candle_count", "first_setup_level",
+        "fetched_atX",
+    }  # fmt: skip
+    assert not conn.in_transaction
+
+
+def test_the_new_reads_and_deletes_report_a_closed_connection_as_storage_error(
+    tmp_path: Path,
+) -> None:
+    connection = open_database(tmp_path / "app.db")
+    migrate(connection)
+    connection.close()
+    unit = CandleUnit.DAY
+    for call in (
+        lambda: candles.first_candle_start(connection, "KRW-AAA", unit),
+        lambda: candles.count_complete_candles(connection, "KRW-AAA", unit, T0),
+        lambda: candles.read_latest_complete_candles(connection, "KRW-AAA", unit, T0, 3),
+        lambda: candles.has_candles(connection, unit),
+        lambda: candles.delete_candles_except(connection, unit),
+        lambda: settings.delete_all_fetched_at(connection),
+    ):
+        with pytest.raises(StorageError):
+            call()
+
+
+@pytest.mark.parametrize("unit", list(CandleUnit))
+def test_the_latest_complete_candles_include_the_one_that_ends_exactly_now(
+    conn: sqlite3.Connection, unit: CandleUnit
+) -> None:
+    length = {
+        CandleUnit.MINUTE_30: timedelta(minutes=30),
+        CandleUnit.MINUTE_60: timedelta(hours=1),
+        CandleUnit.MINUTE_240: timedelta(hours=4),
+        CandleUnit.DAY: timedelta(days=1),
+    }[unit]
+    starts = [T0 + length * i for i in range(3)]
+    candles.write_candles(conn, [_unit_candle(unit, start) for start in starts])
+    now = T0 + length * 3  # 마지막 봉의 시작 + 길이와 꼭 같다
+    read = candles.read_latest_complete_candles
+    assert [c.start for c in read(conn, "KRW-AAA", unit, now, 3)] == starts
+    before = now - timedelta(seconds=1)  # 1초 모자라면 마지막 봉은 아직 만드는 중이다
+    assert [c.start for c in read(conn, "KRW-AAA", unit, before, 3)] == starts[:2]
