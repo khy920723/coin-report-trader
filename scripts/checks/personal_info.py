@@ -10,13 +10,27 @@
   허용한다.
 - 경로: `C:\\Users\\<이름>`, `/home/<이름>`, `/Users/<이름>` 꼴. `<이름>`이나 `$USER`처럼 글자나
   숫자로 시작하지 않는 자리표시는 잡지 않는다.
-- 찾은 값은 출력하지 않는다(공개 기록에 다시 남지 않게). 파일, 줄, 종류만 쓴다.
+- Office 파일(이름이 `.pptx`, `.docx`, `.xlsx`로 끝나는 파일): ZIP으로 열어, 안의 부분 가운데
+  이름이 `.xml`이나 `.rels`로 끝나는 것을 모두 글로 풀고 위의 이메일·경로 검사를 그대로 건다. 부분의
+  XML 그대로의 글과, XML의 글 마디를 이은 글(한 낱말이 여러 마디로 나뉜 경우) 둘 다 본다. 슬라이드,
+  메모, 댓글, 표의 글이 여기에 든다.
+  - 문서 속성: `docProps/core.xml`의 작성자(`dc:creator`)와 마지막 수정자(`cp:lastModifiedBy`)가
+    비어 있지 않고 허용 이름(`ALLOWED_AUTHORS`)도 아니면 실패다. `docProps/app.xml`의 회사
+    (`Company`)와 관리자(`Manager`)는 비어 있지 않으면 실패다.
+  - ZIP이 아니거나 깨져서 열 수 없는 Office 파일, 읽거나 풀 수 없는 부분은 실패다.
+  - 보지 않는 것: 그림과 미디어(예: `ppt/media/`)와 그 밖의 이진 부분은 글로 볼 수 없어서 검사하지
+    않는다. 안에 넣은 다른 파일(예: `ppt/embeddings/`의 이진 개체)도 열지 않는다.
+- 찾은 값은 출력하지 않는다(공개 기록에 다시 남지 않게). 파일, 줄(Office 파일은 안의 부분 이름),
+  종류만 쓴다.
 """
 
 import codecs
 import os
 import re
 import subprocess
+import xml.etree.ElementTree as ElementTree
+import zipfile
+import zlib
 from pathlib import Path
 
 TITLE = "개인정보"
@@ -46,6 +60,18 @@ BOMS = (
 )
 _ALLOWED_LINE = re.compile(r"""^\s*allowed='(?P<pattern>[^']+)'\s*$""", re.MULTILINE)
 
+OFFICE_SUFFIXES = (".pptx", ".docx", ".xlsx")
+TEXT_PART_SUFFIXES = (".xml", ".rels")
+ALLOWED_AUTHORS = frozenset({"Claude", "python-pptx", "coin-report-trader"})
+"""문서 속성의 작성자·마지막 수정자로 허용하는 이름."""
+_CORE_PART = "docProps/core.xml"
+_APP_PART = "docProps/app.xml"
+_DC = "{http://purl.org/dc/elements/1.1/}"
+_CP = "{http://schemas.openxmlformats.org/package/2006/metadata/core-properties}"
+_EP = "{http://schemas.openxmlformats.org/officeDocument/2006/extended-properties}"
+_PERSON_FIELDS = (_DC + "creator", _CP + "lastModifiedBy")
+_COMPANY_FIELDS = (_EP + "Company", _EP + "Manager")
+
 
 def check(root: Path) -> list[str]:
     allowed = _privacy_allowlist(root)
@@ -59,18 +85,78 @@ def check(root: Path) -> list[str]:
     for name in files:
         if name.startswith(EXCLUDED_PREFIXES):
             continue
+        if name.lower().endswith(OFFICE_SUFFIXES):
+            checked += 1
+            problems.extend(_check_office(root / name, name, allowed))
+            continue
         text = _read_text(root / name)
         if text is None:
             continue
         checked += 1
         for number, line in enumerate(text.splitlines(), start=1):
-            if any(not _is_allowed_email(m.group(), allowed) for m in EMAIL.finditer(line)):
-                problems.append(f"{name}:{number}: 허용 목록 밖의 이메일 주소")
-            if any(pattern.search(line) for pattern in USER_DIRS):
-                problems.append(f"{name}:{number}: 사용자 폴더 경로")
+            problems.extend(f"{name}:{number}: {kind}" for kind in _line_problems(line, allowed))
     if checked == 0:
         problems.append("git ls-files가 내놓은 파일 가운데 검사할 글 파일이 하나도 없다")
     return problems
+
+
+def _line_problems(line: str, allowed: re.Pattern[str]) -> list[str]:
+    """한 줄에서 찾은 문제의 종류(찾은 값은 담지 않는다)."""
+    kinds = []
+    if any(not _is_allowed_email(m.group(), allowed) for m in EMAIL.finditer(line)):
+        kinds.append("허용 목록 밖의 이메일 주소")
+    if any(pattern.search(line) for pattern in USER_DIRS):
+        kinds.append("사용자 폴더 경로")
+    return kinds
+
+
+def _check_office(path: Path, name: str, allowed: re.Pattern[str]) -> list[str]:
+    """Office 파일 안의 글 부분과 문서 속성을 본다(모듈 설명)."""
+    try:
+        archive = zipfile.ZipFile(path)
+    except (OSError, zipfile.BadZipFile, ValueError):
+        return [f"{name}: 열 수 없는 Office 파일(ZIP이 아니거나 깨졌다)"]
+    problems: list[str] = []
+    with archive:
+        for info in archive.infolist():
+            part = info.filename
+            if info.is_dir() or not part.lower().endswith(TEXT_PART_SUFFIXES):
+                continue
+            try:
+                data = archive.read(info)
+            except (OSError, zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError):
+                problems.append(f"{name}:{part}: 읽을 수 없는 부분")
+                continue
+            problems.extend(_check_part(name, part, _decode(data), allowed))
+    return problems
+
+
+def _check_part(name: str, part: str, text: str, allowed: re.Pattern[str]) -> list[str]:
+    kinds: list[str] = []
+    for line in text.splitlines():
+        kinds.extend(_line_problems(line, allowed))
+    try:
+        tree = ElementTree.fromstring(text)
+    except ElementTree.ParseError:
+        return [f"{name}:{part}: 읽을 수 없는 XML"] + [f"{name}:{part}: {k}" for k in kinds]
+    kinds.extend(_line_problems("".join(tree.itertext()), allowed))
+    if part == _CORE_PART:
+        kinds.extend(
+            "문서 속성의 사람 이름"
+            for element in tree.iter()
+            if element.tag in _PERSON_FIELDS and _filled(element) not in ("", *ALLOWED_AUTHORS)
+        )
+    if part == _APP_PART:
+        kinds.extend(
+            "문서 속성의 회사·관리자"
+            for element in tree.iter()
+            if element.tag in _COMPANY_FIELDS and _filled(element)
+        )
+    return [f"{name}:{part}: {kind}" for kind in dict.fromkeys(kinds)]
+
+
+def _filled(element: ElementTree.Element) -> str:
+    return "".join(element.itertext()).strip()
 
 
 def _privacy_allowlist(root: Path) -> re.Pattern[str] | None:
@@ -104,6 +190,14 @@ def _listed_files(root: Path) -> list[str] | None:
         return None
     names = result.stdout.decode("utf-8", "replace").split("\0")
     return sorted({name for name in names if name})
+
+
+def _decode(data: bytes) -> str:
+    """BOM이 있으면 그 인코딩으로, 없으면 UTF-8로 푼다(풀리지 않는 바이트는 바꿔 넣는다)."""
+    for bom, encoding in BOMS:
+        if data.startswith(bom):
+            return data.decode(encoding, errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 def _read_text(path: Path) -> str | None:
