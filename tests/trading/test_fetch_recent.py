@@ -491,21 +491,35 @@ class BrokenSource:
         return tuple(reversed(self.candles))[:count]
 
 
+def test_candles_after_to_are_bad_response() -> None:
+    # 첫 요청에서 200개를 받아 둘째 요청을 내면, `to`를 보지 않는 시세가 `to` 뒤의 봉을 준다.
+    source = BrokenSource(with_current(HOUR, 200))
+    client = QuoteClient(source, FakeClock(NOW))
+    with pytest.raises(QuoteError) as caught:
+        recent(client, count=500)
+    assert caught.value.error_name == ERROR_BAD_RESPONSE
+    assert source.calls == 2
+
+
 @pytest.mark.parametrize(
     "candles",
     [
-        with_current(HOUR, 200),  # 둘째 요청에서 `to` 뒤의 봉이 온다
-        make_candles("KRW-BBB", HOUR, 200, last_start=CURRENT_START[HOUR]),  # 다른 마켓
-        with_current(CandleUnit.DAY, 200),  # 다른 단위
+        make_candles("KRW-BBB", HOUR, 5, last_start=CURRENT_START[HOUR]),  # 다른 마켓
+        with_current(CandleUnit.DAY, 5),  # 다른 단위
     ],
+    ids=["other-market", "other-unit"],
 )
-def test_a_source_breaking_the_contract_gives_bad_response(candles: tuple[Candle, ...]) -> None:
+def test_candles_of_another_market_or_unit_are_bad_response(
+    candles: tuple[Candle, ...],
+) -> None:
+    # 봉이 200개보다 적어 요청 하나로 끝나므로 `to` 뒤의 봉 검사는 끼지 않는다.
+    # 그래서 마켓·단위 검사만 본다.
     source = BrokenSource(candles)
     client = QuoteClient(source, FakeClock(NOW))
     with pytest.raises(QuoteError) as caught:
         recent(client, count=500)
     assert caught.value.error_name == ERROR_BAD_RESPONSE
-    assert source.calls <= 2
+    assert source.calls == 1
 
 
 def test_more_candles_than_asked_is_bad_response() -> None:
