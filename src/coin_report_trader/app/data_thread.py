@@ -32,6 +32,7 @@ from coin_report_trader.core import (
     CANDLE_UNIT_LENGTHS,
     SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_SETTINGS,
+    AiChoice,
     AlertCategory,
     AlertsView,
     AlertView,
@@ -308,9 +309,23 @@ class DataWorker:
         first_setup: bool,
         candle_unit: CandleUnit | None = None,
         candle_count: int | None = None,
+        ai_choices: tuple[AiChoice, ...] | None = None,
     ) -> None:
-        """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4)."""
+        """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4).
+
+        `ai_choices`는 받기만 하고 쓰지 않는다(M2 명세 4절 1번. 자료 스레드는 15번까지 아무것도
+        하지 않는다).
+        """
+        del ai_choices
         self._put(_SaveTask(tuple(coins), retention_days, first_setup, candle_unit, candle_count))
+
+    def load_reports(self, market: str) -> None:
+        """받기만 하고 하지 않는다(M2 명세 4절 1번. 15번이 `ReportListView`를 보낸다)."""
+        del market
+
+    def load_report(self, report_id: int) -> None:
+        """받기만 하고 하지 않는다(M2 명세 4절 1번. 15번이 `ReportView`를 보낸다)."""
+        del report_id
 
     def retry_candles(self) -> None:
         self._put("retry")

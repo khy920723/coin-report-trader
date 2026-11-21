@@ -7,7 +7,14 @@
 
 from dataclasses import dataclass
 
-from coin_report_trader.core import Clock, QuoteSource, SecretStore, SystemClock, WebhookSender
+from coin_report_trader.core import (
+    AiRunner,
+    Clock,
+    QuoteSource,
+    SecretStore,
+    SystemClock,
+    WebhookSender,
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +23,8 @@ class Services:
     webhook: WebhookSender | None = None
     vault: SecretStore | None = None
     clock: Clock | None = None
+    ai: AiRunner | None = None
+    """2단계: 없으면 진짜 `ClaudeCodeRunner`다. 15번까지 쓰지 않는다(M2 명세 3.4)."""
 
 
 def resolve_clock(services: Services | None) -> Clock:
