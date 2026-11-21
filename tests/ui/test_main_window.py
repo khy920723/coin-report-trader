@@ -111,7 +111,7 @@ def test_nav_lists_titles_in_order_and_switches_screen(window):
 
 
 def test_status_line(window):
-    expected = "바탕 버전 0.0.1 · 매매 기능 없음 · 자료 폴더 X"
+    expected = "판 v0.0.1 · 매매 기능 없음 · 자료 폴더 X"
     assert status_line_text(CONTEXT) == expected
     assert _text(window, "statusLine") == expected
 
@@ -120,9 +120,21 @@ def test_status_line_keeps_display_path_as_is(qapp):
     context = UiContext("1.2.3", "%LOCALAPPDATA%\\coin-report-trader")
     made = create_main_window(context)
     assert _text(made, "statusLine") == (
-        "바탕 버전 1.2.3 · 매매 기능 없음 · 자료 폴더 %LOCALAPPDATA%\\coin-report-trader"
+        "판 v1.2.3 · 매매 기능 없음 · 자료 폴더 %LOCALAPPDATA%\\coin-report-trader"
     )
     made.deleteLater()
+
+
+def test_status_line_writes_the_version_with_a_v_and_never_the_old_base_text(qapp):
+    """M1 명세 3.15: "판 v{판} · …"의 {판}은 `UiContext.version` 그대로이고 앞에 `v`만 붙는다."""
+    for version in ("0.1.0", "12.34.56"):
+        context = UiContext(version, "경로")
+        expected = f"판 v{version} · 매매 기능 없음 · 자료 폴더 경로"
+        assert status_line_text(context) == expected
+        made = create_main_window(context)
+        assert _text(made, "statusLine") == expected
+        assert "바탕 버전" not in _text(made, "statusLine")
+        made.deleteLater()
 
 
 def test_does_not_create_application_or_show(qapp):
