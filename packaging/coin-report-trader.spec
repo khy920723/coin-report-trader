@@ -13,10 +13,14 @@
 # 번들에 든 패키지는 Analysis의 결과(모듈과 바이너리)에서 정한다. 그래서 운영체제마다 실제로 든 것만
 # 적힌다. components.txt의 글은 빌드 로그에도 그대로 찍힌다.
 #
+# QtNetwork(M1 명세 3.8.1): 한 번 더 켜기의 로컬 소켓(QLocalServer, QLocalSocket)에 쓰려고 넣는다.
+# 앱은 QtNetwork로 네트워크에 나가지 않으므로 Qt의 TLS 플러그인(plugins/tls)과, QtNetwork 훅이 그
+# 플러그인을 위해 모으는 OpenSSL 라이브러리는 넣지 않는다(Python의 `_ssl` 등이 import하는 것은 둔다).
+#
 # 빌드를 멈추는 경우: GPL로만 제공되는 Qt 모듈이 번들에 들어감, 개발·빌드 전용 패키지가 번들에
 # 들어감, (Windows) Python·패키지 밖에서 가져온 바이너리가 섞임, 미리 넣은 모듈(REQUIRED_MODULES)이
 # 번들에 없음, 번들에 든 패키지의 라이선스 이름이나 파일을 메타데이터에서 찾지 못함, 고지가 가리키는
-# 파일이 없음.
+# 파일이 없음, 빌드한 번들에 Qt의 TLS 플러그인이나 QtNetwork 훅이 모은 OpenSSL 라이브러리가 있음.
 
 import importlib.metadata
 import re
@@ -115,6 +119,76 @@ def without_software_opengl(binaries):
         for entry in binaries
         if entry[0].replace("\\", "/").rsplit("/", 1)[-1].lower() != "opengl32sw.dll"
     ]
+
+
+def slashed(path):
+    return str(path).replace("\\", "/")
+
+
+def is_qt_tls_plugin(dest):
+    """번들 경로가 Qt의 TLS 플러그인(PySide6 아래 plugins/tls/)인지."""
+    parts = slashed(dest).lower().split("/")
+    return parts[0] == "pyside6" and any(
+        part == "plugins" and parts[index + 1 : index + 2] == ["tls"]
+        for index, part in enumerate(parts)
+    )
+
+
+def qtnetwork_openssl_sources():
+    """QtNetwork 훅이 Qt의 TLS 플러그인을 위해 모으는 OpenSSL 라이브러리의 원본 경로."""
+    from PyInstaller.utils.hooks.qt import pyside6_library_info
+
+    return {slashed(Path(source).resolve()) for source, _dest in pyside6_library_info.collect_qtnetwork_files()}
+
+
+def names_imported_outside_qt(binaries, skipped_sources):
+    """PySide6·shiboken6 밖의 바이너리(Python 확장 모듈 등)가 import하는 공유 라이브러리 이름(소문자).
+
+    skipped_sources(QtNetwork 훅이 모은 OpenSSL 자신)는 세지 않는다. libssl이 libcrypto를 import해도
+    그것만으로 libcrypto를 남기지 않게 한다.
+    """
+    from PyInstaller.depend import bindepend
+
+    names = set()
+    for dest, source, _kind in binaries:
+        if slashed(dest).lower().startswith(("pyside6/", "shiboken6/")):
+            continue
+        if slashed(Path(source).resolve()) in skipped_sources:
+            continue
+        names |= {name.replace("\\", "/").rsplit("/", 1)[-1].lower() for name, _full in bindepend.get_imports(source)}
+    return names
+
+
+def without_qt_tls(binaries):
+    """Qt의 TLS 플러그인과, QtNetwork 훅이 모았고 Qt 밖의 바이너리가 쓰지 않는 OpenSSL 라이브러리를 뺀다.
+
+    돌려주는 것: (남은 binaries, 번들에 없어야 할 OpenSSL 파일 이름의 집합). 이름의 집합은 훅이 모으는
+    OpenSSL 가운데 Qt 밖의 바이너리가 쓰지 않는 것이고, 빌드 뒤의 검사(`qt_tls_left_in`)가 쓴다.
+    """
+    openssl = qtnetwork_openssl_sources()
+    needed = names_imported_outside_qt(binaries, openssl)
+    unwanted = {source.rsplit("/", 1)[-1].lower() for source in openssl} - needed
+    kept = []
+    for entry in binaries:
+        dest, source, _kind = entry
+        if is_qt_tls_plugin(dest):
+            continue
+        if slashed(Path(source).resolve()) in openssl and slashed(dest).rsplit("/", 1)[-1].lower() in unwanted:
+            continue
+        kept.append(entry)
+    return kept, unwanted
+
+
+def qt_tls_left_in(folder, openssl_names):
+    """빌드한 번들 폴더에 남은 Qt의 TLS 플러그인과 openssl_names의 파일(번들 안의 상대 경로)."""
+    left = []
+    for path in sorted(folder.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = slashed(path.relative_to(folder))
+        if is_qt_tls_plugin(relative) or path.name.lower() in openssl_names:
+            left.append(relative)
+    return left
 
 
 def binaries_outside(binaries, roots):
@@ -276,13 +350,12 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     # 앱이 쓰지 않는 개발·빌드 전용 패키지가 PyInstaller의 처리에 끌려 들어오지 않게 한다.
-    # QtNetwork는 앱이 쓰지 않고, 넣으면 OpenSSL DLL을 PATH에서 찾아 넣을 수 있다.
+    # PySide6.QtNetwork는 넣는다(로컬 소켓. 위의 머리글). TLS 플러그인과 OpenSSL은 아래에서 뺀다.
     excludes=[
         "setuptools",
         "_distutils_hack",
         "pkg_resources",
         "packaging",
-        "PySide6.QtNetwork",
         "_pytest",
         "pytest",
         "pytestqt",
@@ -295,6 +368,9 @@ a = Analysis(
 )
 
 a.binaries = without_software_opengl(a.binaries)
+# QtNetwork 훅이 더하는 Qt의 TLS 플러그인과 OpenSSL을 뺀다(M1 명세 3.8.1). PATH에서 찾은 OpenSSL이
+# 아래 "Python·패키지 밖의 바이너리" 검사에 걸리기 전에 뺀다.
+a.binaries, qt_openssl_names = without_qt_tls(a.binaries)
 
 if sys.platform == "win32":
     roots = [sys.base_prefix, sys.prefix, *sysconfig.get_paths().values(), str(ROOT)]
@@ -359,6 +435,12 @@ coll = COLLECT(
 # COLLECT가 폴더를 만든 뒤에 고지와 목록을 쓴다.
 dist_dir = Path(coll.name)
 contents = dist_dir / (exe.contents_directory or ".")
+
+# 빌드한 번들에 Qt의 TLS 플러그인과 QtNetwork 훅이 모은 OpenSSL이 없는지 본다(M1 명세 3.8.1).
+# 번들 경로(`_internal` 안의 상대 경로)로 보아야 PySide6 아래의 plugins/tls를 가린다.
+qt_tls_left = qt_tls_left_in(contents, qt_openssl_names)
+if qt_tls_left:
+    raise SystemExit("Qt의 TLS 플러그인이나 OpenSSL이 번들에 남았습니다:\n  " + "\n  ".join(qt_tls_left))
 pyside_version = importlib.metadata.version("PySide6-Essentials")
 
 # 번들에 든 Python 패키지마다 제 라이선스 파일을 licenses/<이름>/에 둔다.
