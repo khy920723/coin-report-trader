@@ -236,6 +236,28 @@ def test_redact_does_not_mask_more_than_before_for_text_that_is_not_a_webhook_ur
     assert redact("https:\\/\\/discord.com\\/api") == "https:\\/\\/discord.com\\/api"
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        TOKEN[:55] + "https",  # 앞이 60자에 모자라 `https`까지 세어야 토큰이 된다
+        TOKEN[:59] + "https",
+        TOKEN[:59] + "HTTPS",
+        TOKEN[:59] + "HttpS",
+    ],
+)
+def test_redact_masks_a_token_that_ends_with_https_before_a_colon(token: str) -> None:
+    for tail in (": 시간 초과", ":", ": https: 다시"):
+        shown = redact(webhook(token=token) + tail)
+        assert shown == MASK + tail
+        assert token not in shown
+
+
+def test_redact_still_splits_at_the_next_url_start_not_at_a_bare_https_colon() -> None:
+    first, second, _ = _three()
+    assert redact(first + second) == MASK + MASK
+    assert redact(first + "https: 오류") == MASK + ": 오류"  # 토큰 글자는 가린다
+
+
 def test_a_token_ends_at_https_only_when_the_colon_follows() -> None:
     # `https`가 토큰 안의 글자일 때(뒤에 `:`가 없을 때)는 토큰에 든다.
     token = TOKEN[:30] + "https" + TOKEN[30:]
