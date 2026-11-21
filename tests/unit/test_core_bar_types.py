@@ -19,15 +19,12 @@ from coin_report_trader.core import (
     CANDLE_UNIT_TITLES,
     DEFAULT_CANDLE_COUNT,
     BarStats,
-    CandleIndicator,
     CandleUnit,
     CoinView,
     LoadState,
-    PeriodStats,
     SettingsView,
     UiActions,
     empty_bar_stats,
-    empty_periods,
 )
 
 
@@ -128,12 +125,14 @@ def test_coin_view_gets_stats_last_with_none_as_the_default() -> None:
     assert CoinView("KRW-AAA", LoadState.NO_DATA, stats=stats).stats is stats
 
 
-def test_the_old_stats_values_stay_in_coin_view() -> None:
-    view = CoinView("KRW-AAA", LoadState.NO_DATA)
-    assert view.periods == empty_periods()
-    assert view.indicator is None
-    assert issubclass(PeriodStats, object)
-    assert dataclasses.is_dataclass(CandleIndicator)
+def test_the_old_stats_values_are_gone_from_coin_view() -> None:
+    names = {field.name for field in dataclasses.fields(CoinView)}
+    assert "periods" not in names
+    assert "indicator" not in names
+    assert names == {
+        "market", "state", "last_incomplete", "fetched_at", "error_name", "blocked_until",
+        "as_of", "stats",
+    }  # fmt: skip
 
 
 def test_settings_view_gets_unit_and_count_last_with_none_as_the_default() -> None:
@@ -205,7 +204,8 @@ def test_the_new_names_are_exported_from_core() -> None:
         assert name in core.__all__
         assert hasattr(core, name)
     for name in ("PeriodStats", "CandleIndicator", "PERIODS", "empty_periods"):
-        assert name in core.__all__  # 옛 이름은 남긴다
+        assert name not in core.__all__  # 옛 이름은 51번이 지웠다
+        assert not hasattr(core, name)
 
 
 def test_the_data_thread_takes_unit_and_count_and_queues_them(tmp_path: Any) -> None:

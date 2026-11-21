@@ -1,4 +1,4 @@
-"""M1 공용 타입(M1 명세 3.4)의 시험: 기본 값, 통계와 지표, 화면이 받는 값, 시계, 오류, 경계."""
+"""M1 공용 타입(M1 명세 3.4)의 시험: 기본 값, 퍼센트 글, 화면이 받는 값, 시계, 오류, 경계."""
 
 import copy
 import dataclasses
@@ -17,7 +17,6 @@ from coin_report_trader.core import (
     INSUFFICIENT_TEXT,
     KST,
     MODE_TITLES,
-    PERIODS,
     SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_SETTINGS,
     AlertCategory,
@@ -25,7 +24,6 @@ from coin_report_trader.core import (
     AlertsView,
     AlertView,
     Candle,
-    CandleIndicator,
     CandleUnit,
     Clock,
     CoinView,
@@ -33,7 +31,6 @@ from coin_report_trader.core import (
     Market,
     MarketsView,
     Mode,
-    PeriodStats,
     QuoteError,
     QuoteSource,
     SaveResult,
@@ -49,7 +46,6 @@ from coin_report_trader.core import (
     WebhookSender,
     WebhookView,
     coin_label,
-    empty_periods,
     format_percent,
     format_price,
 )
@@ -120,42 +116,7 @@ def test_coin_label_drops_only_the_first_prefix() -> None:
     assert coin_label("KRW-KRW-X") == "KRW-X"
 
 
-# --- 통계와 지표의 값 -----------------------------------------------------------------------
-
-
-def test_periods_follow_the_table() -> None:
-    assert PERIODS == (
-        ("전체", CandleUnit.DAY),
-        ("1년", CandleUnit.DAY),
-        ("3개월", CandleUnit.DAY),
-        ("1개월", CandleUnit.DAY),
-        ("1주", CandleUnit.MINUTE_60),
-    )
-    periods = empty_periods()
-    assert [(p.period, p.unit) for p in periods] == list(PERIODS)
-    assert all(p.count == 0 for p in periods)
-
-
-def test_period_stats_values_default_to_none() -> None:
-    stats = PeriodStats("1년", CandleUnit.DAY, 1)
-    for name in (
-        "first_start",
-        "last_start",
-        "open_price",
-        "close_price",
-        "change",
-        "high",
-        "low",
-        "from_high",
-        "max_drawdown",
-        "volatility",
-        "up_ratio",
-        "avg_value",
-    ):
-        assert getattr(stats, name) is None
-    assert stats.count == 1
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        stats.count = 2  # type: ignore[misc]
+# --- 통계 글 -----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -188,57 +149,6 @@ def test_the_insufficient_text() -> None:
     assert INSUFFICIENT_TEXT == "봉이 모자람"
 
 
-def test_candle_indicator_items_follow_the_table() -> None:
-    indicator = CandleIndicator(
-        trend_1y=D("0.1234"),
-        trend_3m=D("-0.1"),
-        vs_ma20=D("0"),
-        vs_ma120=D("0.0001"),
-        volatility_1y=D("0.1535"),
-        volatility_1w=D("0.02"),
-        max_drawdown_1y=D("-0.4567"),
-    )
-    assert indicator.items() == (
-        ("1년 변화", "+12.34%"),
-        ("3개월 변화", "-10.00%"),
-        ("20일 평균 대비", "0.00%"),
-        ("120일 평균 대비", "+0.01%"),
-        ("1년 일간 변동성", "15.35%"),
-        ("1주 시간 변동성", "2.00%"),
-        ("1년 최대 낙폭", "-45.67%"),
-    )
-
-
-def test_candle_indicator_without_material_says_so() -> None:
-    items = CandleIndicator().items()
-    assert [title for title, _ in items] == [
-        "1년 변화",
-        "3개월 변화",
-        "20일 평균 대비",
-        "120일 평균 대비",
-        "1년 일간 변동성",
-        "1주 시간 변동성",
-        "1년 최대 낙폭",
-    ]
-    assert {shown for _, shown in items} == {"봉이 모자람"}
-    partial = CandleIndicator(trend_1y=D("0.5")).items()
-    assert partial[0] == ("1년 변화", "+50.00%")
-    assert partial[1] == ("3개월 변화", "봉이 모자람")
-
-
-def test_candle_indicator_has_no_verdict_field() -> None:
-    names = {f.name for f in dataclasses.fields(CandleIndicator)}
-    assert names == {
-        "trend_1y",
-        "trend_3m",
-        "vs_ma20",
-        "vs_ma120",
-        "volatility_1y",
-        "volatility_1w",
-        "max_drawdown_1y",
-    }
-
-
 # --- 화면이 받는 값 ---------------------------------------------------------------------------
 
 
@@ -246,12 +156,11 @@ def test_load_states() -> None:
     assert [s.value for s in LoadState] == ["loading", "ready", "no_data", "failed"]
 
 
-def test_coin_view_defaults_to_five_empty_periods() -> None:
+def test_coin_view_defaults() -> None:
     view = CoinView("KRW-AAA", LoadState.NO_DATA)
-    assert [(p.period, p.unit, p.count) for p in view.periods] == [
-        (name, unit, 0) for name, unit in PERIODS
-    ]
-    assert view.indicator is None
+    assert not hasattr(view, "periods")  # 옛 기간별 통계와 지표는 51번이 지웠다
+    assert not hasattr(view, "indicator")
+    assert view.stats is None
     assert view.last_incomplete is False
     assert (view.fetched_at, view.error_name, view.blocked_until) == (None, None, None)
     assert view == CoinView("KRW-AAA", LoadState.NO_DATA)
@@ -307,7 +216,7 @@ def test_views_carry_as_of() -> None:
     assert MarketsView(LoadState.LOADING).as_of is None
     # 새 필드는 맨 뒤에 기본값과 함께 있어, 위치 인자로 만든 값은 그대로 통과한다.
     assert CoinView("KRW-AAA", LoadState.NO_DATA) == CoinView(
-        "KRW-AAA", LoadState.NO_DATA, empty_periods(), None, False, None, None, None, None
+        "KRW-AAA", LoadState.NO_DATA, False, None, None, None, None
     )
     assert MarketsView(LoadState.READY, (), None, None) == MarketsView(
         LoadState.READY, (), None, None, None

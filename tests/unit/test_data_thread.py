@@ -245,8 +245,6 @@ def test_the_initial_view_uses_the_stored_candles(build: Any, tmp_path: Path) ->
     assert (view.stats.unit, view.stats.requested_count, view.stats.bar_count) == (HOUR, 100, 100)
     assert view.stats.close_last is not None
     assert view.last_incomplete is False
-    assert view.periods == CoinView(AAA, LoadState.READY).periods  # 낡은 필드는 기본값이다
-    assert view.indicator is None
     assert rig.quote.requests == []
 
 
@@ -384,7 +382,6 @@ def test_first_fetch_saves_the_candles_and_sends_loading_then_the_result(build: 
     assert last.stats is not None
     assert (last.stats.unit, last.stats.requested_count, last.stats.bar_count) == (HOUR, 100, 100)
     assert last.stats.last_start_utc == THIS_HOUR - timedelta(hours=1)  # 완성된 마지막 봉
-    assert last.indicator is None
     assert rig.fetched_at(AAA) == NOW
     assert rig.alerts() == []
 
