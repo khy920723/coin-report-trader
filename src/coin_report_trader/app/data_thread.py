@@ -280,8 +280,15 @@ class DataWorker:
         self._put("refresh")
 
     def save_settings(
-        self, coins: tuple[str, ...], retention_days: int, *, first_setup: bool
+        self,
+        coins: tuple[str, ...],
+        retention_days: int,
+        *,
+        first_setup: bool,
+        candle_unit: CandleUnit | None = None,
+        candle_count: int | None = None,
     ) -> None:
+        """`candle_unit`과 `candle_count`는 받기만 하고 쓰지 않는다(39번이 저장한다. 3.8)."""
         self._put(_SaveTask(tuple(coins), retention_days, first_setup))
 
     def retry_candles(self) -> None:

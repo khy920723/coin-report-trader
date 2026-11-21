@@ -17,7 +17,12 @@ from coin_report_trader.storage.database import migrate
 
 MARKET = "KRW-AAA"
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
-STEP = {CandleUnit.DAY: timedelta(days=1), CandleUnit.MINUTE_60: timedelta(hours=1)}
+STEP = {
+    CandleUnit.MINUTE_30: timedelta(minutes=30),
+    CandleUnit.MINUTE_60: timedelta(hours=1),
+    CandleUnit.MINUTE_240: timedelta(hours=4),
+    CandleUnit.DAY: timedelta(days=1),
+}
 
 prices = st.decimals(min_value=Decimal("0.0001"), max_value=Decimal("100000000"), places=4)
 

@@ -87,7 +87,7 @@ def test_a_later_copy_of_the_same_start_wins(found, data):
 @given(candles(), st.data())
 def test_candles_that_are_not_complete_yet_are_not_used(found, data):
     """`now`에 아직 완성되지 않은 봉은 기간과 지표에 들지 않는다. 미완성 일봉이 있으면 표시한다."""
-    unit = data.draw(st.sampled_from(list(CandleUnit)))
+    unit = data.draw(st.sampled_from([CandleUnit.DAY, CandleUnit.MINUTE_60]))  # 옛 함수는 둘만 안다
     ahead = data.draw(st.integers(0, 3))
     building = data.draw(candle(unit, 0))
     building = dataclasses.replace(building, start=NOW - STEP[unit] + timedelta(minutes=1)
