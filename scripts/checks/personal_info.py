@@ -10,16 +10,26 @@
   허용한다.
 - 경로: `C:\\Users\\<이름>`, `/home/<이름>`, `/Users/<이름>` 꼴. `<이름>`이나 `$USER`처럼 글자나
   숫자로 시작하지 않는 자리표시는 잡지 않는다.
-- Office 파일(이름이 `.pptx`, `.docx`, `.xlsx`로 끝나는 파일): ZIP으로 열어, 안의 부분 가운데
-  이름이 `.xml`이나 `.rels`로 끝나는 것을 모두 글로 풀고 위의 이메일·경로 검사를 그대로 건다. 부분의
-  XML 그대로의 글과, XML의 글 마디를 이은 글(한 낱말이 여러 마디로 나뉜 경우) 둘 다 본다. 슬라이드,
-  메모, 댓글, 표의 글이 여기에 든다.
+- Office 파일(이름이 `.pptx`, `.docx`, `.xlsx`로 끝나는 파일, 대소문자 무관): ZIP으로 열어, 안의
+  부분 가운데 이름이 `.xml`이나 `.rels`로 끝나는 것(대소문자 무관)을 모두 글로 풀고 위의 이메일·경로
+  검사를 그대로 건다. 두 가지를 본다.
+  - XML 그대로의 글(줄마다): 속성 값(관계의 `Target`, 통합 문서의 `absPath` 등)도 여기서 본다.
+  - 문단 같은 마디(지역 이름 `p`, `si`, `is`, `text`)마다 그 안의 글 조각(`.text`)만 이은 글: 한
+    낱말이 여러 조각으로 나뉜 경우를 본다. 마디를 넘어 잇지 않는다(표의 칸끼리, 문단끼리 이어지지
+    않는다).
   - 문서 속성: `docProps/core.xml`의 작성자(`dc:creator`)와 마지막 수정자(`cp:lastModifiedBy`)가
     비어 있지 않고 허용 이름(`ALLOWED_AUTHORS`)도 아니면 실패다. `docProps/app.xml`의 회사
     (`Company`)와 관리자(`Manager`)는 비어 있지 않으면 실패다.
-  - ZIP이 아니거나 깨져서 열 수 없는 Office 파일, 읽거나 풀 수 없는 부분은 실패다.
-  - 보지 않는 것: 그림과 미디어(예: `ppt/media/`)와 그 밖의 이진 부분은 글로 볼 수 없어서 검사하지
-    않는다. 안에 넣은 다른 파일(예: `ppt/embeddings/`의 이진 개체)도 열지 않는다.
+  - 댓글과 변경 기록의 사람 이름: 비어 있지 않고 허용 이름도 아니면 실패다. 보는 곳은
+    `ppt/commentAuthors.xml`과 `ppt/authors.xml`의 `name`, 모든 부분의 `author` 속성(`word/`
+    의 댓글과 변경 기록의 `w:author` 등), `xl/comments*.xml`의 `author` 마디의 글,
+    `xl/persons/*.xml`의 `displayName`이다.
+  - XML은 바이트로 읽어(BOM과 선언의 인코딩을 따른다) 풀고, ZIP이 아니거나 깨져서 열 수 없는 Office
+    파일, 읽거나 풀 수 없는 부분(CRC가 맞지 않는 것 포함), XML로 읽을 수 없는 부분은 실패다.
+  - 보지 않는 것: 이름이 `.xml`·`.rels`가 아닌 부분은 글이어도 보지 않는다(그림과 미디어
+    `ppt/media/`의 PNG·SVG·VML 등). 안에 넣은 다른 파일(`ppt/embeddings/` 등)을 열지 않는다.
+    사용자 정의 속성(`docProps/custom.xml`)은 이메일·경로 검사만 받고 사람 이름 검사는 받지
+    않는다.
 - 찾은 값은 출력하지 않는다(공개 기록에 다시 남지 않게). 파일, 줄(Office 파일은 안의 부분 이름),
   종류만 쓴다.
 """
@@ -71,6 +81,10 @@ _CP = "{http://schemas.openxmlformats.org/package/2006/metadata/core-properties}
 _EP = "{http://schemas.openxmlformats.org/officeDocument/2006/extended-properties}"
 _PERSON_FIELDS = (_DC + "creator", _CP + "lastModifiedBy")
 _COMPANY_FIELDS = (_EP + "Company", _EP + "Manager")
+_PARAGRAPHS = frozenset({"p", "si", "is", "text"})
+"""글 조각을 이어 볼 문단 같은 마디의 지역 이름(DrawingML·Word의 `p`, 엑셀의 `si`·`is`·`text`)."""
+_NAME_PARTS = ("ppt/commentauthors.xml", "ppt/authors.xml")
+"""`name` 속성이 사람 이름인 부분(이름은 작은 글자로 견준다)."""
 
 
 def check(root: Path) -> list[str]:
@@ -86,6 +100,8 @@ def check(root: Path) -> list[str]:
         if name.startswith(EXCLUDED_PREFIXES):
             continue
         if name.lower().endswith(OFFICE_SUFFIXES):
+            if not (root / name).is_file():
+                continue  # 목록에 있지만 지운 파일(글 파일처럼 건너뛴다)
             checked += 1
             problems.extend(_check_office(root / name, name, allowed))
             continue
@@ -111,7 +127,7 @@ def _line_problems(line: str, allowed: re.Pattern[str]) -> list[str]:
 
 
 def _check_office(path: Path, name: str, allowed: re.Pattern[str]) -> list[str]:
-    """Office 파일 안의 글 부분과 문서 속성을 본다(모듈 설명)."""
+    """Office 파일 안의 글 부분과 사람 이름을 본다(모듈 설명)."""
     try:
         archive = zipfile.ZipFile(path)
     except (OSError, zipfile.BadZipFile, ValueError):
@@ -127,32 +143,54 @@ def _check_office(path: Path, name: str, allowed: re.Pattern[str]) -> list[str]:
             except (OSError, zipfile.BadZipFile, zlib.error, RuntimeError, NotImplementedError):
                 problems.append(f"{name}:{part}: 읽을 수 없는 부분")
                 continue
-            problems.extend(_check_part(name, part, _decode(data), allowed))
+            problems.extend(_check_part(name, part, data, allowed))
     return problems
 
 
-def _check_part(name: str, part: str, text: str, allowed: re.Pattern[str]) -> list[str]:
+def _check_part(name: str, part: str, data: bytes, allowed: re.Pattern[str]) -> list[str]:
     kinds: list[str] = []
-    for line in text.splitlines():
+    for line in _decode(data).splitlines():
         kinds.extend(_line_problems(line, allowed))
     try:
-        tree = ElementTree.fromstring(text)
+        tree = ElementTree.fromstring(data)
     except ElementTree.ParseError:
         return [f"{name}:{part}: 읽을 수 없는 XML"] + [f"{name}:{part}: {k}" for k in kinds]
-    kinds.extend(_line_problems("".join(tree.itertext()), allowed))
-    if part == _CORE_PART:
-        kinds.extend(
-            "문서 속성의 사람 이름"
-            for element in tree.iter()
-            if element.tag in _PERSON_FIELDS and _filled(element) not in ("", *ALLOWED_AUTHORS)
-        )
-    if part == _APP_PART:
-        kinds.extend(
-            "문서 속성의 회사·관리자"
-            for element in tree.iter()
-            if element.tag in _COMPANY_FIELDS and _filled(element)
-        )
+    for element in tree.iter():
+        if _local(element.tag) in _PARAGRAPHS:
+            joined = "".join(piece.text or "" for piece in element.iter())
+            kinds.extend(_line_problems(joined, allowed))
+    kinds.extend(_people(part.lower(), tree))
     return [f"{name}:{part}: {kind}" for kind in dict.fromkeys(kinds)]
+
+
+def _people(part: str, tree: ElementTree.Element) -> list[str]:
+    """문서 속성, 댓글, 변경 기록에서 찾은 사람 이름의 종류(찾은 값은 담지 않는다)."""
+    kinds = []
+    for element in tree.iter():
+        tag = _local(element.tag)
+        person_field = part == _CORE_PART.lower() and element.tag in _PERSON_FIELDS
+        if person_field and _is_person(_filled(element)):
+            kinds.append("문서 속성의 사람 이름")
+        if part == _APP_PART.lower() and element.tag in _COMPANY_FIELDS and _filled(element):
+            kinds.append("문서 속성의 회사·관리자")
+        names = [value for key, value in element.attrib.items() if _local(key) == "author"]
+        if part in _NAME_PARTS:
+            names += [value for key, value in element.attrib.items() if _local(key) == "name"]
+        if part.startswith("xl/persons/"):
+            names += [v for key, v in element.attrib.items() if _local(key) == "displayName"]
+        if part.startswith("xl/comments") and tag == "author":
+            names.append(_filled(element))
+        if any(_is_person(value.strip()) for value in names):
+            kinds.append("댓글·변경 기록의 사람 이름")
+    return kinds
+
+
+def _is_person(value: str) -> bool:
+    return value not in ("", *ALLOWED_AUTHORS)
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 def _filled(element: ElementTree.Element) -> str:

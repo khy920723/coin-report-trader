@@ -122,7 +122,7 @@ def _app(company: str = "", manager: str = "") -> str:
     )
 
 
-def _pptx(slide: str = "화면 목록", note: str = "메모", **props: str) -> dict[str, str]:
+def _pptx(slide: str = "화면 목록", note: str = "메모", **props: str) -> dict[str, str | bytes]:
     return {
         "[Content_Types].xml": _DECLARATION + "<Types/>",
         "_rels/.rels": _DECLARATION + "<Relationships/>",
@@ -132,7 +132,7 @@ def _pptx(slide: str = "화면 목록", note: str = "메모", **props: str) -> d
         "ppt/notesSlides/notesSlide1.xml": (
             _DECLARATION + f"<p:notes {_P} {_A}><a:p><a:r><a:t>{note}</a:t></a:r></a:p></p:notes>"
         ),
-        "ppt/media/image1.png": "PNG 자리(그림은 보지 않는다)",
+        "ppt/media/image1.png": PNG,
         "docProps/core.xml": _core(props.get("creator", ""), props.get("modified_by", "")),
         "docProps/app.xml": _app(props.get("company", ""), props.get("manager", "")),
     }
@@ -159,11 +159,44 @@ def _xlsx(cell: str = "화면 번호", **props: str) -> dict[str, str]:
     }
 
 
-def _write_office(path: Path, parts: dict[str, str]) -> None:
+def _write_office(
+    path: Path, parts: dict[str, str | bytes], compression: int = zipfile.ZIP_DEFLATED
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(path, "w", compression) as archive:
         for name, text in parts.items():
-            archive.writestr(name, text.encode("utf-8"))
+            archive.writestr(name, text if isinstance(text, bytes) else text.encode("utf-8"))
+
+
+def _slide(*paragraphs: list[str]) -> str:
+    """문단마다 글 조각 여럿(`<a:r><a:t>`)을 둔 슬라이드."""
+    body = "".join(
+        "<a:p>" + "".join(f"<a:r><a:t>{piece}</a:t></a:r>" for piece in pieces) + "</a:p>"
+        for pieces in paragraphs
+    )
+    return _DECLARATION + f"<p:sld {_P} {_A}>{body}</p:sld>"
+
+
+def _expect(copy: Path, *lines: str, forbidden: tuple[str, ...] = ()) -> str:
+    """사본의 검사가 실패하고, 출력에 `lines`가 다 있고 `forbidden`(찾은 값)은 없는지 본다."""
+    code, output = _run_all(copy)
+    assert code == 1, output
+    assert _status(output)[ITEM] == "실패"
+    for line in lines:
+        assert line in output, output
+    for value in forbidden:
+        assert value not in output
+    return output
+
+
+def _expect_pass(copy: Path) -> None:
+    code, output = _run_all(copy)
+    assert code == 0, output
+    assert _status(output)[ITEM] == "통과"
+
+
+PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00"
+"""진짜 이진 값으로 만든 그림 부분(PNG의 앞머리)."""
 
 
 # --- 시험 ----------------------------------------------------------------------------------------
@@ -265,7 +298,8 @@ def test_an_office_file_that_cannot_be_opened_fails(
 def test_clean_office_files_and_allowed_names_pass(make_copy: Callable[[str], Path]) -> None:
     """(마) 깨끗한 파일과 허용 이름(Claude, python-pptx, coin-report-trader, 빈 값)은 통과한다.
 
-    그림 자리(`ppt/media/`)의 글은 보지 않는다. 허용된 주소(example.com, noreply)도 통과한다.
+    이름이 `.xml`·`.rels`가 아닌 부분(그림 `ppt/media/`, 진짜 이진 값)은 보지 않는다. 허용된
+    주소(example.com, noreply)도 통과한다.
     """
     copy = make_copy("office-clean")
     design = copy / "docs" / "design"
@@ -273,9 +307,235 @@ def test_clean_office_files_and_allowed_names_pass(make_copy: Callable[[str], Pa
     _write_office(design / "a.pptx", _pptx(slide="연락: " + allowed, creator="Claude"))
     _write_office(design / "b.docx", _docx(creator="python-pptx", modified_by="Claude"))
     _write_office(design / "c.xlsx", _xlsx(creator="coin-report-trader"))
-    media = _pptx()
-    media["ppt/media/image1.png"] = "그림 자리: " + _fake_address()
+    media: dict[str, str | bytes] = dict(_pptx())
+    media["ppt/media/image1.png"] = PNG + _fake_address().encode("ascii")
     _write_office(design / "d.pptx", media)
-    code, output = _run_all(copy)
-    assert code == 0, output
-    assert _status(output)[ITEM] == "통과"
+    _expect_pass(copy)
+
+
+# --- 지휘 검토(고칠 것 1): 문단 같은 마디마다 잇는다 ---
+
+
+def test_a_noreply_address_alone_in_a_table_cell_passes(make_copy: Callable[[str], Path]) -> None:
+    """(마) 표의 칸 `user.email` 다음 칸에 홀로 있는 허용 주소는 통과한다(칸끼리 잇지 않는다)."""
+    copy = make_copy("office-table")
+    allowed = "noreply" + "@" + "anthropic.com"
+    cell = "<a:tc><a:txBody><a:p><a:r><a:t>{}</a:t></a:r></a:p></a:txBody></a:tc>"
+    table = "<a:tbl><a:tr>" + cell.format("user.email") + cell.format(allowed) + "</a:tr></a:tbl>"
+    parts = _pptx()
+    parts["ppt/slides/slide1.xml"] = _DECLARATION + f"<p:sld {_P} {_A}>{table}</p:sld>"
+    _write_office(copy / "docs" / "design" / "table.pptx", parts)
+    cells = "<si><t>user.email</t></si><si><t>" + allowed + "</t></si>"
+    book = _xlsx()
+    book["xl/sharedStrings.xml"] = _DECLARATION + f"<sst {_S}>{cells}</sst>"
+    _write_office(copy / "docs" / "design" / "table.xlsx", book)
+    _expect_pass(copy)
+
+
+def test_a_path_split_right_after_a_title_paragraph_fails(make_copy: Callable[[str], Path]) -> None:
+    """(나) 제목 문단 바로 뒤의 문단에서 여러 조각으로 나뉜 사용자 폴더 경로를 잡는다."""
+    copy = make_copy("office-title-path")
+    users = "Us" + "ers"
+    pieces = ["C:" + "\\" + users[:2], users[2:] + "\\" + "minsu", "\\a.txt"]
+    parts = _pptx()
+    parts["ppt/slides/slide1.xml"] = _slide(["화면 제목"], pieces)
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 사용자 폴더 경로", forbidden=("minsu",))
+
+
+# --- 지휘 검토(고칠 것 2): 날것 XML, `.rels`, 읽기·파싱의 실패, 대소문자, UTF-16 ---
+
+
+def test_an_email_and_a_path_in_a_relationship_target_fail(
+    make_copy: Callable[[str], Path],
+) -> None:
+    """`.rels`의 `Target`에 든 `mailto:` 주소와 `file:///` 사용자 폴더 경로를 잡는다(속성 값)."""
+    copy = make_copy("office-rels")
+    address = _fake_address()
+    path = "file:///" + "C:/" + "Us" + "ers" + "/minsu/a.pptx"
+    rels = (
+        _DECLARATION + "<Relationships>"
+        f'<Relationship Id="r1" Target="mailto:{address}" TargetMode="External"/>'
+        f'<Relationship Id="r2" Target="{path}" TargetMode="External"/>'
+        "</Relationships>"
+    )
+    parts = _pptx()
+    parts["ppt/slides/_rels/slide1.xml.rels"] = rels
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    part = "screens.pptx:ppt/slides/_rels/slide1.xml.rels"
+    _expect(
+        copy,
+        f"{part}: 허용 목록 밖의 이메일 주소",
+        f"{part}: 사용자 폴더 경로",
+        forbidden=(address, "minsu"),
+    )
+
+
+def test_a_path_only_in_an_attribute_of_the_workbook_fails(
+    make_copy: Callable[[str], Path],
+) -> None:
+    """`xl/workbook.xml`의 속성(`absPath url`)에만 든 사용자 폴더 경로를 잡는다."""
+    copy = make_copy("office-abspath")
+    path = "C:" + "\\" + "Us" + "ers" + "\\minsu\\Desktop\\"
+    book = _xlsx()
+    book["xl/workbook.xml"] = (
+        _DECLARATION + f'<workbook {_S} xmlns:x15ac="http://schemas.microsoft.com/office/'
+        f'spreadsheetml/2010/11/ac"><x15ac:absPath url="{path}"/></workbook>'
+    )
+    _write_office(copy / "docs" / "design" / "list.xlsx", book)
+    _expect(copy, "list.xlsx:xl/workbook.xml: 사용자 폴더 경로", forbidden=("minsu",))
+
+
+def test_a_slide_whose_xml_cannot_be_read_fails(make_copy: Callable[[str], Path]) -> None:
+    """닫는 꼬리가 어긋난 슬라이드 XML은 '읽을 수 없는 XML'로 적는다."""
+    copy = make_copy("office-bad-xml")
+    parts = _pptx()
+    parts["ppt/slides/slide1.xml"] = _DECLARATION + f"<p:sld {_P} {_A}><a:p></p:sld>"
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 XML")
+
+
+def test_a_stored_part_with_a_changed_byte_fails(make_copy: Callable[[str], Path]) -> None:
+    """저장(stored) 방식 ZIP에서 슬라이드 데이터 한 바이트를 바꾸면(CRC가 맞지 않음) '읽을 수 없는
+    부분'으로 적는다."""
+    copy = make_copy("office-bad-crc")
+    target = copy / "docs" / "design" / "screens.pptx"
+    _write_office(target, _pptx(slide="바꿀 글자QQ"), compression=zipfile.ZIP_STORED)
+    data = bytearray(target.read_bytes())
+    spot = data.index("QQ".encode("ascii"))
+    data[spot] = ord("R")
+    target.write_bytes(bytes(data))
+    _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 부분")
+
+
+def test_upper_case_file_and_part_names_are_checked(make_copy: Callable[[str], Path]) -> None:
+    """파일 이름(`.PPTX`)과 부분 이름(`PPT/SLIDES/SLIDE1.XML`, `DOCPROPS/CORE.XML`)이
+    대문자여도 본다."""
+    copy = make_copy("office-upper")
+    address = _fake_address()
+    parts = {
+        "PPT/SLIDES/SLIDE1.XML": _slide(["연락: " + address]),
+        "DOCPROPS/CORE.XML": _core(creator=_fake_person()),
+    }
+    _write_office(copy / "docs" / "design" / "SCREENS.PPTX", parts)
+    _expect(
+        copy,
+        "SCREENS.PPTX:PPT/SLIDES/SLIDE1.XML: 허용 목록 밖의 이메일 주소",
+        "SCREENS.PPTX:DOCPROPS/CORE.XML: 문서 속성의 사람 이름",
+        forbidden=(address, _fake_person()),
+    )
+
+
+def _utf16(text: str) -> bytes:
+    return text.replace('encoding="UTF-8"', 'encoding="UTF-16"').encode("utf-16")  # BOM이 붙는다
+
+
+def test_a_person_in_utf16_document_properties_fails_and_a_clean_one_passes(
+    make_copy: Callable[[str], Path],
+) -> None:
+    """UTF-16(BOM)으로 쓴 `docProps/core.xml`의 사람 이름을 잡고, 깨끗한 UTF-16 파일은 통과한다."""
+    person = _fake_person()
+    bad = make_copy("office-utf16-bad")
+    parts = _pptx()
+    parts["docProps/core.xml"] = _utf16(_core(creator=person))
+    _write_office(bad / "docs" / "design" / "screens.pptx", parts)
+    _expect(bad, "screens.pptx:docProps/core.xml: 문서 속성의 사람 이름", forbidden=(person,))
+    clean = make_copy("office-utf16-clean")
+    parts = _pptx()
+    parts["docProps/core.xml"] = _utf16(_core(creator="Claude"))
+    parts["ppt/slides/slide1.xml"] = _utf16(_slide(["화면 목록"]))
+    _write_office(clean / "docs" / "design" / "screens.pptx", parts)
+    _expect_pass(clean)
+
+
+# --- 지휘 검토(고칠 것 3): 댓글과 변경 기록의 사람 이름 ---
+
+
+@pytest.mark.parametrize(
+    ("file_name", "part", "make_xml"),
+    [
+        (
+            "screens.pptx",
+            "ppt/commentAuthors.xml",
+            lambda n: f'<p:cmAuthorLst {_P}><p:cmAuthor id="1" name="{n}"/></p:cmAuthorLst>',
+        ),
+        (
+            "screens.pptx",
+            "ppt/authors.xml",
+            lambda n: (
+                f'<p188:authorLst xmlns:p188="urn:x"><p188:author name="{n}"/></p188:authorLst>'
+            ),
+        ),
+        (
+            "spec.docx",
+            "word/comments.xml",
+            lambda n: f'<w:comments {_W}><w:comment w:id="0" w:author="{n}"/></w:comments>',
+        ),
+        (
+            "spec.docx",
+            "word/document.xml",
+            lambda n: (
+                f'<w:document {_W}><w:body><w:p><w:ins w:author="{n}"/></w:p></w:body></w:document>'
+            ),
+        ),
+        (
+            "list.xlsx",
+            "xl/comments1.xml",
+            lambda n: f"<comments {_S}><authors><author>{n}</author></authors></comments>",
+        ),
+        (
+            "list.xlsx",
+            "xl/persons/person.xml",
+            lambda n: f'<personList xmlns="urn:x"><person displayName="{n}"/></personList>',
+        ),
+    ],
+    ids=["슬라이드 댓글", "슬라이드 작성자", "문서 댓글", "변경 기록", "셀 댓글", "사람 목록"],
+)
+def test_a_person_in_comments_or_tracked_changes_fails(
+    make_copy: Callable[[str], Path], file_name: str, part: str, make_xml: Callable[[str], str]
+) -> None:
+    """댓글과 변경 기록의 작성자 이름이 비어 있지 않고 허용 이름이 아니면 잡는다."""
+    copy = make_copy("office-comments")
+    person = _fake_person()
+    parts = {
+        "[Content_Types].xml": _DECLARATION + "<Types/>",
+        part: _DECLARATION + make_xml(person),
+    }
+    _write_office(copy / "docs" / "design" / file_name, parts)
+    _expect(
+        copy, f"docs/design/{file_name}:{part}: 댓글·변경 기록의 사람 이름", forbidden=(person,)
+    )
+
+
+def test_allowed_names_in_comments_pass(make_copy: Callable[[str], Path]) -> None:
+    """댓글의 작성자가 허용 이름이거나 비어 있으면 통과한다."""
+    copy = make_copy("office-comments-ok")
+    parts = _pptx()
+    parts["ppt/commentAuthors.xml"] = (
+        _DECLARATION + f'<p:cmAuthorLst {_P}><p:cmAuthor id="1" name="Claude"/>'
+        '<p:cmAuthor id="2" name=""/></p:cmAuthorLst>'
+    )
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    _expect_pass(copy)
+
+
+# --- 함께 고칠 작은 것 ----------------------------------------------------------------------------
+
+
+def test_a_listed_office_file_that_was_deleted_is_skipped(make_copy: Callable[[str], Path]) -> None:
+    """목록에 있지만(색인에 올림) 지운 Office 파일은 글 파일처럼 건너뛴다."""
+    copy = make_copy("office-deleted")
+    target = copy / "docs" / "design" / "gone.pptx"
+    _write_office(target, _pptx())
+    _git("add", "docs/design/gone.pptx", cwd=copy)
+    target.unlink()
+    _expect_pass(copy)
+
+
+def test_the_planned_shape_of_a_design_pptx_passes(make_copy: Callable[[str], Path]) -> None:
+    """(마) 계획된 꼴의 PPTX(작성자와 마지막 수정자 `coin-report-trader`, 회사와 관리자 빈칸)는
+    통과한다."""
+    copy = make_copy("office-planned")
+    parts = _pptx(creator="coin-report-trader", modified_by="coin-report-trader")
+    _write_office(copy / "docs" / "design" / "screens.pptx", parts)
+    _expect_pass(copy)
