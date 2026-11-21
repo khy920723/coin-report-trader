@@ -402,6 +402,10 @@ class _Actions:
         self, coins: tuple[str, ...], retention_days: int, *, first_setup: bool
     ) -> None: ...
 
+    def load_reports(self, market: str) -> None: ...
+
+    def load_report(self, report_id: int) -> None: ...
+
     def retry_candles(self) -> None: ...
 
     def mark_seen(self, alert_ids: tuple[int, ...]) -> None: ...
@@ -485,11 +489,13 @@ def test_protocols_match_by_shape() -> None:
     assert not isinstance(_ClockWithoutWait(), Clock)
 
 
-def test_ui_actions_has_the_nine_actions_of_the_spec() -> None:
+def test_ui_actions_has_the_actions_of_the_spec() -> None:
     names = {name for name in dir(UiActions) if not name.startswith("_")}
     assert names == {
         "refresh_markets",
         "save_settings",
+        "load_reports",
+        "load_report",
         "retry_candles",
         "mark_seen",
         "delete_alert",

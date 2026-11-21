@@ -7,7 +7,7 @@
 모두 Qt의 주 스레드에서 부른다.
 """
 
-from coin_report_trader.core import AlertCategory, CandleUnit
+from coin_report_trader.core import AiChoice, AlertCategory, CandleUnit
 
 from .data_thread import DataWorker
 from .send_thread import SendWorker
@@ -31,6 +31,7 @@ class AppActions:
         first_setup: bool,
         candle_unit: CandleUnit | None = None,
         candle_count: int | None = None,
+        ai_choices: tuple[AiChoice, ...] | None = None,
     ) -> None:
         self._data.save_settings(
             coins,
@@ -38,7 +39,14 @@ class AppActions:
             first_setup=first_setup,
             candle_unit=candle_unit,
             candle_count=candle_count,
+            ai_choices=ai_choices,
         )
+
+    def load_reports(self, market: str) -> None:
+        self._data.load_reports(market)
+
+    def load_report(self, report_id: int) -> None:
+        self._data.load_report(report_id)
 
     def retry_candles(self) -> None:
         self._data.retry_candles()

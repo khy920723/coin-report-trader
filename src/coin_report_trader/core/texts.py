@@ -22,6 +22,9 @@ STAGE_ALERT_DELETE: Final = "알림 지우기"
 STAGE_WEBHOOK_SAVE: Final = "주소 저장"
 STAGE_WEBHOOK_DELETE: Final = "주소 지우기"
 STAGE_STARTUP: Final = "켜기"
+STAGE_PRICE: Final = "현재가 읽기"
+STAGE_REPORT: Final = "AI 보고서"
+STAGE_REPORT_SAVE: Final = "보고서 저장"
 STAGES: Final = (
     STAGE_MARKETS,
     STAGE_CANDLES,
@@ -33,6 +36,9 @@ STAGES: Final = (
     STAGE_WEBHOOK_SAVE,
     STAGE_WEBHOOK_DELETE,
     STAGE_STARTUP,
+    STAGE_PRICE,
+    STAGE_REPORT,
+    STAGE_REPORT_SAVE,
 )
 
 # --- 알림 번호(설계서 12) ---
@@ -40,6 +46,11 @@ CODE_CANDLES_FAILED: Final = "A-1"
 CODE_SAVE_FAILED: Final = "A-29"
 CODE_UNEXPECTED: Final = "A-30"
 CODE_MARKETS_FAILED: Final = "A-31"
+CODE_PRICE_FAILED: Final = "A-2"
+CODE_REPORT_FAILED: Final = "A-17"
+CODE_LOGGED_OUT: Final = "A-18"
+CODE_CLAUDE_OFF: Final = "A-19"
+CODE_REPORT_DONE: Final = "A-26"
 
 # --- 오류 이름: 봉 받기와 코인 목록 받기가 만나는 것(3.9) ---
 ERROR_NETWORK: Final = "네트워크 끊김"
@@ -69,6 +80,22 @@ ERROR_WEBHOOK_UNREADABLE: Final = "주소를 읽지 못함"
 
 def error_discord_rejected(status: int) -> str:
     return f"디스코드 거절({status})"
+
+
+# --- 오류 이름과 글: 2단계 AI 보고서(M2 명세 3.4) ---
+# `FailureKind`의 다섯 값("한도 초과", "로그인 만료", "형식 오류", "시간 초과", "검색 실패")이
+# 8절의 실패 오류 이름이다(`core/ai.py`).
+ERROR_CLAUDE_NOT_FOUND: Final = "Claude Code를 찾지 못함"
+ERROR_VERSION_UNREADABLE: Final = "버전을 읽지 못함"
+
+
+def error_version_out_of_range(version: str) -> str:
+    return f"버전 범위 밖({version})"
+
+
+AI_MARK_TEXT: Final = "AI가 쓴 글입니다. 틀릴 수 있습니다."
+"""보고서의 AI 표시(설계서 5.2의 4, 10절)."""
+REPORT_UNREADABLE: Final = "보고서를 읽지 못했습니다."
 
 
 # --- 알림의 글(앞에 코인을 붙이지 않은 글) ---
