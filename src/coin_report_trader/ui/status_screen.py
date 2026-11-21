@@ -1,4 +1,7 @@
-"""현황 화면(설계서 4, M1 명세 4절 17번, 25번): 코인 칸의 지표, 기간별 봉 통계, 알림센터.
+"""현황 화면(설계서 4, M1 명세 4절 17번, 25번, 37번): 코인 칸의 봉 통계, 봉 통계 자리, 알림센터.
+
+`CoinView.stats`(M1 명세 3.14.5)가 있으면 그 봉 통계를 그린다. `None`이면(39번 전) 옛 `periods`와
+`indicator`로 옛 표와 지표를 그린다(49번이 그 그리기를 지운다).
 
 알림센터(설계서 4.2의 5)는 `alert_center.py`다. 보유, 주문, 손절선, 오늘 요약, 지금 회차, 모의
 운영은 M3에서 생긴다.
@@ -11,14 +14,18 @@ from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from coin_report_trader.core import (
+    BAR_STATS_TITLES,
+    CANDLE_UNIT_TITLES,
     INSUFFICIENT_TEXT,
     SCREEN_TITLES,
+    BarStats,
     CandleIndicator,
     CoinView,
     LoadState,
@@ -41,15 +48,21 @@ from coin_report_trader.ui.state import Message
 from coin_report_trader.ui.texts import (
     INDICATOR_DISCLAIMER,
     LAST_CANDLE_INCOMPLETE,
+    LEGACY_STATS_TITLE,
     LOADING_TEXT,
     NO_CANDLES_YET,
     RETRY_TEXT,
     STATS_COLUMNS,
+    STATS_TABLE_COLUMNS,
     STATS_TITLE,
+    bar_count_text,
     candles_failed_text,
     count_text,
     fetched_text,
     indicator_row_text,
+    stats_header_text,
+    stats_short_header_text,
+    stats_summary_text,
 )
 from coin_report_trader.ui.widgets import make_label, show_message
 
@@ -62,11 +75,39 @@ STATS_NOTE_NAME = "statusStatsNote"
 STATS_TABLE_NAME = "statusStatsTable"
 STATS_FETCHED_NAME = "statusStatsFetched"
 STATS_INCOMPLETE_NAME = "statusStatsIncomplete"
+STATS_SUMMARY_NAME = "statusStatsSummary"
+STATS_DISCLAIMER_NAME = "statusStatsDisclaimer"
 STATS_RETRY_NAME = "statusStatsRetry"
 
 MAX_COINS = 3
 _PERIOD_ROWS = 5
 _INDICATOR_ROWS = 7
+
+_CARD_ELEMENTS: tuple[tuple[str, bool], ...] = (
+    ("change", True),
+    ("slope", True),
+    ("vs_mean", True),
+    ("up_ratio", False),
+    ("volatility", False),
+)
+"""코인 칸의 다섯 요소(열 이름, 부호를 붙이는지. M1 명세 3.5.1의 화면의 글)."""
+
+_TABLE_ROWS: tuple[tuple[str, str], ...] = (
+    ("bar_count", "count"),
+    ("first_start_utc", "time"),
+    ("last_start_utc", "time"),
+    ("close_last", "price"),
+    ("change", "signed"),
+    ("slope", "signed"),
+    ("vs_mean", "signed"),
+    ("up_ratio", "plain"),
+    ("volatility", "plain"),
+    ("max_drawdown", "signed"),
+    ("from_high", "signed"),
+    ("high", "price"),
+    ("low", "price"),
+)
+"""봉 통계 자리 표의 줄(열 이름, 값의 꼴. 3.5.1의 `bar_count`부터 `low`까지의 차례)."""
 
 
 @dataclass(frozen=True)
@@ -87,8 +128,16 @@ class Look:
 
 
 def has_values(view: CoinView) -> bool:
-    """ "받아 둔 값이 있다": 다섯 기간 가운데 쓴 봉 수가 1 이상인 기간이 있다(M1 명세 3.4)."""
+    """ "받아 둔 값이 있다": `stats.bar_count`가 1 이상이다(M1 명세 3.4). `stats`가 `None`이면(39번
+    전) 다섯 기간 가운데 쓴 봉 수가 1 이상인 기간이 있다."""
+    if view.stats is not None:
+        return view.stats.bar_count >= 1
     return any(period.count >= 1 for period in view.periods)
+
+
+def is_short(stats: BarStats) -> bool:
+    """ "봉이 모자람": 완성된 봉이 고른 개수보다 적다(M1 명세 3.5)."""
+    return stats.bar_count < stats.requested_count
 
 
 def _blocked_note(view: CoinView) -> str | None:
@@ -138,6 +187,42 @@ def _fetched_line(view: CoinView | None) -> str | None:
         return None
 
 
+def _time_text(value) -> str:
+    if value is None:
+        return INSUFFICIENT_TEXT
+    try:
+        return kst_datetime_text(value)
+    except ValueError:
+        return INSUFFICIENT_TEXT
+
+
+def element_rows(stats: BarStats) -> tuple[str, ...]:
+    """코인 칸의 다섯 요소 줄 "{이름} {값}"(M1 명세 3.14.5). 값이 없으면 "봉이 모자람"이다."""
+    return tuple(
+        indicator_row_text(
+            BAR_STATS_TITLES[column], format_percent(getattr(stats, column), signed=signed)
+        )
+        for column, signed in _CARD_ELEMENTS
+    )
+
+
+def table_rows(stats: BarStats) -> tuple[tuple[str, str], ...]:
+    """봉 통계 자리 표의 (항목, 값) 줄(`bar_count`부터 `low`까지. M1 명세 3.14.5)."""
+    rows = []
+    for column, kind in _TABLE_ROWS:
+        value = getattr(stats, column)
+        if kind == "count":
+            text = bar_count_text(stats.bar_count, stats.requested_count, short=is_short(stats))
+        elif kind == "time":
+            text = _time_text(value)
+        elif kind == "price":
+            text = _price_text(value)
+        else:
+            text = format_percent(value, signed=kind == "signed")
+        rows.append((BAR_STATS_TITLES[column], text))
+    return tuple(rows)
+
+
 def row_cells(period: PeriodStats) -> tuple[str, ...]:
     """기간별 통계 표의 한 줄(설계서 4.2의 8, M1 명세 3.5·3.6의 꼴)."""
     return (
@@ -158,9 +243,11 @@ class CoinCard(QWidget):
 
     `objectName`(`<m>`은 마켓 코드): `statusCoin_<m>`(칸), `statusCoinName_<m>`(코인 글),
     `statusCoinNote_<m>`(값 자리의 글), `statusCoinRetry_<m>`("다시 시도"),
-    `statusCoinIndicator_<m>`(지표 묶음. 흐리게 남기면 `isEnabled()`가 거짓),
-    `statusCoinIndicatorRow_<m>_<0~6>`(지표 한 줄), `statusCoinIncomplete_<m>`,
-    `statusCoinDisclaimer_<m>`.
+    `statusCoinStats_<m>`(봉 통계 묶음. 흐리게 남기면 `isEnabled()`가 거짓),
+    `statusCoinStatsHeader_<m>`(첫 줄 "60분봉 200개"), `statusCoinStatsRow_<m>_<0~4>`(요소 한 줄
+    "이름 값"), `statusCoinIncomplete_<m>`, `statusCoinDisclaimer_<m>`(보장 아님 글).
+    `CoinView.stats`가 `None`일 때(39번 전)는 옛 `statusCoinIndicator_<m>`(지표 묶음. 흐리게 남기면
+    `isEnabled()`가 거짓)과 `statusCoinIndicatorRow_<m>_<0~6>`(지표 한 줄)을 그린다.
     """
 
     retry_requested = Signal()
@@ -188,6 +275,19 @@ class CoinCard(QWidget):
         for row in self._rows:
             indicator_layout.addWidget(row)
         layout.addWidget(self._indicator)
+        self._stats_box = QWidget()
+        self._stats_box.setObjectName(f"statusCoinStats_{market}")
+        stats_layout = QVBoxLayout(self._stats_box)
+        stats_layout.setContentsMargins(0, 0, 0, 0)
+        self._stats_header = make_label("", f"statusCoinStatsHeader_{market}")
+        stats_layout.addWidget(self._stats_header)
+        self._stats_rows = [
+            make_label("", f"statusCoinStatsRow_{market}_{index}")
+            for index in range(len(_CARD_ELEMENTS))
+        ]
+        for row in self._stats_rows:
+            stats_layout.addWidget(row)
+        layout.addWidget(self._stats_box)
         self._incomplete = make_label(LAST_CANDLE_INCOMPLETE, f"statusCoinIncomplete_{market}")
         layout.addWidget(self._incomplete)
         self._disclaimer = make_label(INDICATOR_DISCLAIMER, f"statusCoinDisclaimer_{market}")
@@ -199,24 +299,41 @@ class CoinCard(QWidget):
         look = look_of(view)
         show_message(self._note, Message(look.note) if look.note else None)
         self._retry.setVisible(look.retry)
-        self._indicator.setVisible(look.values)
+        stats = view.stats if view is not None else None
+        legacy = view is not None and stats is None
+        self._indicator.setVisible(look.values and legacy)
         self._indicator.setEnabled(not look.dim)
-        if view is not None and look.values:
+        self._stats_box.setVisible(look.values and stats is not None)
+        self._stats_box.setEnabled(not look.dim)
+        if view is not None and look.values and legacy:
             indicator = view.indicator if view.indicator is not None else CandleIndicator()
             for label, (title, value) in zip(self._rows, indicator.items(), strict=True):
                 label.setText(indicator_row_text(title, value))
+        if stats is not None and look.values:
+            unit_title = CANDLE_UNIT_TITLES[stats.unit]
+            self._stats_header.setText(
+                stats_short_header_text(unit_title, stats.bar_count, stats.requested_count)
+                if is_short(stats)
+                else stats_header_text(unit_title, stats.requested_count)
+            )
+            for label, text in zip(self._stats_rows, element_rows(stats), strict=True):
+                label.setText(text)
         self._incomplete.setVisible(look.incomplete)
         self._disclaimer.setVisible(look.disclaimer)
 
 
 class StatsPanel(QWidget):
-    """기간별 봉 통계(설계서 4.2의 8): 코인 고르기, 표, 표 아래 글과 "다시 시도".
+    """봉 통계 자리(설계서 4.2의 8, M1 명세 3.14.5): 코인 고르기, 표, 표 아래 글과 "다시 시도".
 
     `objectName`: `statusStats`(묶음), `statusStatsCoin`(코인 고르기 `QComboBox`. 글은 코인 글, 현재
-    값은 마켓 코드가 아니라 인덱스), `statusStatsNote`(표 자리의 글), `statusStatsTable`(표 묶음.
-    흐리게 남기면 `isEnabled()`가 거짓), `statusStatsHeader_<0~8>`(머리 칸),
-    `statusStatsCell_<줄 0~4>_<칸 0~8>`(칸. 칸 0은 기간 이름), `statusStatsFetched`("마지막으로 받은
+    값은 마켓 코드가 아니라 인덱스), `statusStatsNote`(표 자리의 글), `statusStatsSummary`(표 위
+    "60분봉 · 고른 개수 200개"), `statusStatsTable`(표 묶음. 흐리게 남기면 `isEnabled()`가 거짓),
+    `statusStatsHeader_<0~1>`(머리 칸 "항목", "값"), `statusStatsCell_<줄 0~12>_<칸 0~1>`(칸. 칸 0은
+    항목, 칸 1은 값), `statusStatsDisclaimer`(보장 아님 글), `statusStatsFetched`("마지막으로 받은
     때"), `statusStatsIncomplete`, `statusStatsRetry`(표 아래의 하나뿐인 "다시 시도").
+
+    `CoinView.stats`가 `None`이면(39번 전) 옛 표를 그린다: 머리 `statusStatsHeader_<0~8>`, 칸
+    `statusStatsCell_<줄 0~4>_<칸 0~8>`(칸 0은 기간 이름).
     """
 
     retry_requested = Signal()
@@ -227,7 +344,8 @@ class StatsPanel(QWidget):
         self.setObjectName(STATS_NAME)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(title_label(STATS_TITLE, "statusStatsTitle"))
+        self._title = title_label(STATS_TITLE, "statusStatsTitle")
+        layout.addWidget(self._title)
         self._chooser = QComboBox()
         self._chooser.setObjectName(STATS_CHOOSER_NAME)
         self._chooser.currentIndexChanged.connect(lambda _index: self.chosen.emit())
@@ -235,23 +353,18 @@ class StatsPanel(QWidget):
         self._note = make_label("", STATS_NOTE_NAME)
         layout.addWidget(self._note)
 
+        self._summary = make_label("", STATS_SUMMARY_NAME)
+        layout.addWidget(self._summary)
         self._table = QWidget()
         self._table.setObjectName(STATS_TABLE_NAME)
-        grid = QGridLayout(self._table)
-        grid.setContentsMargins(0, 0, 0, 0)
-        for column, title in enumerate(STATS_COLUMNS):
-            grid.addWidget(make_label(title, f"statusStatsHeader_{column}"), 0, column)
-        self._cells = [
-            [
-                make_label("", f"statusStatsCell_{row}_{column}")
-                for column in range(len(STATS_COLUMNS))
-            ]
-            for row in range(_PERIOD_ROWS)
-        ]
-        for row, cells in enumerate(self._cells, start=1):
-            for column, cell in enumerate(cells):
-                grid.addWidget(cell, row, column)
+        self._grid = QGridLayout(self._table)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._legacy_table = False
+        self._cells: list[list[QLabel]] = []
+        self._build_table(legacy=False)
         layout.addWidget(self._table)
+        self._disclaimer = make_label(INDICATOR_DISCLAIMER, STATS_DISCLAIMER_NAME)
+        layout.addWidget(self._disclaimer)
 
         self._fetched = make_label("", STATS_FETCHED_NAME)
         layout.addWidget(self._fetched)
@@ -265,6 +378,27 @@ class StatsPanel(QWidget):
         row_of_buttons.addStretch(1)
         layout.addLayout(row_of_buttons)
         self.render(None)
+
+    def _build_table(self, *, legacy: bool) -> None:
+        """표의 머리와 칸을 새로 만든다. 봉 통계(13줄, 2칸)와 옛 표(5줄, 9칸)가 같은 이름을 쓴다."""
+        for index in reversed(range(self._grid.count())):
+            item = self._grid.takeAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._legacy_table = legacy
+        columns = STATS_COLUMNS if legacy else STATS_TABLE_COLUMNS
+        rows = _PERIOD_ROWS if legacy else len(_TABLE_ROWS)
+        for column, title in enumerate(columns):
+            self._grid.addWidget(make_label(title, f"statusStatsHeader_{column}"), 0, column)
+        self._cells = [
+            [make_label("", f"statusStatsCell_{row}_{column}") for column in range(len(columns))]
+            for row in range(rows)
+        ]
+        for row, cells in enumerate(self._cells, start=1):
+            for column, cell in enumerate(cells):
+                self._grid.addWidget(cell, row, column)
 
     def set_coins(self, coins: tuple[str, ...]) -> None:
         """코인 고르기의 목록을 바꾼다. 고르던 코인이 아직 있으면 그대로 고른다."""
@@ -285,9 +419,21 @@ class StatsPanel(QWidget):
     def render(self, view: CoinView | None) -> None:
         look = look_of(view)
         show_message(self._note, Message(look.note) if look.note else None)
+        if view is not None and self._legacy_table != (view.stats is None):
+            self._build_table(legacy=view.stats is None)
+            self._title.setText(LEGACY_STATS_TITLE if self._legacy_table else STATS_TITLE)
+        stats = view.stats if view is not None else None
         self._table.setVisible(look.values)
         self._table.setEnabled(not look.dim)
-        if view is not None and look.values:
+        self._summary.setVisible(look.values and stats is not None)
+        if stats is not None and look.values:
+            self._summary.setText(
+                stats_summary_text(CANDLE_UNIT_TITLES[stats.unit], stats.requested_count)
+            )
+            for cells, (name, value) in zip(self._cells, table_rows(stats), strict=True):
+                cells[0].setText(name)
+                cells[1].setText(value)
+        elif view is not None and stats is None and look.values:
             periods = view.periods
             for row, cells in enumerate(self._cells):
                 if row < len(periods):
@@ -295,6 +441,7 @@ class StatsPanel(QWidget):
                         cell.setText(text)
                 for cell in cells:
                     cell.setVisible(row < len(periods))
+        self._disclaimer.setVisible(look.disclaimer)
         fetched = _fetched_line(view) if look.fetched else None
         show_message(self._fetched, Message(fetched) if fetched else None)
         self._incomplete.setVisible(look.incomplete)

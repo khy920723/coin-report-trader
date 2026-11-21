@@ -6,6 +6,8 @@
 
 from typing import Final
 
+from coin_report_trader.core import CANDLE_COUNTS, INSUFFICIENT_TEXT, CandleUnit
+
 # --- 빈 화면(M0 명세 2절) ---
 EMPTY_BODY: Final = "이 화면은 아직 비어 있습니다."
 ADVICE_NOTICE: Final = "이 프로그램은 투자 자문이 아닙니다. AI 판단은 틀릴 수 있습니다."
@@ -27,6 +29,11 @@ COINS_LABEL_REQUIRED: Final = "코인*"
 COINS_LABEL: Final = "코인"
 RETENTION_LABEL_REQUIRED: Final = "알림 보관 기간*"
 RETENTION_LABEL: Final = "알림 보관 기간"
+UNIT_LABEL: Final = "봉 단위*"
+COUNT_LABEL: Final = "봉 개수*"
+CANDLE_CHOICE_NOTE: Final = "봉 통계를 셈할 봉의 단위와 개수입니다."
+"""두 칸 아래 글(M1 명세 3.14.1)."""
+COUNT_OPTION_SUFFIX: Final = "개"
 RETENTION_OPTIONS: Final = ((7, "7일"), (30, "30일"), (90, "90일"))
 CAUTION_LABEL: Final = "유의·주의"
 LOADING_TEXT: Final = "불러오는 중"
@@ -36,6 +43,59 @@ SAVE_TEXT: Final = "저장"
 MOVE_UP_TEXT: Final = "위로"
 MOVE_DOWN_TEXT: Final = "아래로"
 REMOVE_TEXT: Final = "빼기"
+
+# --- 코인 고르기의 찾기 칸(M1 명세 3.14.3) ---
+SEARCH_LABEL: Final = "찾기"
+SEARCH_PLACEHOLDER: Final = "코인 기호나 한글 이름"
+NO_COIN_FOUND: Final = "찾는 코인이 없습니다."
+
+# --- 예전 기록일 때의 처음 설정(M1 명세 3.14.4) ---
+LEGACY_NOTICE: Final = (
+    '봉 단위와 봉 개수가 새로 생겼습니다. 고른 뒤 "저장하고 시작"을 누르세요. '
+    "그 전에는 봉을 받지 않습니다."
+)
+
+# --- 봉 개수의 툴팁(M1 명세 3.14.2) ---
+_HIT_RATE_ANY: Final = "50~56%"
+_HIT_RATES: Final = {
+    None: _HIT_RATE_ANY,
+    CandleUnit.MINUTE_30: _HIT_RATE_ANY,
+    CandleUnit.MINUTE_60: "50~55%",
+    CandleUnit.MINUTE_240: _HIT_RATE_ANY,
+    CandleUnit.DAY: "48~53%",
+}
+_COUNT_MEANINGS: Final = {
+    100: "근거가 받쳐 주는 가장 적은 개수입니다.",
+    200: "거래소에서 한 번에 받는 가장 많은 개수입니다.",
+    500: "더 긴 기간을 보지만 요청이 3번 들고 오래된 구간이 섞입니다.",
+}
+_UNIT_NOT_CHOSEN: Final = "봉 단위를 고르면 보입니다."
+_PERIODS: Final = {
+    CandleUnit.MINUTE_30: {100: "약 2.1일", 200: "약 4.2일", 500: "약 10.4일"},
+    CandleUnit.MINUTE_60: {100: "약 4.2일", 200: "약 8.3일", 500: "약 20.8일"},
+    CandleUnit.MINUTE_240: {100: "약 16.7일", 200: "약 33일", 500: "약 83일"},
+    CandleUnit.DAY: {100: "100일", 200: "약 6.6개월", 500: "약 1.4년"},
+}
+
+
+def candle_count_tooltip(unit: CandleUnit | None, count: int) -> str:
+    """봉 개수의 툴팁: 예상 적중률(참고값), 뜻, 덮는 기간의 세 줄(M1 명세 3.14.2).
+
+    `unit`이 `None`이면 봉 단위를 고르기 전의 글이다. `count`가 `CANDLE_COUNTS`에 없으면
+    `ValueError`다.
+    """
+    if count not in CANDLE_COUNTS:
+        raise ValueError(f"고를 수 없는 봉 개수: {count}")
+    period = _UNIT_NOT_CHOSEN if unit is None else _PERIODS[unit][count]
+    return "\n".join(
+        (
+            f"예상 적중률(참고값): {_HIT_RATES[unit]}. 공개 연구에서 오르내림을 맞힌 비율이고, "
+            "이 앱이 잰 값이 아닙니다. 수익을 뜻하지 않습니다.",
+            f"뜻: {_COUNT_MEANINGS[count]}",
+            f"덮는 기간: {period}",
+        )
+    )
+
 
 # --- 알림 보관 기간 옆의 글(설계서 8.5) ---
 RETENTION_NOTICE_KEEP: Final = "생긴 때부터 고른 기간이 지난 알림은 영구히 지워집니다."
@@ -67,10 +127,12 @@ def retention_shrink_body(saved_days: int, new_days: int) -> str:
 STATUS_BEFORE_FIRST_SETUP: Final = "처음 설정을 마치면 여기에 코인별 현황이 보입니다."
 NO_CANDLES_YET: Final = "아직 받은 봉이 없습니다."
 LAST_CANDLE_INCOMPLETE: Final = "마지막 봉은 미완성입니다"
-INDICATOR_DISCLAIMER: Final = (
-    "지표는 계산 결과와 AI의 글을 보여 줄 뿐, 어느 쪽이 이득인지 보장하지 않습니다."
-)
-STATS_TITLE: Final = "기간별 봉 통계"
+INDICATOR_DISCLAIMER: Final = "봉 통계는 계산 결과일 뿐이고, 이득을 보장하지 않습니다."
+"""보장 아님 글(M1 명세 3.14.5). 코인 칸의 요소 아래와 봉 통계 자리의 표 아래에 보인다."""
+STATS_TITLE: Final = "봉 통계"
+LEGACY_STATS_TITLE: Final = "기간별 봉 통계"
+"""`CoinView.stats`가 `None`일 때(39번 전)의 옛 표 이름. 49번이 지운다."""
+STATS_TABLE_COLUMNS: Final = ("항목", "값")
 STATS_COLUMNS: Final = (
     "기간",
     "봉 수",
@@ -83,6 +145,26 @@ STATS_COLUMNS: Final = (
     "상승 봉 비율",
 )
 """표의 머리 칸(설계서 4.2의 8, M1 명세 3.5의 화면 항목)."""
+
+
+def stats_header_text(unit_title: str, count: int) -> str:
+    """코인 칸의 첫 줄(M1 명세 3.14.5)."""
+    return f"{unit_title} {count}개"
+
+
+def stats_short_header_text(unit_title: str, bar_count: int, count: int) -> str:
+    """완성된 봉이 고른 개수보다 적을 때의 코인 칸 첫 줄."""
+    return f"{unit_title} {INSUFFICIENT_TEXT}(완성된 봉 {bar_count}개 / 고른 개수 {count}개)"
+
+
+def stats_summary_text(unit_title: str, count: int) -> str:
+    """봉 통계 자리의 표 위 글."""
+    return f"{unit_title} · 고른 개수 {count}개"
+
+
+def bar_count_text(bar_count: int, count: int, *, short: bool) -> str:
+    """표의 "쓴 봉 수" 값."""
+    return f"{bar_count}개(고른 개수 {count}개)" if short else f"{bar_count}개"
 
 
 def candles_failed_text(error_name: str | None) -> str:

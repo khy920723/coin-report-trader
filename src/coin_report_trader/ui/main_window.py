@@ -21,6 +21,7 @@ from coin_report_trader.core import (
     WINDOW_TITLE,
     AlertCategory,
     AlertsView,
+    CandleUnit,
     CoinView,
     LoadState,
     MarketsView,
@@ -205,10 +206,29 @@ class MainWindow(QMainWindow):
         old = self._saved
         self._saved = view
         self._phase = Phase.READY
-        key = (view.coins, view.retention_days, view.first_setup_done)
-        if old is None or key != (old.coins, old.retention_days, old.first_setup_done):
+        key = (
+            view.coins,
+            view.retention_days,
+            view.first_setup_done,
+            view.candle_unit,
+            view.candle_count,
+        )
+        old_key = (
+            None
+            if old is None
+            else (
+                old.coins,
+                old.retention_days,
+                old.first_setup_done,
+                old.candle_unit,
+                old.candle_count,
+            )
+        )
+        if key != old_key:
             self._first_setup.load_saved(view.coins, view.retention_days)
-            self._settings.load_saved(view.coins, view.retention_days)
+            self._settings.load_saved(
+                view.coins, view.retention_days, view.candle_unit, view.candle_count
+            )
         # 고른 코인에 없는 코인의 마지막 `CoinView`는 버린다(다시 고르면 새 값이 올 때까지
         # "불러오는 중").
         self._coin_views = {m: v for m, v in self._coin_views.items() if m in view.coins}
@@ -274,10 +294,14 @@ class MainWindow(QMainWindow):
 
     # --- 사용자의 동작 ---
 
-    def _on_start(self, coins: tuple[str, ...], days: int) -> None:
-        self._submit(ScreenId.FIRST_SETUP, coins, days)
+    def _on_start(
+        self, coins: tuple[str, ...], days: int, unit: CandleUnit | None, count: int | None
+    ) -> None:
+        self._submit(ScreenId.FIRST_SETUP, coins, days, unit, count)
 
-    def _on_save(self, coins: tuple[str, ...], days: int) -> None:
+    def _on_save(
+        self, coins: tuple[str, ...], days: int, unit: CandleUnit | None, count: int | None
+    ) -> None:
         saved_days = self._saved.retention_days if self._saved is not None else None
         # 저장된 값이 없을 때(처음 고를 때)와 같거나 길게 바꿀 때는 확인 창이 없다.
         shrinking = saved_days is not None and days < saved_days
@@ -285,9 +309,16 @@ class MainWindow(QMainWindow):
             RETENTION_SHRINK_TITLE, retention_shrink_body(saved_days, days)
         ):
             return
-        self._submit(ScreenId.SETTINGS, coins, days)
+        self._submit(ScreenId.SETTINGS, coins, days, unit, count)
 
-    def _submit(self, origin: ScreenId, coins: tuple[str, ...], days: int) -> None:
+    def _submit(
+        self,
+        origin: ScreenId,
+        coins: tuple[str, ...],
+        days: int,
+        unit: CandleUnit | None,
+        count: int | None,
+    ) -> None:
         first_setup = origin is ScreenId.FIRST_SETUP
         if (
             self._actions is None
@@ -300,7 +331,9 @@ class MainWindow(QMainWindow):
             self._saved_timer.stop()
             self._saved_message = None
         self._pending_saves.append(origin)
-        self._actions.save_settings(coins, days, first_setup=first_setup)
+        self._actions.save_settings(
+            coins, days, first_setup=first_setup, candle_unit=unit, candle_count=count
+        )
         self._update()
 
     def _on_nav_clicked(self, item) -> None:
@@ -377,6 +410,16 @@ class MainWindow(QMainWindow):
     def _first_setup_done(self) -> bool:
         return self._saved is not None and self._saved.first_setup_done
 
+    def _legacy_record(self) -> bool:
+        """예전 기록: 첫 `SettingsView`가 `READY`이고 처음 설정을 마치지 않았는데 코인이 있다
+        (M1 명세 3.14.4)."""
+        return (
+            self._phase is Phase.READY
+            and self._saved is not None
+            and not self._saved.first_setup_done
+            and bool(self._saved.coins)
+        )
+
     def _showing_picker(self) -> ScreenId | None:
         """코인 고르기가 지금 보이는 화면. 없으면 `None`."""
         if self._phase is not Phase.READY:
@@ -446,7 +489,11 @@ class MainWindow(QMainWindow):
         done = self._first_setup_done()
         mode = self._picker_mode()
         self._first_setup.render(
-            phase=self._phase, done=done, picker=mode, message=self._first_setup_message()
+            phase=self._phase,
+            done=done,
+            picker=mode,
+            message=self._first_setup_message(),
+            legacy=self._legacy_record(),
         )
         self._settings.render(
             phase=self._phase, done=done, picker=mode, message=self._settings_message()
@@ -505,17 +552,21 @@ def create_main_window(context: UiContext) -> MainWindow:
     처음 설정 자리(`screen_first_setup`)의 `objectName`:
 
     - 글 라벨: `firstSetupMessage`(2 자리. 불러오는 중, 설정을 읽지 못함, 저장 거절·실패),
+      `firstSetupLegacyNotice`(예전 기록일 때만 보임. 그 아래 2 자리),
       `screenNotice`(10의 가), `noticeDiscordOffline`(마), `noticeDiscordNoAddress`(바),
       `firstSetupDone`(처음 설정을 마친 뒤의 글).
     - 묶음: `firstSetupForm`(칸 전체), `firstSetupNotices`, `firstSetupDonePanel`.
     - 단추: `firstSetupStart`("저장하고 시작"), `firstSetupToSettings`("설정 화면으로").
-    - 코인 고르기(`firstSetupCoins`), 보관 기간(`firstSetupRetention`)의 안쪽 이름은
-      `coin_picker.py`, `retention.py`의 문서 문자열에 있다. 앞이 `firstSetup`이다.
+    - 코인 고르기(`firstSetupCoins`, 찾기 칸 `firstSetupCoinSearch`), 봉 단위와 봉 개수(라디오
+      버튼 `firstSetupUnit_<봉 단위 값>`, `firstSetupCount_<수>`),
+      보관 기간(`firstSetupRetention`)의 안쪽 이름은 `coin_picker.py`, `candle_choice.py`,
+      `retention.py`의 문서 문자열에 있다. 앞이 `firstSetup`이다.
 
     설정 자리(`screen_settings`)의 `objectName`:
 
     - 글 라벨: `settingsMessage`(1 자리), 단추: `settingsSave`("저장"), 묶음: `settingsForm`.
-    - 코인 고르기와 보관 기간의 안쪽 이름은 앞이 `settings`다.
+    - 코인 고르기(찾기 칸 `settingsCoinSearch`), 봉 단위(`settingsUnit_<봉 단위 값>`)와 봉 개수
+      (`settingsCount_<수>`), 보관 기간의 안쪽 이름은 앞이 `settings`다.
 
     현황 자리(`screen_status`)의 `objectName`(`<m>`은 마켓 코드, 자세한 것은 `status_screen.py`):
 
@@ -527,10 +578,16 @@ def create_main_window(context: UiContext) -> MainWindow:
       "다시 시도" `statusCoinRetry_<m>`(받지 못함과 일시 차단 중에만 보임), 지표 묶음
       `statusCoinIndicator_<m>`과 줄 `statusCoinIndicatorRow_<m>_<0~6>`(글은 "이름 값"),
       `statusCoinIncomplete_<m>`(미완성 봉 글), `statusCoinDisclaimer_<m>`(보장 아님 글).
-    - 기간별 봉 통계: 묶음 `statusStats`, 코인 고르기 `statusStatsCoin`(`QComboBox`), 표 자리의
-      글 `statusStatsNote`, 표 묶음 `statusStatsTable`(머리 `statusStatsHeader_<0~8>`, 칸
-      `statusStatsCell_<줄 0~4>_<칸 0~8>`), `statusStatsFetched`("마지막으로 받은 때" 줄),
+    - 봉 통계(`CoinView.stats`가 있을 때. M1 명세 3.14.5): 묶음 `statusStats`, 코인 고르기
+      `statusStatsCoin`(`QComboBox`), 표 자리의 글 `statusStatsNote`, 표 위 글 `statusStatsSummary`,
+      표 묶음 `statusStatsTable`(머리 `statusStatsHeader_<0~1>`,
+      칸 `statusStatsCell_<줄 0~12>_<칸 0~1>`. 칸 0은 항목, 칸 1은 값),
+      보장 아님 글 `statusStatsDisclaimer`, `statusStatsFetched`("마지막으로 받은 때" 줄),
       `statusStatsIncomplete`, 표 아래의 하나뿐인 "다시 시도" `statusStatsRetry`.
+      코인 칸 안은 `statusCoinStats_<m>`(묶음. 흐리게 남기면 `isEnabled()`가 거짓),
+      `statusCoinStatsHeader_<m>`(첫 줄), `statusCoinStatsRow_<m>_<0~4>`("이름 값").
+    - 기간별 봉 통계(`stats`가 `None`일 때의 옛 모습. 39번 전. 49번이 지운다): 같은 `statusStats...`
+      이름에 머리 `statusStatsHeader_<0~8>`, 칸 `statusStatsCell_<줄 0~4>_<칸 0~8>`이다.
     - 흐리게 남긴 값(받기 실패, 일시 차단 중의 받아 둔 값)은 그 묶음(`statusStatsTable`,
       `statusCoinIndicator_<m>`)의 `isEnabled()`가 거짓이다.
       표의 줄과 지표 항목을 그리지 않는 모습은

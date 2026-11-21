@@ -32,7 +32,7 @@ INSUFFICIENT = "봉이 모자람"
 BEFORE_SETUP = "처음 설정을 마치면 여기에 코인별 현황이 보입니다."
 UNREADABLE = "설정을 읽지 못했습니다. 60분마다 다시 읽습니다."
 INCOMPLETE = "마지막 봉은 미완성입니다"
-DISCLAIMER = "지표는 계산 결과와 AI의 글을 보여 줄 뿐, 어느 쪽이 이득인지 보장하지 않습니다."
+DISCLAIMER = "봉 통계는 계산 결과일 뿐이고, 이득을 보장하지 않습니다."
 FETCHED_AT = datetime(2026, 1, 2, 1, 30, tzinfo=UTC)  # 한국 시간 2026-01-02 10:30
 FETCHED_LINE = "마지막으로 받은 때 2026-01-02 10:30"
 INDICATOR_NAMES = [
@@ -56,7 +56,9 @@ class FakeActions:
     def refresh_markets(self) -> None:
         self.calls.append(("refresh_markets",))
 
-    def save_settings(self, coins, retention_days, *, first_setup) -> None:
+    def save_settings(
+        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+    ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
 
     def retry_candles(self) -> None:
