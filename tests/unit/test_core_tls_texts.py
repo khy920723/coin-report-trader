@@ -102,6 +102,9 @@ def test_stage_names_follow_the_spec() -> None:
         "주소 저장",
         "주소 지우기",
         "켜기",
+        "현재가 읽기",
+        "AI 보고서",
+        "보고서 저장",
     )
     assert len(set(texts.STAGES)) == len(texts.STAGES)
 
