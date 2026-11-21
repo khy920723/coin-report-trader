@@ -33,10 +33,13 @@ from coin_report_trader.core import (
     AlertView,
     Belief,
     CandleJudgment,
+    ChecklistItem,
     ClaudeCheck,
     ClaudeState,
+    ComparedItem,
     Direction,
     Effort,
+    EvidenceItem,
     FailureKind,
     LastResult,
     LoadState,
@@ -53,6 +56,7 @@ from coin_report_trader.core import (
     SessionResult,
     SettingsView,
     SkipReason,
+    SourceItem,
     TokenUsage,
     UiActions,
     UiUpdate,
@@ -165,6 +169,10 @@ def test_the_new_views_have_the_fields_of_the_spec_in_order() -> None:
         "report_id", "round_number", "close_utc", "state", "direction", "failure",
     ]  # fmt: skip
     assert names(ReportListView) == ["market", "items", "state"]
+    assert names(EvidenceItem) == ["part", "seq", "text"]
+    assert names(ComparedItem) == ["part", "seq", "text", "verdict"]
+    assert names(ChecklistItem) == ["seq", "text", "belief", "compared", "hits"]
+    assert names(SourceItem) == ["seq", "title", "url"]
     assert names(LastResult) == ["round_number", "predicted_price", "actual_price", "diff", "hit"]
     assert names(ReportView) == [
         "report_id", "market", "round_number", "close_utc", "state", "failure", "base_price",
