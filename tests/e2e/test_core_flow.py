@@ -8,10 +8,12 @@
 
 차례:
 1. 처음 설정 화면에서 코인 목록이 오면 코인 하나와 보관 기간 30일을 고르고 "저장하고 시작"을 누른다.
+   봉 단위 칸(`firstSetupUnit_minute60`, M1 명세 3.14.1. 37번부터 있다)이 있으면 60분봉도 고른다.
 2. 봉을 받아 현황 화면의 기간별 통계 표에 기간마다(`core.PERIODS`의 차례) 이름, 2개 이상의 봉
    수, "%"로 끝나는 변화율이 보인다. 설정 화면에는 고른 보관 기간(30일)과 코인이 남아 있다.
-3. 60분 뒤의 받기에서 일봉 요청이 "네트워크 끊김"을 내 A-1이 생기고, 알림센터의 오류 알림 탭에
-   그 줄이 보인다.
+3. 다음 받기에서 60분봉 요청이 "네트워크 끊김"을 내 A-1이 생기고, 알림센터의 오류 알림 탭에
+   그 줄이 보인다. 다음 받기는 39번 전에는 60분 뒤의 받기이고, 39번 뒤에는 다음 60분봉이 끝나는
+   때 + 10초의 받기다(3.5.3). 시계는 그 둘을 모두 넘게 옮긴다(`NEXT_FETCH_SECONDS`).
 4. 오류 알림 탭에는 디스코드 주소가 있으므로, 가짜 디스코드가 그 주소로 그 글을 받는다.
 """
 
@@ -28,6 +30,7 @@ from fakes.quote import FakeQuoteSource, make_candles
 from fakes.vault import FakeVault
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QCheckBox,
     QLabel,
@@ -56,6 +59,15 @@ from coin_report_trader.vault import webhook_secret_name
 AAA = "KRW-AAA"
 LIMIT_SECONDS = 25.0
 """이 시험 하나가 넘지 않을 실제 시간(안전 타이머). 넘으면 실패로 끝낸다."""
+NEXT_FETCH_SECONDS = 3660
+"""다음 받기가 오게 시계를 옮기는 길이(61분). 가짜 시계는 03:00 UTC(`DEFAULT_START`)에서 시작한다.
+
+- 39번 전: 받기가 끝난 때부터 60분(3600초) 뒤에 다시 받는다.
+- 39번 뒤: 다음 60분봉이 끝나는 때(04:00 UTC) + 10초에 받는다(M1 명세 3.5.3). 처음 받기가 03:00
+  근처에 끝나므로 3610초 남짓이다.
+
+61분은 둘을 모두 넘고, 그 다음 받기(39번 전 120분, 39번 뒤 05:00:10)에는 닿지 않는다.
+"""
 
 
 def _webhook_url() -> str:
@@ -170,9 +182,14 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
             return False
         box.click()
         _find(first, QRadioButton, "firstSetupRetention30").click()
+        unit = _find(first, QAbstractButton, f"firstSetupUnit_{CandleUnit.MINUTE_60.value}")
+        if unit is not None:  # 37번부터 봉 단위 칸이 있다(3.14.1). 봉 개수는 "200개"가 골라져 있다
+            unit.click()
         start = _find(first, QPushButton, "firstSetupStart")
         if not start.isEnabled():
-            raise AssertionError("코인과 보관 기간을 골랐는데 저장 단추를 누를 수 없다")
+            raise AssertionError(
+                "코인, 보관 기간(있으면 봉 단위)을 골랐는데 저장 단추를 누를 수 없다"
+            )
         start.click()
         return True
 
@@ -207,14 +224,17 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         seen["settings"] = (radio.isChecked(), box is not None and box.isChecked(), picked)
         return True
 
-    def an_hour_passes_once_the_data_thread_rests() -> bool:
+    def the_next_fetch_time_comes_once_the_data_thread_rests() -> bool:
         # 받기가 다 끝나 자료 스레드가 다음 받는 때를 기다릴 때 시각을 옮긴다. 그 전에 옮기면 다음
         # 받는 때가 옮긴 시각에서 다시 60분 뒤로 잡혀 받기가 오지 않는다(시험의 경합).
         if not workers[0].wait_idle(0.002):
             return False
-        # 다음 (라)의 받기(60분 뒤)에서 일봉 요청이 실패하게 하고 시각을 옮긴다.
-        quote.script(QuoteError(ERROR_NETWORK), kind="candles", market=AAA, unit=CandleUnit.DAY)
-        clock.advance(3600)
+        # 다음 (라)의 받기에서 60분봉 요청이 실패하게 하고 시각을 옮긴다. 39번 뒤에는 고른 봉 단위
+        # (60분봉)만 받으므로 일봉이 아니라 60분봉의 요청을 실패하게 한다(3.5.3).
+        quote.script(
+            QuoteError(ERROR_NETWORK), kind="candles", market=AAA, unit=CandleUnit.MINUTE_60
+        )
+        clock.advance(NEXT_FETCH_SECONDS)
         return True
 
     def the_alert_is_in_the_error_tab_and_on_discord() -> bool:
@@ -244,7 +264,7 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
             ("처음 설정", first_setup_is_ready),
             ("통계", stats_are_shown),
             ("설정", the_settings_keep_what_was_chosen),
-            ("60분 뒤", an_hour_passes_once_the_data_thread_rests),
+            ("다음 받기", the_next_fetch_time_comes_once_the_data_thread_rests),
             ("알림과 디스코드", the_alert_is_in_the_error_tab_and_on_discord),
         ],
     )
@@ -261,9 +281,9 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
     elapsed = time.monotonic() - began
     if driver.error is not None:
         raise driver.error
-    assert driver.done == ["처음 설정", "통계", "설정", "60분 뒤", "알림과 디스코드"], driver.steps[
-        :1
-    ]
+    assert driver.done == ["처음 설정", "통계", "설정", "다음 받기", "알림과 디스코드"], (
+        driver.steps[:1]
+    )
     assert code == 0
     assert elapsed < 30.0
 
