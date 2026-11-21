@@ -141,6 +141,30 @@ def test_completion_follows_the_clock() -> None:
 
 
 @pytest.mark.parametrize("unit", list(CandleUnit))
+def test_a_candle_ending_exactly_now_is_completed(unit: CandleUnit) -> None:
+    # 3.5의 완성: 시작 시각 + 단위의 길이가 지금보다 뒤일 때만 미완성이다. 꼭 지금이면 완성이다.
+    candles = with_current(unit, 400)
+    client, source, clock = setup(*candles)
+    end = CURRENT_START[unit] + CANDLE_UNIT_LENGTHS[unit]
+    clock.advance((end - NOW).total_seconds())
+    assert clock.now() == end
+    result = recent(client, unit, count=200)
+    assert len(source.requests) == 1  # 받은 200개가 모두 완성된 봉이다
+    assert result.candles == candles[200:]
+    assert result.reached_oldest is False
+
+
+def test_a_candle_ending_just_after_now_is_not_completed() -> None:
+    # 끝나는 때보다 조금 앞이면 아직 미완성이라 N 200에 한 번 더 묻는다.
+    candles = with_current(HOUR, 400)
+    client, source, clock = setup(*candles)
+    end = CURRENT_START[HOUR] + CANDLE_UNIT_LENGTHS[HOUR]
+    clock.advance((end - NOW).total_seconds() - 0.001)
+    recent(client, count=200)
+    assert len(source.requests) == 2
+
+
+@pytest.mark.parametrize("unit", list(CandleUnit))
 def test_first_fetch_for_each_of_the_four_units(unit: CandleUnit) -> None:
     candles = with_current(unit, 250)
     others = [with_current(u, 250) for u in CandleUnit if u is not unit]
