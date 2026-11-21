@@ -159,13 +159,21 @@ def _xlsx(cell: str = "화면 번호", **props: str) -> dict[str, str]:
     }
 
 
+ZIP_TIME = (2020, 1, 1, 0, 0, 0)
+"""ZIP 머리에 적는 만든 시각. 바이트로 `00 00 21 50`이라 시험이 찾는 글자 `QQ`가 되지 않는다."""
+
+
 def _write_office(
     path: Path, parts: dict[str, str | bytes], compression: int = zipfile.ZIP_DEFLATED
 ) -> None:
+    """부분마다 머리의 만든 시각을 `ZIP_TIME`으로 고정해 쓴다. 그래서 같은 부분이면 실행 시각과
+    상관없이 파일의 바이트가 늘 같다."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(path, "w", compression) as archive:
+    with zipfile.ZipFile(path, "w") as archive:
         for name, text in parts.items():
-            archive.writestr(name, text if isinstance(text, bytes) else text.encode("utf-8"))
+            info = zipfile.ZipInfo(name, date_time=ZIP_TIME)
+            info.compress_type = compression
+            archive.writestr(info, text if isinstance(text, bytes) else text.encode("utf-8"))
 
 
 def _slide(*paragraphs: list[str]) -> str:
@@ -403,6 +411,10 @@ def test_a_stored_part_with_a_changed_byte_fails(make_copy: Callable[[str], Path
     _write_office(target, _pptx(slide="바꿀 글자QQ"), compression=zipfile.ZIP_STORED)
     data = bytearray(target.read_bytes())
     spot = data.index("QQ".encode("ascii"))
+    with zipfile.ZipFile(target) as archive:
+        slide = archive.getinfo("ppt/slides/slide1.xml")
+    start = slide.header_offset + 30 + len(slide.filename.encode("ascii"))
+    assert start <= spot < start + slide.file_size  # 바꾸는 바이트가 슬라이드 데이터 안이다
     data[spot] = ord("R")
     target.write_bytes(bytes(data))
     _expect(copy, "screens.pptx:ppt/slides/slide1.xml: 읽을 수 없는 부분")
