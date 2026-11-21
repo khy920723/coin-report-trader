@@ -1,4 +1,4 @@
-"""프로젝트 검사(M0 명세 3.7절, M1 명세 4절 7번). 표준 라이브러리만 쓴다.
+"""프로젝트 검사(M0 명세 3.7절, M1 명세 4절 7번, M2 명세 4절 3번). 표준 라이브러리만 쓴다.
 
 사용: `uv run --no-project python scripts/checks/run_all.py` (저장소 어디서 불러도 된다).
 
@@ -15,7 +15,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
-# M0 명세 3.7절의 순서에 M1 명세 4절 7번의 웹후크 주소 검사를 더했다.
+# M0 명세 3.7절의 순서에 M1 명세 4절 7번의 웹후크 주소 검사, M2 명세 3.13의 Claude 자격 정보
+# 검사를 더했다.
 ITEM_MODULES = (
     "required_files",
     "legacy_excluded",
@@ -23,6 +24,7 @@ ITEM_MODULES = (
     "personal_info",
     "trademark",
     "webhook_urls",
+    "claude_credentials",
 )
 
 

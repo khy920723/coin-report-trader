@@ -17,7 +17,15 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 RUN_ALL = Path("scripts") / "checks" / "run_all.py"
-ITEMS = ["필수 파일", "legacy 제외", "import 방향", "개인정보", "상표", "웹후크 주소"]
+ITEMS = [
+    "필수 파일",
+    "legacy 제외",
+    "import 방향",
+    "개인정보",
+    "상표",
+    "웹후크 주소",
+    "Claude 자격 정보",
+]
 _GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
 
 
@@ -99,7 +107,7 @@ def test_a11_untouched_copy_passes(make_copy: Callable[[str], Path]) -> None:
     code, output = _run_all(make_copy("clean"))
     assert code == 0, output
     assert _status(output) == dict.fromkeys(ITEMS, "통과")
-    assert output.splitlines()[-1] == "결과: 통과 (6/6)"
+    assert output.splitlines()[-1] == "결과: 통과 (7/7)"
 
 
 @pytest.mark.scenario("A11")
