@@ -1,29 +1,21 @@
 """감싸는 부품 `QuoteClient`(M1 명세 3.4, 3.5): 나눠 받기와 요청 한도를 맡는다. `app`은 이것만 쓴다.
 
 - `list_markets()`: 요청 한 번이다.
-- `fetch_candles(market, unit, *, last_start)`:
-  - `last_start`가 `None`이면 처음 받기다.
-    - 일봉: 가장 최근부터 200개씩 거슬러 가장 오래된 봉까지 받는다. 받은 봉이 요청한 개수보다
-      적으면 더 오래된 봉이 없는 것으로 보고 멈춘다(빈 응답을 확인하려고 요청을 더 내지 않는다).
-    - 60분봉: 가장 최근 200개를 한 번만 받는다.
-  - 아니면 그 뒤의 받기다. `last_start`부터 지금(`clock.now()`)까지를 가장 최근부터 거슬러 받는다.
-    요청 하나의 개수는 그 구간에 들 수 있는 봉의 수(200 이하)다. 받은 봉이 `last_start`에 닿거나
-    요청한 개수보다 적으면 멈춘다. `last_start`보다 앞에 시작한 봉은 버린다.
-  - 돌려주는 봉은 시작 시각 순이고 시작 시각이 겹치지 않는다(그 뒤의 받기는 `last_start`의 봉 포함).
-  - 1단계 보완 전의 받기다. 39번이 `fetch_recent`로 옮긴 뒤 43번이 지운다(3.4).
 - `fetch_recent(market, unit, *, count, last_start, first_start, missing)`: 1단계 보완의
   받기(3.5.3). `RecentCandles(candles, reached_oldest)`를 돌려준다.
   - `last_start`가 `None`이면 처음 받기다. 가장 최근부터 200개씩 거슬러, 받은 완성된 봉이
     `count`(N)개 모이거나 거래소가 요청한 수보다 적게 줄 때까지 받는다. 적게 주면 `reached_oldest`가
     참이다. 완성은 봉의 시작 시각에 단위의 길이(`CANDLE_UNIT_LENGTHS`)를 더한 때가 지금
     (`clock.now()`)보다 뒤가 아닌 것이다. 받은 미완성 봉도 돌려준다(셈에서 빼는 것은 `stats`다).
-  - 아니면 그 뒤의 받기(`fetch_candles`의 그 뒤의 받기와 같다)를 하고, `missing`이 0보다 크면
-    이어서 거슬러 받기를 한다. 거슬러 받기는 `first_start`(저장된 가장 이른 봉의 시작 시각) 앞을
-    200개씩, 모두 `missing`개만큼 받는다. 거래소가 요청한 수보다 적게 주면 거기서 멈추고
-    `reached_oldest`가 참이다. `missing`이 0이면 거슬러 받기 요청을 내지 않고 `reached_oldest`는
-    거짓이다.
+  - 아니면 그 뒤의 받기를 한다. `last_start`부터 지금(`clock.now()`)까지를 가장 최근부터 거슬러
+    받는다. 요청 하나의 개수는 그 구간에 들 수 있는 봉의 수(200 이하)다. 받은 봉이 `last_start`에
+    닿거나 요청한 개수보다 적으면 멈추고, `last_start`보다 앞에 시작한 봉은 버린다(`last_start`의
+    봉은 넣는다). 이어서 `missing`이 0보다 크면 거슬러 받기를 한다.
+  - 거슬러 받기는 `first_start`(저장된 가장 이른 봉의 시작 시각) 앞을 200개씩, 모두 `missing`개만큼
+    받는다. 거래소가 요청한 수보다 적게 주면 거기서 멈추고 `reached_oldest`가 참이다. `missing`이
+    0이면 거슬러 받기 요청을 내지 않고 `reached_oldest`는 거짓이다.
   - 돌려주는 봉은 시작 시각 순이고 시작 시각이 겹치지 않는다.
-- 두 받기 모두, 중간에 실패하면 그때까지 받은 봉을 돌려주지 않고 `QuoteError`를 그대로 낸다
+- 중간에 실패하면 그때까지 받은 봉을 돌려주지 않고 `QuoteError`를 그대로 낸다
   (3.5의 "끝까지 성공했을 때만 저장한다").
 - 요청 한도(3.10)는 `RequestLimiter`가 `clock`으로 지킨다. 코인 목록과 봉 요청을 함께 센다.
 - "요청 한도 초과"를 받아도 그 자리에서 기다려 다시 보내지 않는다(3.9). 일시 차단의
@@ -94,17 +86,6 @@ class QuoteClient:
         self._limiter.acquire()
         return tuple(self._source.list_markets())
 
-    def fetch_candles(
-        self, market: str, unit: CandleUnit, *, last_start: datetime | None
-    ) -> tuple[Candle, ...]:
-        """한 코인·단위의 받기(모듈 설명). 봉은 시작 시각 순이다."""
-        unit = CandleUnit(unit)
-        if last_start is None:
-            if unit is CandleUnit.DAY:
-                return self._fetch_all(market, unit)
-            return _ascending(self._request(market, unit, to=None, count=MAX_CANDLES))
-        return self._fetch_since(market, unit, _aware(last_start, "last_start"))
-
     def fetch_recent(
         self,
         market: str,
@@ -170,16 +151,6 @@ class QuoteClient:
             remaining -= asked
             to = min(candle.start for candle in batch)
         return collected, False
-
-    def _fetch_all(self, market: str, unit: CandleUnit) -> tuple[Candle, ...]:
-        collected: list[Candle] = []
-        to: datetime | None = None
-        while True:
-            batch = self._request(market, unit, to=to, count=MAX_CANDLES)
-            collected.extend(batch)
-            if len(batch) < MAX_CANDLES:
-                return _ascending(collected)
-            to = min(candle.start for candle in batch)
 
     def _fetch_since(
         self, market: str, unit: CandleUnit, last_start: datetime
