@@ -1,6 +1,6 @@
 """현황 화면(설계서 4, M1 명세 3.4의 `CoinView`와 "받아 둔 값")의 시험.
 
-`CoinView`, `PeriodStats`, `CandleIndicator`는 시험이 만든 값으로 직접 만든다. 창을 띄우지 않으므로
+`CoinView`와 `BarStats`는 시험이 만든 값으로 직접 만든다. 창을 띄우지 않으므로
 보이는지는 `isHidden()`으로, 흐리게 남긴 값은 `isEnabled()`로 본다.
 """
 
@@ -11,18 +11,17 @@ import pytest
 from PySide6.QtWidgets import QApplication, QComboBox, QLabel, QPushButton, QWidget
 
 from coin_report_trader.core import (
-    CandleIndicator,
+    BarStats,
+    CandleUnit,
     CoinView,
     LoadState,
     Market,
     MarketsView,
-    PeriodStats,
     ScreenId,
     SettingsView,
     UiActions,
     UiContext,
 )
-from coin_report_trader.core.stats import PERIODS
 from coin_report_trader.ui import MainWindow, create_main_window, current_screen, screen_widget
 
 LOADING = "불러오는 중"
@@ -35,15 +34,6 @@ INCOMPLETE = "마지막 봉은 미완성입니다"
 DISCLAIMER = "봉 통계는 계산 결과일 뿐이고, 이득을 보장하지 않습니다."
 FETCHED_AT = datetime(2026, 1, 2, 1, 30, tzinfo=UTC)  # 한국 시간 2026-01-02 10:30
 FETCHED_LINE = "마지막으로 받은 때 2026-01-02 10:30"
-INDICATOR_NAMES = [
-    "1년 변화",
-    "3개월 변화",
-    "20일 평균 대비",
-    "120일 평균 대비",
-    "1년 일간 변동성",
-    "1주 시간 변동성",
-    "1년 최대 낙폭",
-]
 
 
 class FakeActions:
@@ -105,68 +95,35 @@ def actions() -> FakeActions:
 # --- 값을 만드는 도구 ---
 
 
-def _period(index: int, count: int = 0, **values) -> PeriodStats:
-    name, unit = PERIODS[index]
-    return PeriodStats(period=name, unit=unit, count=count, **values)
-
-
-def _full_periods() -> tuple[PeriodStats, ...]:
-    """다섯 기간 모두 값이 있는 만든 값. 설계서 4.2의 8의 예와 같은 꼴이 나온다."""
-    return (
-        _period(
-            0,
-            400,
-            change=Decimal("0.5"),
-            high=Decimal("1234567.50"),
-            low=Decimal("0.00012"),
-            from_high=Decimal("-0.05"),
-            max_drawdown=Decimal("-0.4"),
-            volatility=Decimal("0.0321"),
-            up_ratio=Decimal("0.51"),
-        ),
-        _period(
-            1,
-            365,
-            change=Decimal("0.1234"),
-            high=Decimal("200"),
-            low=Decimal("100.0"),
-            from_high=Decimal("-0.1"),
-            max_drawdown=Decimal("-0.2"),
-            volatility=Decimal("0.03"),
-            up_ratio=Decimal("0.55"),
-        ),
-        _period(2, 90, change=Decimal("0"), high=Decimal("150"), low=Decimal("90")),
-        _period(
-            3,
-            30,
-            change=Decimal("0.1234"),
-            high=Decimal("132"),
-            low=Decimal("99"),
-            from_high=Decimal("-0.05"),
-            max_drawdown=Decimal("-0.1"),
-            volatility=Decimal("0.0321"),
-            up_ratio=Decimal("0.6"),
-        ),
-        _period(4, 1),
-    )
-
-
-def _indicator() -> CandleIndicator:
-    return CandleIndicator(
-        trend_1y=Decimal("0.1234"),
-        trend_3m=Decimal("-0.05"),
-        vs_ma20=Decimal("0"),
-        volatility_1y=Decimal("0.1535"),
-        max_drawdown_1y=Decimal("-0.3"),
-    )
+def _stats(market: str = "KRW-AAA", **changes) -> BarStats:
+    """60분봉 다섯 개를 N 5로 셈한 만든 값(M1 명세 3.5.2의 예)."""
+    values = {
+        "market": market,
+        "unit": CandleUnit.MINUTE_60,
+        "requested_count": 5,
+        "bar_count": 5,
+        "first_start_utc": datetime(2026, 1, 1, 1, 0, tzinfo=UTC),
+        "last_start_utc": datetime(2026, 1, 1, 5, 0, tzinfo=UTC),
+        "close_last": Decimal("132"),
+        "change": Decimal("0.3200"),
+        "slope": Decimal("0.0481"),
+        "vs_mean": Decimal("0.1538"),
+        "up_ratio": Decimal("0.6000"),
+        "volatility": Decimal("0.1535"),
+        "max_drawdown": Decimal("-0.1000"),
+        "from_high": Decimal("0.0000"),
+        "high": Decimal("132"),
+        "low": Decimal("99"),
+    }
+    values.update(changes)
+    return BarStats(**values)
 
 
 def _ready(market: str = "KRW-AAA", **changes) -> CoinView:
     values = {
         "market": market,
         "state": LoadState.READY,
-        "periods": _full_periods(),
-        "indicator": _indicator(),
+        "stats": _stats(market),
         "fetched_at": FETCHED_AT,
     }
     values.update(changes)
@@ -178,10 +135,10 @@ def _empty(market: str = "KRW-AAA", state: LoadState = LoadState.NO_DATA, **chan
     return CoinView(market, state, **changes)
 
 
-def _only_a_short_period(market: str = "KRW-AAA", **changes) -> CoinView:
+def _only_a_short_stats(market: str = "KRW-AAA", **changes) -> CoinView:
     """받아 둔 값은 있는데(쓴 봉이 1) 모든 값이 모자란 `CoinView`."""
-    periods = (_period(0, 1), _period(1), _period(2), _period(3), _period(4))
-    return CoinView(market, LoadState.NO_DATA, periods, None, False, FETCHED_AT, **changes)
+    stats = BarStats(market, CandleUnit.MINUTE_60, 5, 1)
+    return CoinView(market, LoadState.NO_DATA, fetched_at=FETCHED_AT, stats=stats, **changes)
 
 
 # --- 읽는 도구 ---
@@ -211,10 +168,6 @@ def _shown(screen: QWidget, name: str) -> bool:
     return not _find(screen, QWidget, name).isHidden()
 
 
-def _indicator_rows(screen: QWidget, market: str) -> list[str]:
-    return [_find(screen, QLabel, f"statusCoinIndicatorRow_{market}_{i}").text() for i in range(7)]
-
-
 def _card_names(screen: QWidget) -> list[str]:
     """코인 칸의 `objectName`을 화면에 놓인 차례(설정 목록 순서)대로."""
     layout = _find(screen, QWidget, "statusCoins").layout()
@@ -222,7 +175,7 @@ def _card_names(screen: QWidget) -> list[str]:
 
 
 def _cells(screen: QWidget, row: int) -> list[str]:
-    return [_find(screen, QLabel, f"statusStatsCell_{row}_{col}").text() for col in range(9)]
+    return [_find(screen, QLabel, f"statusStatsCell_{row}_{col}").text() for col in range(2)]
 
 
 def _open(window: MainWindow, *views: CoinView, coins=("KRW-AAA",)) -> QWidget:
@@ -303,7 +256,7 @@ def test_first_setup_done_selects_status_and_lists_the_coins_in_order_with_loadi
     for market in coins:
         # 그 코인의 첫 `CoinView`가 오기 전이다.
         assert _text(screen, f"statusCoinNote_{market}") == LOADING
-        assert not _shown(screen, f"statusCoinIndicator_{market}")
+        assert not _shown(screen, f"statusCoinStats_{market}")
         assert not _shown(screen, f"statusCoinRetry_{market}")
         # 그 코인의 첫 값이 오기 전에는 보장 아님 글을 보이지 않는다.
         assert not _shown(screen, f"statusCoinDisclaimer_{market}")
@@ -334,112 +287,7 @@ def test_at_most_three_coins_are_drawn(make_window):
 # --- READY ---
 
 
-def test_ready_shows_indicator_rows_in_order_and_the_disclaimer(make_window):
-    window = make_window(FakeActions())
-    screen = _open(window, _ready())
-    assert _text(screen, "statusCoinNote_KRW-AAA") is None
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
-    assert _find(screen, QWidget, "statusCoinIndicator_KRW-AAA").isEnabled()
-    rows = _indicator_rows(screen, "KRW-AAA")
-    assert rows == [
-        "1년 변화 +12.34%",
-        "3개월 변화 -5.00%",
-        "20일 평균 대비 0.00%",
-        "120일 평균 대비 봉이 모자람",
-        "1년 일간 변동성 15.35%",
-        "1주 시간 변동성 봉이 모자람",
-        "1년 최대 낙폭 -30.00%",
-    ]
-    assert [row.rsplit(" ", 1)[0] for row in rows][:3] == INDICATOR_NAMES[:3]
-    assert _text(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
-    assert not _shown(screen, "statusCoinRetry_KRW-AAA")
-    assert not _shown(screen, "statusCoinIncomplete_KRW-AAA")
-
-
-def test_ready_stats_table_has_five_rows_and_nine_cells_in_the_design_form(make_window):
-    window = make_window(FakeActions())
-    screen = _open(window, _ready())
-    headers = [_find(screen, QLabel, f"statusStatsHeader_{col}").text() for col in range(9)]
-    assert headers == [
-        "기간",
-        "봉 수",
-        "변화",
-        "최고가",
-        "최저가",
-        "최고가 대비",
-        "최대 낙폭",
-        "변동성",
-        "상승 봉 비율",
-    ]
-    assert _shown(screen, "statusStatsTable")
-    assert _find(screen, QWidget, "statusStatsTable").isEnabled()
-    assert _cells(screen, 0) == [
-        "전체",
-        "봉 400",
-        "+50.00%",
-        "1,234,567.5원",
-        "0.00012원",
-        "-5.00%",
-        "-40.00%",
-        "3.21%",
-        "51.00%",
-    ]
-    assert _cells(screen, 3) == [
-        "1개월",
-        "봉 30",
-        "+12.34%",
-        "132원",
-        "99원",
-        "-5.00%",
-        "-10.00%",
-        "3.21%",
-        "60.00%",
-    ]
-    # 값이 `None`인 칸은 "봉이 모자람"이고 봉 수는 그대로 보인다.
-    assert _cells(screen, 4) == ["1주", "봉 1"] + [INSUFFICIENT] * 7
-    assert _cells(screen, 2)[2:] == [
-        "0.00%",
-        "150원",
-        "90원",
-        INSUFFICIENT,
-        INSUFFICIENT,
-        INSUFFICIENT,
-        INSUFFICIENT,
-    ]
-    assert _text(screen, "statusStatsFetched") == FETCHED_LINE
-    assert _text(screen, "statusStatsNote") is None
-    assert _text(screen, "statusStatsIncomplete") is None
-
-
-def test_the_stats_chooser_switches_the_table_to_that_coin(make_window):
-    window = make_window(FakeActions())
-    other = _ready(
-        "KRW-BBB",
-        periods=(
-            _period(0, 7, change=Decimal("-0.2"), high=Decimal("5"), low=Decimal("3")),
-            *(_period(i) for i in range(1, 5)),
-        ),
-    )
-    screen = _open(window, _ready(), other, coins=("KRW-AAA", "KRW-BBB"))
-    chooser = _find(screen, QComboBox, "statusStatsCoin")
-    assert _cells(screen, 0)[1] == "봉 400"
-    chooser.setCurrentIndex(1)
-    assert _cells(screen, 0)[:4] == ["전체", "봉 7", "-20.00%", "5원"]
-    # 같은 코인의 새 값은 고른 코인이 그대로인 채 표만 바꾼다.
-    window.apply(_ready("KRW-BBB", periods=(_period(0, 8), *(_period(i) for i in range(1, 5)))))
-    assert chooser.currentIndex() == 1
-    assert _cells(screen, 0)[1] == "봉 8"
-
-
-def test_a_missing_indicator_draws_seven_names_with_insufficient(make_window):
-    window = make_window(FakeActions())
-    screen = _open(window, _ready(indicator=None))
-    rows = _indicator_rows(screen, "KRW-AAA")
-    assert rows == [f"{name} 봉이 모자람" for name in INDICATOR_NAMES]
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
-
-
-def test_last_incomplete_shows_next_to_the_indicator_and_under_the_table(make_window):
+def test_last_incomplete_shows_next_to_the_card_stats_and_under_the_table(make_window):
     window = make_window(FakeActions())
     screen = _open(window, _ready(last_incomplete=True))
     assert _text(screen, "statusCoinIncomplete_KRW-AAA") == INCOMPLETE
@@ -454,8 +302,8 @@ def test_loading_with_values_keeps_the_values_and_shows_the_note_above(make_wind
     screen = _open(window, _ready(state=LoadState.LOADING))
     assert _text(screen, "statusCoinNote_KRW-AAA") == CANDLES_LOADING
     assert _text(screen, "statusStatsNote") == CANDLES_LOADING
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
-    assert _find(screen, QWidget, "statusCoinIndicator_KRW-AAA").isEnabled()
+    assert _shown(screen, "statusCoinStats_KRW-AAA")
+    assert _find(screen, QWidget, "statusCoinStats_KRW-AAA").isEnabled()
     assert _shown(screen, "statusStatsTable")
     assert _find(screen, QWidget, "statusStatsTable").isEnabled()
     assert not _shown(screen, "statusCoinRetry_KRW-AAA")
@@ -469,7 +317,7 @@ def test_no_data_without_values_and_never_fetched(make_window):
     screen = _open(window, _empty())
     assert _text(screen, "statusCoinNote_KRW-AAA") == NO_CANDLES
     assert _text(screen, "statusStatsNote") == NO_CANDLES
-    assert not _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert not _shown(screen, "statusCoinStats_KRW-AAA")
     assert not _shown(screen, "statusStatsTable")
     assert _text(screen, "statusStatsFetched") is None
     assert not _shown(screen, "statusCoinRetry_KRW-AAA")
@@ -482,34 +330,30 @@ def test_no_data_without_values_but_fetched_says_insufficient_with_the_fetched_l
     screen = _open(window, _empty(fetched_at=FETCHED_AT))
     assert _text(screen, "statusCoinNote_KRW-AAA") == INSUFFICIENT
     assert _text(screen, "statusStatsNote") == INSUFFICIENT
-    assert not _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert not _shown(screen, "statusCoinStats_KRW-AAA")
     assert not _shown(screen, "statusStatsTable")
     assert _text(screen, "statusStatsFetched") == FETCHED_LINE
     assert not _shown(screen, "statusCoinRetry_KRW-AAA")
     assert _text(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
 
 
-def test_no_data_with_values_draws_the_rows_with_insufficient(make_window):
+def test_no_data_with_a_short_stats_draws_the_rows_with_insufficient(make_window):
     window = make_window(FakeActions())
-    screen = _open(window, _only_a_short_period())
+    screen = _open(window, _only_a_short_stats())
     assert _shown(screen, "statusStatsTable")
     assert _text(screen, "statusStatsNote") is None
     assert _text(screen, "statusCoinNote_KRW-AAA") is None
-    assert _cells(screen, 0) == ["전체", "봉 1"] + [INSUFFICIENT] * 7
-    assert _indicator_rows(screen, "KRW-AAA") == [f"{n} 봉이 모자람" for n in INDICATOR_NAMES]
+    assert _cells(screen, 0) == ["쓴 봉 수", "1개(고른 개수 5개)"]
+    assert _cells(screen, 4) == ["전체 변화", INSUFFICIENT]
     assert _text(screen, "statusStatsFetched") == FETCHED_LINE
 
 
-def test_no_data_with_values_but_never_fetched_has_no_fetched_line(make_window):
+def test_no_data_with_a_short_stats_but_never_fetched_has_no_fetched_line(make_window):
     window = make_window(FakeActions())
-    never_fetched = CoinView(
-        "KRW-AAA",
-        LoadState.NO_DATA,
-        (_period(0, 1), _period(1), _period(2), _period(3), _period(4)),
-    )
-    screen = _open(window, never_fetched)
+    stats = BarStats("KRW-AAA", CandleUnit.MINUTE_60, 5, 1)
+    screen = _open(window, CoinView("KRW-AAA", LoadState.NO_DATA, stats=stats))
     assert _shown(screen, "statusStatsTable")
-    assert _cells(screen, 0)[2] == INSUFFICIENT
+    assert _cells(screen, 4)[1] == INSUFFICIENT
     assert _text(screen, "statusStatsFetched") is None
 
 
@@ -522,8 +366,8 @@ def test_failed_keeps_the_values_dimmed_with_the_error_note_and_one_retry_each(m
     note = "봉을 받지 못했습니다(네트워크 끊김)."
     assert _text(screen, "statusCoinNote_KRW-AAA") == note
     assert _text(screen, "statusStatsNote") == note
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
-    assert not _find(screen, QWidget, "statusCoinIndicator_KRW-AAA").isEnabled()
+    assert _shown(screen, "statusCoinStats_KRW-AAA")
+    assert not _find(screen, QWidget, "statusCoinStats_KRW-AAA").isEnabled()
     assert _shown(screen, "statusStatsTable")
     assert not _find(screen, QWidget, "statusStatsTable").isEnabled()
     assert _text(screen, "statusStatsFetched") == FETCHED_LINE
@@ -538,7 +382,7 @@ def test_failed_without_values_draws_no_rows_and_no_fetched_line_when_never_fetc
     note = "봉을 받지 못했습니다(DB 오류)."
     assert _text(screen, "statusCoinNote_KRW-AAA") == note
     assert _text(screen, "statusStatsNote") == note
-    assert not _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert not _shown(screen, "statusCoinStats_KRW-AAA")
     assert not _shown(screen, "statusStatsTable")
     assert _text(screen, "statusStatsFetched") is None
     assert _shown(screen, "statusCoinRetry_KRW-AAA")
@@ -577,7 +421,7 @@ def test_blocked_shows_only_the_blocked_line_with_the_when_text(make_window, as_
     texts = [label.text() for label in screen.findChildren(QLabel) if not label.isHidden()]
     assert not any("봉을 받지 못했습니다" in text for text in texts)
     assert not _find(screen, QWidget, "statusStatsTable").isEnabled()
-    assert not _find(screen, QWidget, "statusCoinIndicator_KRW-AAA").isEnabled()
+    assert not _find(screen, QWidget, "statusCoinStats_KRW-AAA").isEnabled()
     assert _shown(screen, "statusCoinRetry_KRW-AAA")
     assert _shown(screen, "statusStatsRetry")
 
@@ -593,7 +437,7 @@ def test_blocked_on_the_next_day_uses_the_date_form_from_b11(make_window):
     screen = _open(window, blocked)
     expected = "거래소가 잠시 요청을 막았습니다. 2026-01-02 00:20 뒤에 다시 받습니다."
     assert _text(screen, "statusCoinNote_KRW-AAA") == expected
-    assert not _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert not _shown(screen, "statusCoinStats_KRW-AAA")
     assert not _shown(screen, "statusStatsTable")
 
 
@@ -620,12 +464,9 @@ def test_a_naive_fetched_at_hides_the_fetched_line_without_an_error(make_window)
 
 def test_a_non_finite_price_is_drawn_as_insufficient(make_window):
     window = make_window(FakeActions())
-    periods = (
-        _period(0, 5, high=Decimal("NaN"), low=Decimal("1")),
-        *(_period(i) for i in range(1, 5)),
-    )
-    screen = _open(window, _ready(periods=periods))
-    assert _cells(screen, 0)[3:5] == [INSUFFICIENT, "1원"]
+    screen = _open(window, _ready(stats=_stats(high=Decimal("NaN"), low=Decimal("1"))))
+    assert _cells(screen, 11) == ["최고가", INSUFFICIENT]
+    assert _cells(screen, 12) == ["최저가", "1원"]
 
 
 # --- 받아 둔 값이 없을 때의 표(설계서 4.5) ---
@@ -672,7 +513,7 @@ def test_the_no_values_table_of_the_design(make_window, index, incomplete):
     assert _text(screen, "statusStatsNote") == note
     assert _text(screen, "statusCoinNote_KRW-AAA") == note
     assert not _shown(screen, "statusStatsTable")
-    assert not _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert not _shown(screen, "statusCoinStats_KRW-AAA")
     assert (_text(screen, "statusStatsFetched") == FETCHED_LINE) is fetched
     expected = INCOMPLETE if incomplete else None
     assert _text(screen, "statusStatsIncomplete") == expected
@@ -709,7 +550,7 @@ def test_the_retry_button_exists_whatever_the_coin_state(make_window):
     window = make_window(FakeActions())
     screen = _open(window)
     assert _shown(screen, "statusStatsRetry")  # 첫 `CoinView` 전
-    for view in (_ready(), _empty(), _only_a_short_period()):
+    for view in (_ready(), _empty(), _only_a_short_stats()):
         window.apply(view)
         assert _shown(screen, "statusStatsRetry")
 
@@ -728,14 +569,14 @@ def test_without_actions_the_retry_button_calls_nothing(make_window):
 def test_new_coins_follow_the_new_settings_and_start_as_loading(make_window, actions):
     window = make_window(actions)
     screen = _open(window, _ready(), _ready("KRW-BBB"), coins=("KRW-AAA", "KRW-BBB"))
-    assert _shown(screen, "statusCoinIndicator_KRW-BBB")
+    assert _shown(screen, "statusCoinStats_KRW-BBB")
     window.apply(SettingsView(("KRW-CCC", "KRW-AAA"), 30, True))
     assert screen.findChild(QWidget, "statusCoin_KRW-BBB") is None
     names = _card_names(screen)
     assert names == ["statusCoin_KRW-CCC", "statusCoin_KRW-AAA"]
     # 이미 받은 코인의 값은 그대로 두고, 새로 든 코인은 "불러오는 중"이다.
     assert _text(screen, "statusCoinNote_KRW-CCC") == LOADING
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert _shown(screen, "statusCoinStats_KRW-AAA")
     chooser = _find(screen, QComboBox, "statusStatsCoin")
     assert [chooser.itemText(i) for i in range(chooser.count())] == ["CCC", "AAA"]
     # 빠졌던 코인을 다시 고르면 옛 값이 아니라 "불러오는 중"이다.
@@ -760,7 +601,7 @@ def test_a_coin_view_before_the_first_settings_view_is_kept_for_a_chosen_coin(ma
     window.apply(_ready("KRW-ZZZ"))
     window.apply(SettingsView(("KRW-AAA",), 30, True))
     screen = _status(window)
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert _shown(screen, "statusCoinStats_KRW-AAA")
     assert screen.findChild(QWidget, "statusCoin_KRW-ZZZ") is None
 
 
@@ -773,7 +614,7 @@ def test_other_updates_do_not_disturb_the_status_screen(make_window, actions):
     window.apply(WebhookView(AlertCategory.OTHER, saved=False))
     window.apply(SaveResult("alert_delete", ok=False, message="지우지 못했습니다."))
     window.apply(MarketsView(LoadState.READY, ()))
-    assert _shown(screen, "statusCoinIndicator_KRW-AAA")
+    assert _shown(screen, "statusCoinStats_KRW-AAA")
     assert actions.calls == []
 
 

@@ -575,10 +575,9 @@ def create_main_window(context: UiContext) -> MainWindow:
       설정을 읽지 못함은 `tone`이 "warning"이다.
     - 코인 칸: 묶음 `statusCoins` 안에 고른 코인마다 `statusCoin_<m>`(설정 목록 순서, 최대 셋).
       그 안에 `statusCoinName_<m>`, 값 자리의 글 `statusCoinNote_<m>`(글이 없으면 숨김),
-      "다시 시도" `statusCoinRetry_<m>`(받지 못함과 일시 차단 중에만 보임), 지표 묶음
-      `statusCoinIndicator_<m>`과 줄 `statusCoinIndicatorRow_<m>_<0~6>`(글은 "이름 값"),
+      "다시 시도" `statusCoinRetry_<m>`(받지 못함과 일시 차단 중에만 보임),
       `statusCoinIncomplete_<m>`(미완성 봉 글), `statusCoinDisclaimer_<m>`(보장 아님 글).
-    - 봉 통계(`CoinView.stats`가 있을 때. M1 명세 3.14.5): 묶음 `statusStats`, 코인 고르기
+    - 봉 통계(`CoinView.stats`. M1 명세 3.14.5): 묶음 `statusStats`, 코인 고르기
       `statusStatsCoin`(`QComboBox`), 표 자리의 글 `statusStatsNote`, 표 위 글 `statusStatsSummary`,
       표 묶음 `statusStatsTable`(머리 `statusStatsHeader_<0~1>`,
       칸 `statusStatsCell_<줄 0~12>_<칸 0~1>`. 칸 0은 항목, 칸 1은 값),
@@ -586,11 +585,9 @@ def create_main_window(context: UiContext) -> MainWindow:
       `statusStatsIncomplete`, 표 아래의 하나뿐인 "다시 시도" `statusStatsRetry`.
       코인 칸 안은 `statusCoinStats_<m>`(묶음. 흐리게 남기면 `isEnabled()`가 거짓),
       `statusCoinStatsHeader_<m>`(첫 줄), `statusCoinStatsRow_<m>_<0~4>`("이름 값").
-    - 기간별 봉 통계(`stats`가 `None`일 때의 옛 모습. 39번 전. 49번이 지운다): 같은 `statusStats...`
-      이름에 머리 `statusStatsHeader_<0~8>`, 칸 `statusStatsCell_<줄 0~4>_<칸 0~8>`이다.
     - 흐리게 남긴 값(받기 실패, 일시 차단 중의 받아 둔 값)은 그 묶음(`statusStatsTable`,
-      `statusCoinIndicator_<m>`)의 `isEnabled()`가 거짓이다.
-      표의 줄과 지표 항목을 그리지 않는 모습은
+      `statusCoinStats_<m>`)의 `isEnabled()`가 거짓이다.
+      표의 줄과 요소를 그리지 않는 모습은
       그 묶음이 숨겨져 있다(`isHidden()`).
     - 알림센터(현황 자리 안, `alert_center.py`에 모든 `objectName`이 있다): 묶음 `alertCenter`,
       탭 `alertTab_<분류 값>`(여섯, `AlertCategory` 차례. 글은 "이름"이나 "이름 ({n})"이고
