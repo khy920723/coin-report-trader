@@ -12,7 +12,7 @@ from decimal import Decimal
 from hypothesis import given
 from hypothesis import strategies as st
 
-from coin_report_trader.core import PERIODS, Candle, CandleUnit
+from coin_report_trader.core import Candle, CandleUnit
 from coin_report_trader.stats import compute_candle_stats
 
 MARKET = "KRW-AAA"
@@ -135,7 +135,32 @@ def test_ratios_stay_in_their_ranges(found):
 
 
 @given(candles())
-def test_every_period_keeps_its_name_and_unit_even_without_enough_candles(found):
-    """다섯 기간은 늘 `core.PERIODS`의 차례와 단위다(봉이 모자란 기간도 같다)."""
-    stats = compute_candle_stats(found, NOW)
-    assert [(p.period, p.unit) for p in stats.periods] == list(PERIODS)
+def test_a_window_with_fewer_than_two_complete_candles_has_only_its_count(found):
+    """완성된 봉이 2개보다 적은 기간은 개수(와 이름, 단위)만 있고 나머지 값은 모두 없다."""
+    for period in compute_candle_stats(found, NOW).periods:
+        if period.count >= 2:
+            continue
+        for field in dataclasses.fields(period):
+            if field.name not in ("period", "unit", "count"):
+                assert getattr(period, field.name) is None, field.name
+
+
+FULL = [
+    *(
+        Candle(MARKET, unit, NOW - STEP[unit] * (slot + 1), Decimal(10), Decimal(11), Decimal(9),
+               Decimal(10), Decimal(1), Decimal(1))
+        for unit, most in ((CandleUnit.DAY, 400), (CandleUnit.MINUTE_60, 200))
+        for slot in range(most)
+    )
+]  # fmt: skip
+"""봉이 넉넉한 기준(일봉 400개, 60분봉 200개)."""
+
+
+@given(candles())
+def test_a_period_without_enough_candles_keeps_the_name_and_unit_it_has_with_many(found):
+    """봉이 모자란 기간도 봉이 넉넉할 때와 같은 차례, 이름, 단위다.
+
+    기간의 목록 자체(몇 개, 어떤 이름)는 굳히지 않는다(1단계 보완에서 바뀐다).
+    """
+    names = [(p.period, p.unit) for p in compute_candle_stats(FULL, NOW).periods]
+    assert [(p.period, p.unit) for p in compute_candle_stats(found, NOW).periods] == names

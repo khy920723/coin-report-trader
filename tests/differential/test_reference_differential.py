@@ -16,8 +16,9 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from fakes.clock import FakeClock
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from coin_report_trader.core import AlertCategory, Candle, CandleUnit, Mode, is_webhook_url
@@ -104,6 +105,11 @@ def reference_bound(sent: list[float], arrived: float) -> tuple[float, bool]:
     raise AssertionError("기준이 하한을 찾지 못했다")
 
 
+MONOTONIC_START = 1024.0
+"""가짜 시계의 처음 단조 시각. 시각이 [1024, 2048)의 한 지수 구간에 머물러, 1초를 더하고 빼는
+셈이 정확하다(구간을 넘나들면 덧셈의 반올림 때문에 맞는 장치도 경계에서 어긋나 보일 수 있다)."""
+
+
 @given(
     st.lists(
         st.one_of(st.just(0.0), st.floats(min_value=0, max_value=2.5, allow_nan=False)),
@@ -111,6 +117,8 @@ def reference_bound(sent: list[float], arrived: float) -> tuple[float, bool]:
         max_size=40,
     )
 )
+@example([2.5] * 9 + [1.1] + [0.0] * 5)
+@example([2.5] * 8 + [1.1, 2.00001] + [0.0] * 4 + [1.0])
 def test_the_request_limiter_matches_a_one_second_window_count(gap_list):
     """요청 한도 장치가 요청을 낸 때가 '1초 창의 개수 세기' 기준과 맞는다.
 
@@ -118,7 +126,7 @@ def test_the_request_limiter_matches_a_one_second_window_count(gap_list):
     `MARGIN`(0.01초)을 더한 때에 낸다. 그래서 막힌 요청은 하한보다 뒤이고 하한 + 0.01초 이하이며,
     막히지 않은 요청은 온 때에 그대로 낸다.
     """
-    clock = FakeClock()
+    clock = FakeClock(monotonic_start=MONOTONIC_START)
     limiter = RequestLimiter(clock)
     sent: list[float] = []
     for gap in gap_list:
@@ -174,27 +182,126 @@ def reference_is_webhook_url(text: str) -> bool:
     )
 
 
+PARTS = ("lead", "scheme", "host", "version", "hooks", "number", "token", "tail")
+"""주소를 이루는 부분. 맞는 바탕 주소에서 이 가운데 하나만 틀린 값으로 바꾼다."""
+
+
+def _token_strategy() -> st.SearchStrategy[str]:
+    return st.text("".join(sorted(TOKEN_CHARS)), min_size=60, max_size=90)
+
+
+@st.composite
+def good_parts(draw: st.DrawFn) -> dict[str, str]:
+    """맞는 주소의 부분들(실행 중에 이어 붙인다)."""
+    return {
+        "lead": draw(st.sampled_from(["", " ", "\t", "\u3000"])),
+        "scheme": "https:" + "//",
+        "host": draw(st.sampled_from(sorted(HOSTS))),
+        "version": draw(st.sampled_from(["", "v10/", "v1/", "v99/"])),
+        "hooks": "webhooks",
+        "number": draw(st.text(DIGITS, min_size=17, max_size=20)),
+        "token": draw(_token_strategy()),
+        "tail": draw(st.sampled_from(["", " ", "\n"])),
+    }
+
+
+WRONG = {
+    "lead": st.sampled_from(["x", "/", "."]),
+    "scheme": st.sampled_from(["http:" + "//", "https:/", "HTTPS:" + "//", "", "ftp:" + "//"]),
+    "host": st.sampled_from(["discord.org", "xdiscord.com", "Discord.com", "discord.com.x", ""]),
+    "version": st.sampled_from(["v/", "va/", "v1x/", "v\u0663/", "V10/", "10/"]),
+    "hooks": st.sampled_from(["webhook", "WEBHOOKS", "hooks", ""]),
+    "number": st.one_of(
+        st.text(DIGITS, min_size=1, max_size=16),
+        st.text(DIGITS, min_size=21, max_size=25),
+        st.text(DIGITS + "a\u0663", min_size=17, max_size=20).filter(
+            lambda n: any(c not in DIGITS for c in n)
+        ),
+    ),
+    "token": st.one_of(
+        st.text("".join(sorted(TOKEN_CHARS)), min_size=1, max_size=59),
+        st.text("Ab9-_.~ /?\u00e9", min_size=60, max_size=70).filter(
+            lambda t: any(c not in TOKEN_CHARS for c in t)
+        ),
+    ),
+    "tail": st.sampled_from(["/", "?", "#", "/x", "?a=1", "#x"]),
+}
+"""부분마다 틀린 값. 하나만 바꿔도 주소가 아니게 되는 값만 둔다."""
+
+
+def join(parts: dict[str, str]) -> str:
+    return (
+        parts["lead"] + parts["scheme"] + parts["host"] + "/api/" + parts["version"]
+        + parts["hooks"] + "/" + parts["number"] + "/" + parts["token"] + parts["tail"]
+    )  # fmt: skip
+
+
 @st.composite
 def address_like(draw: st.DrawFn) -> str:
-    """맞는 주소와 한 군데씩 어긋난 주소, 아무 글을 섞어 만든다(실행 중에 이어 붙인다)."""
-    scheme = draw(
-        st.sampled_from(["https:" + "//", "http:" + "//", "https:/", "HTTPS:" + "//", ""])
-    )
-    host = draw(st.sampled_from([*sorted(HOSTS), "discord.org", "xdiscord.com", "Discord.com"]))
-    version = draw(st.sampled_from(["", "v10/", "v/", "va/", "v1x/", "v٣/"]))
-    hooks = draw(st.sampled_from(["webhooks", "webhook", "WEBHOOKS"]))
-    number = draw(st.text(DIGITS + "a٣", min_size=15, max_size=22))
-    token = draw(st.text("Ab9-_.~ /?é", min_size=55, max_size=70))
-    lead = draw(st.sampled_from(["", " ", "\t", "　", "x"]))
-    tail = draw(st.sampled_from(["", " ", "\n", "/", "?", "#"]))
-    built = lead + scheme + host + "/api/" + version + hooks + "/" + number + "/" + token + tail
-    return draw(st.one_of(st.just(built), st.text(max_size=120)))
+    """세 갈래: 맞는 주소, 한 부분만 틀린 주소, 아무 글."""
+    branch = draw(st.sampled_from(["good", "one_wrong", "text"]))
+    if branch == "text":
+        return draw(st.text(max_size=120))
+    parts = draw(good_parts())
+    if branch == "one_wrong":
+        part = draw(st.sampled_from(PARTS))
+        parts[part] = draw(WRONG[part])
+    return join(parts)
+
+
+GOOD = {
+    "lead": " ",
+    "scheme": "https:" + "//",
+    "host": "canary.discord.com",
+    "version": "v10/",
+    "hooks": "webhooks",
+    "number": "1" * 18,
+    "token": "Tk-_." * 13,
+    "tail": "\n",
+}
+"""고정한 맞는 주소의 부분들(생성기가 무너져도 이 예는 늘 돈다)."""
+ONE_WRONG = {
+    "lead": "x",
+    "scheme": "http:" + "//",
+    "host": "discord.org",
+    "version": "va/",
+    "hooks": "webhook",
+    "number": "1" * 16,
+    "token": "Tk-_." * 11,
+    "tail": "/",
+}
 
 
 @given(address_like())
+@example(join(GOOD))
 def test_the_webhook_url_check_matches_a_step_by_step_reading_of_the_rules(text):
     """`is_webhook_url`의 답이 명세의 조건을 하나씩 본 기준과 같다."""
     assert is_webhook_url(text) == reference_is_webhook_url(text)
+
+
+@pytest.mark.parametrize("part", PARTS)
+def test_a_good_address_is_accepted_and_one_wrong_part_is_refused_by_both(part):
+    """고정한 맞는 주소는 앱과 기준이 모두 받고, 한 부분만 틀리게 바꾸면 둘 다 받지 않는다."""
+    assert is_webhook_url(join(GOOD))
+    assert reference_is_webhook_url(join(GOOD))
+    wrong = {**GOOD, part: ONE_WRONG[part]}
+    assert not is_webhook_url(join(wrong))
+    assert not reference_is_webhook_url(join(wrong))
+
+
+@given(good_parts())
+def test_every_generated_good_address_is_accepted_by_both(parts):
+    """생성기의 맞는 갈래가 만든 주소는 앱과 기준이 모두 받는다(생성기가 무너지면 실패한다)."""
+    assert is_webhook_url(join(parts))
+    assert reference_is_webhook_url(join(parts))
+
+
+@given(good_parts(), st.sampled_from(PARTS), st.data())
+def test_every_generated_one_wrong_address_is_refused_by_both(parts, part, data):
+    """맞는 주소에서 한 부분만 틀리게 바꾼 주소는 앱과 기준이 모두 받지 않는다."""
+    wrong = {**parts, part: data.draw(WRONG[part])}
+    assert not is_webhook_url(join(wrong))
+    assert not reference_is_webhook_url(join(wrong))
 
 
 # --- 오래된 알림 지우기 ---------------------------------------------------------------------------
@@ -202,17 +309,37 @@ def test_the_webhook_url_check_matches_a_step_by_step_reading_of_the_rules(text)
 NOW = datetime(2026, 3, 1, 12, 0, 30, 500_000, tzinfo=UTC)
 
 
-@given(
-    st.lists(st.integers(-3600, 100 * 24 * 3600), min_size=1, max_size=30),
-    st.sampled_from([7, 30, 90]),
-    st.integers(0, 999_999),
-)
-def test_old_alert_deletion_matches_the_retention_definition(age_seconds, days, micro):
+DAY_SECONDS = 24 * 3600
+
+
+@st.composite
+def retention_case(draw: st.DrawFn) -> tuple[list[int], int, int]:
+    """(나이 초들, 보관 기간, 마이크로초). 기간을 먼저 고르고, 나이는 아무 값과 경계(기간 × 24시간)
+    ±2초를 섞는다."""
+    days = draw(st.sampled_from([7, 30, 90]))
+    edge = days * DAY_SECONDS
+    ages = draw(
+        st.lists(
+            st.one_of(st.integers(-3600, 100 * DAY_SECONDS), st.integers(edge - 2, edge + 2)),
+            min_size=1,
+            max_size=30,
+        )
+    )
+    return ages, days, draw(st.integers(0, 999_999))
+
+
+@given(retention_case())
+@example(([7 * DAY_SECONDS], 7, 500_000))
+@example(([7 * DAY_SECONDS], 7, 0))
+@example(([30 * DAY_SECONDS - 1], 30, 500_001))
+def test_old_alert_deletion_matches_the_retention_definition(case):
     """지운 알림이 '생긴 때 + 날 수 × 24시간 ≤ 지금'의 기준이 고른 것과 같다.
 
     다르게 둔 곳: 표의 생긴 때는 초까지(초 아래는 버림) 적히므로(M1 명세 3.7), 기준도 적힌 초 단위의
-    생긴 때로 잰다.
+    생긴 때로 잰다. 지금(`NOW`)이 초 아래 0.5초를 가지므로, 마이크로초가 500000 이하인 나이
+    `기간 × 24시간`과 500000보다 큰 나이 `기간 × 24시간 − 1초`는 적힌 초로 꼭 경계에 닿는다.
     """
+    age_seconds, days, micro = case
     conn = sqlite3.connect(":memory:")
     migrate(conn)
     created: dict[int, datetime] = {}

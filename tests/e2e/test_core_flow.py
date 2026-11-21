@@ -8,7 +8,8 @@
 
 차례:
 1. 처음 설정 화면에서 코인 목록이 오면 코인 하나와 보관 기간 30일을 고르고 "저장하고 시작"을 누른다.
-2. 봉을 받아 현황 화면의 기간별 통계 표에 다섯 기간의 글이 보인다.
+2. 봉을 받아 현황 화면의 기간별 통계 표에 기간마다(`core.PERIODS`의 차례) 이름, 2개 이상의 봉
+   수, "%"로 끝나는 변화율이 보인다. 설정 화면에는 고른 보관 기간(30일)과 코인이 남아 있다.
 3. 60분 뒤의 받기에서 일봉 요청이 "네트워크 끊김"을 내 A-1이 생기고, 알림센터의 오류 알림 탭에
    그 줄이 보인다.
 4. 오류 알림 탭에는 디스코드 주소가 있으므로, 가짜 디스코드가 그 주소로 그 글을 받는다.
@@ -26,14 +27,30 @@ from fakes.discord import FakeDiscord
 from fakes.quote import FakeQuoteSource, make_candles
 from fakes.vault import FakeVault
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QRadioButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QLabel,
+    QListWidget,
+    QPushButton,
+    QRadioButton,
+    QWidget,
+)
 
 from coin_report_trader import ui
 from coin_report_trader.app import data_thread, run_gui
 from coin_report_trader.app.services import Services
-from coin_report_trader.core import AlertCategory, CandleUnit, Market, QuoteError, ScreenId
-from coin_report_trader.core.texts import ERROR_NETWORK
+from coin_report_trader.core import (
+    PERIODS,
+    AlertCategory,
+    CandleUnit,
+    Market,
+    QuoteError,
+    ScreenId,
+)
+from coin_report_trader.core.texts import ERROR_NETWORK, ERROR_NOT_ENOUGH_CANDLES
 from coin_report_trader.ui import current_screen, screen_widget
+from coin_report_trader.ui.texts import count_text
 from coin_report_trader.vault import webhook_secret_name
 
 AAA = "KRW-AAA"
@@ -169,11 +186,25 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
             return False
         rows = [
             [_find(status, QLabel, f"statusStatsCell_{row}_{col}").text() for col in range(3)]
-            for row in range(5)
+            for row in range(len(PERIODS))
         ]
         if not all(all(cell for cell in row) for row in rows):
             return False
         seen["stats"] = rows
+        return True
+
+    def the_settings_keep_what_was_chosen() -> bool:
+        # 처음 설정에서 고른 보관 기간과 코인이 설정 화면에 남아 있다.
+        settings = screen_widget(made[0], ScreenId.SETTINGS)
+        radio = _find(settings, QRadioButton, "settingsRetention30")
+        if radio is None or not radio.isChecked():
+            return False
+        box = _find(settings, QCheckBox, f"settingsCoin_{AAA}")
+        chosen = _find(settings, QListWidget, "settingsCoinsSelected")
+        picked = [chosen.item(i).text() for i in range(chosen.count())] if chosen else []
+        if not ((box is not None and box.isChecked()) or any("AAA" in t for t in picked)):
+            return False
+        seen["settings"] = (radio.isChecked(), box is not None and box.isChecked(), picked)
         return True
 
     def an_hour_passes_once_the_data_thread_rests() -> bool:
@@ -212,26 +243,39 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         [
             ("처음 설정", first_setup_is_ready),
             ("통계", stats_are_shown),
+            ("설정", the_settings_keep_what_was_chosen),
             ("60분 뒤", an_hour_passes_once_the_data_thread_rests),
             ("알림과 디스코드", the_alert_is_in_the_error_tab_and_on_discord),
         ],
     )
-    QTimer.singleShot(0, driver.start)
+    # `run_gui`가 이벤트 루프 전에 실패하면 줄 서 있던 시작이 뒤의 Qt 시험 안에서 돌지 않게 한다.
+    armed = {"on": True}
+    QTimer.singleShot(0, lambda: driver.start() if armed["on"] else None)
     began = time.monotonic()
     try:
         code = run_gui([], services=services)
     finally:
+        armed["on"] = False
         driver.stop()
         discord.release()
     elapsed = time.monotonic() - began
     if driver.error is not None:
         raise driver.error
-    assert driver.done == ["처음 설정", "통계", "60분 뒤", "알림과 디스코드"], driver.steps[:1]
+    assert driver.done == ["처음 설정", "통계", "설정", "60분 뒤", "알림과 디스코드"], driver.steps[
+        :1
+    ]
     assert code == 0
     assert elapsed < 30.0
 
-    # 2. 통계 표: 다섯 기간의 이름과 봉 수, 변화율이 보인다.
-    assert [row[0] for row in seen["stats"]] == ["전체", "1년", "3개월", "1개월", "1주"]
+    # 2. 통계 표: 기간마다(`core.PERIODS`의 차례) 이름, 봉 수(2개 이상), 변화율(%)이 보인다.
+    assert [row[0] for row in seen["stats"]] == [name for name, _unit in PERIODS]
+    counts = {count_text(n) for n in range(2, 1000)}
+    for _name, count, change in seen["stats"]:
+        assert count in counts
+        assert change.endswith("%")
+        assert change != ERROR_NOT_ENOUGH_CANDLES
+    # 1. 처음 설정에서 고른 보관 기간(30일)과 코인이 설정 화면에 남는다.
+    assert seen["settings"][0]
     # 3. 알림센터의 오류 알림 탭에 그 줄이 보인다(코인과 오류 이름).
     (line,) = [text for text in seen["lines"] if ERROR_NETWORK in text]
     assert "AAA" in line
