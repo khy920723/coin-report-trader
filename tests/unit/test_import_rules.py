@@ -1,7 +1,11 @@
 """루트 패키지에서는 `__version__`만 import한다(명세 3.3). exe로 묶였을 때 순환과 누락을 막는다."""
 
 import ast
+import importlib.util
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 import coin_report_trader
 
@@ -66,3 +70,87 @@ def test_the_rule_allows_the_version_and_submodules() -> None:
     assert root_imports_other_than_version("from . import paths", sub) == []
     assert root_imports_other_than_version("from .. import __version__", sub) == []
     assert root_imports_other_than_version("import os\nfrom pathlib import Path", sub) == []
+
+
+# --- 검사 스크립트의 표: M2 명세 3.3의 `ai` 줄 -------------------------------------------------
+
+CHECKS_DIR = Path(__file__).resolve().parents[2] / "scripts" / "checks"
+
+
+def _import_rules() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "import_rules_under_test", CHECKS_DIR / "import_rules.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _problems(tmp_path: Path, files: dict[str, str]) -> list[str]:
+    """`src/coin_report_trader/` 아래에 `files`를 두고 import 방향 검사를 돌린 결과."""
+    package = tmp_path / "src" / PACKAGE
+    for relative, text in files.items():
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return _import_rules().check(tmp_path)
+
+
+def test_the_ai_folder_may_import_core_and_the_standard_library(tmp_path: Path) -> None:
+    files = {
+        "ai/__init__.py": "",
+        "ai/runner.py": (
+            "import csv\nimport json\nimport subprocess\nfrom pathlib import Path\n"
+            "from coin_report_trader.core import AiChoice\nfrom coin_report_trader import core\n"
+            "from coin_report_trader import __version__\nfrom . import claude_env\n"
+            "from .claude_env import NAMES\n"
+        ),
+        "ai/claude_env.py": "NAMES = ()\n",
+    }
+    assert _problems(tmp_path, files) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from coin_report_trader import trading",
+        "from coin_report_trader.storage import database",
+        "from coin_report_trader.stats import bars",
+        "from coin_report_trader import notify",
+        "from coin_report_trader.vault import store",
+        "from coin_report_trader import ui",
+        "from coin_report_trader import config",
+        "from coin_report_trader import app",
+        "import httpx",
+        "import certifi",
+        "import keyring",
+        "import PySide6",
+        "from coin_report_trader import types_that_do_not_exist",
+    ],
+)
+def test_the_ai_folder_may_not_import_anything_else(tmp_path: Path, line: str) -> None:
+    problems = _problems(tmp_path, {"ai/bad.py": f'"""위반 예."""\n\n{line}\n'})
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"src/{PACKAGE}/ai/bad.py:3: ")
+
+
+def test_only_app_may_import_the_ai_folder(tmp_path: Path) -> None:
+    line = "from coin_report_trader.ai import runner\n"
+    folders = ("core", "stats", "storage", "config", "trading", "notify", "vault", "ui")
+    files = {f"{folder}/uses_ai.py": line for folder in folders}
+    files["app/uses_ai.py"] = line + "from coin_report_trader import ai\n"
+    problems = _problems(tmp_path, files)
+    assert sorted(p.split(":")[0] for p in problems) == sorted(
+        f"src/{PACKAGE}/{folder}/uses_ai.py" for folder in folders
+    )
+    assert all("ai/을(를) import하지 않는다" in p for p in problems), problems
+
+
+def test_the_table_has_the_ai_row() -> None:
+    rules = _import_rules()
+    assert rules.ALLOWED["ai"] == frozenset({rules.STDLIB, "core"})
+    assert "ai" in rules.FOLDERS
+    assert "ai" in rules.ALLOWED["app"]
+    assert all("ai" not in allowed for owner, allowed in rules.ALLOWED.items() if owner != "app")
