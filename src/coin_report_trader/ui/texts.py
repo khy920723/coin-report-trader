@@ -130,21 +130,7 @@ LAST_CANDLE_INCOMPLETE: Final = "마지막 봉은 미완성입니다"
 INDICATOR_DISCLAIMER: Final = "봉 통계는 계산 결과일 뿐이고, 이득을 보장하지 않습니다."
 """보장 아님 글(M1 명세 3.14.5). 코인 칸의 요소 아래와 봉 통계 자리의 표 아래에 보인다."""
 STATS_TITLE: Final = "봉 통계"
-LEGACY_STATS_TITLE: Final = "기간별 봉 통계"
-"""`CoinView.stats`가 `None`일 때(39번 전)의 옛 표 이름. 49번이 지운다."""
 STATS_TABLE_COLUMNS: Final = ("항목", "값")
-STATS_COLUMNS: Final = (
-    "기간",
-    "봉 수",
-    "변화",
-    "최고가",
-    "최저가",
-    "최고가 대비",
-    "최대 낙폭",
-    "변동성",
-    "상승 봉 비율",
-)
-"""표의 머리 칸(설계서 4.2의 8, M1 명세 3.5의 화면 항목)."""
 
 
 def stats_header_text(unit_title: str, count: int) -> str:
@@ -177,13 +163,8 @@ def fetched_text(time_text: str) -> str:
     return f"마지막으로 받은 때 {time_text}"
 
 
-def count_text(count: int) -> str:
-    """표의 봉 수 칸."""
-    return f"봉 {count}"
-
-
 def indicator_row_text(title: str, value: str) -> str:
-    """코인 칸의 지표 한 줄(설계서 4.3의 예: "1년 변화 +12.34%")."""
+    """코인 칸의 요소 한 줄(예: "전체 변화 +12.34%")."""
     return f"{title} {value}"
 
 

@@ -207,8 +207,8 @@ def test_the_card_shows_the_unit_and_count_then_five_elements_then_the_disclaime
     ]
     assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
     assert _text(screen, f"statusCoinNote_{AAA}") is None
-    # 옛 지표는 그리지 않는다.
-    assert not _shown(screen, f"statusCoinIndicator_{AAA}")
+    # 옛 지표는 없다.
+    assert screen.findChild(QWidget, f"statusCoinIndicator_{AAA}") is None
     assert _shown(screen, f"statusCoinStats_{AAA}")
     # 코인 칸 안의 차례: 코인 이름, 값 자리의 글, 봉 통계, 미완성 봉 글, 보장 아님 글.
     layout = _find(screen, QWidget, f"statusCoin_{AAA}").layout()
@@ -466,45 +466,39 @@ def test_the_disclaimer_is_only_missing_before_the_first_value_of_a_coin(make_wi
     assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
 
 
-# --- 옛 모습(`stats`가 `None`, 39번 전) ---
+# --- 옛 그리기는 없다(49번) ---
 
 
-def test_without_stats_the_old_table_and_indicator_are_still_drawn(make_window):
+def test_nothing_of_the_old_table_or_indicator_is_drawn_without_stats(make_window):
     window = make_window(FakeActions())
-    old = CoinView(AAA, LoadState.NO_DATA, fetched_at=FETCHED_AT)
-    screen = _open(window, old)
-    # 값이 없는 옛 모습: 값 자리에 "봉이 모자람" 하나뿐이다.
+    screen = _open(window, CoinView(AAA, LoadState.NO_DATA, fetched_at=FETCHED_AT))
     assert _text(screen, "statusStatsNote") == INSUFFICIENT
     assert _text(screen, "statusStatsDisclaimer") == DISCLAIMER
     assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
     assert not _shown(screen, f"statusCoinStats_{AAA}")
-    assert _find(screen, QLabel, "statusStatsTitle").text() == "기간별 봉 통계"
+    assert _find(screen, QLabel, "statusStatsTitle").text() == "봉 통계"
+    names = [label.objectName() for label in screen.findChildren(QLabel)]
+    assert not [name for name in names if "Indicator" in name]
+    assert sorted(name for name in names if name.startswith("statusStatsHeader_")) == [
+        "statusStatsHeader_0",
+        "statusStatsHeader_1",
+    ]
+    assert len([name for name in names if name.startswith("statusStatsCell_")]) == 13 * 2
+    assert screen.findChild(QWidget, f"statusCoinIndicator_{AAA}") is None
 
 
-def test_the_table_is_rebuilt_when_the_stats_come_and_go_with_no_stale_cells(make_window):
+def test_the_old_period_values_of_a_coin_view_are_not_drawn(make_window):
     from coin_report_trader.core import PeriodStats
     from coin_report_trader.core.stats import PERIODS
 
     window = make_window(FakeActions())
     periods = tuple(PeriodStats(name, unit, 3, change=Decimal("0.1")) for name, unit in PERIODS)
     screen = _open(window, CoinView(AAA, LoadState.READY, periods, fetched_at=FETCHED_AT))
-
-    def cell_names() -> list[str]:
-        return sorted(
-            label.objectName()
-            for label in screen.findChildren(QLabel)
-            if label.objectName().startswith("statusStatsCell_")
-        )
-
-    assert len(cell_names()) == 5 * 9
-    assert _find(screen, QLabel, "statusStatsCell_0_0").text() == PERIODS[0][0]
-    window.apply(_view())
-    assert len(cell_names()) == 13 * 2
-    assert _find(screen, QLabel, "statusStatsCell_12_1").text() == "99원"
-    assert _find(screen, QLabel, "statusStatsTitle").text() == "봉 통계"
-    window.apply(CoinView(AAA, LoadState.READY, periods, fetched_at=FETCHED_AT))
-    assert len(cell_names()) == 5 * 9
-    assert _find(screen, QLabel, "statusStatsTitle").text() == "기간별 봉 통계"
+    # `stats`가 없으면 `periods`에 값이 있어도 받아 둔 값이 없는 쪽이다.
+    assert _text(screen, "statusStatsNote") == INSUFFICIENT
+    assert not _shown(screen, "statusStatsTable")
+    assert not _shown(screen, f"statusCoinStats_{AAA}")
+    assert _find(screen, QLabel, "statusStatsCell_0_0").text() == ""
 
 
 def test_a_naive_time_in_the_stats_is_shown_as_insufficient_and_raises_nothing(make_window):
