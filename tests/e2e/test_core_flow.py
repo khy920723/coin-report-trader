@@ -47,13 +47,14 @@ from coin_report_trader.app.services import Services
 from coin_report_trader.core import (
     BAR_STATS_COLUMNS,
     BAR_STATS_TITLES,
+    INSUFFICIENT_TEXT,
     AlertCategory,
     CandleUnit,
     Market,
     QuoteError,
     ScreenId,
 )
-from coin_report_trader.core.texts import ERROR_NETWORK, ERROR_NOT_ENOUGH_CANDLES
+from coin_report_trader.core.texts import ERROR_NETWORK
 from coin_report_trader.ui import current_screen, screen_widget
 from coin_report_trader.vault import webhook_secret_name
 
@@ -214,17 +215,19 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         return True
 
     def the_settings_keep_what_was_chosen() -> bool:
-        # 처음 설정에서 고른 보관 기간과 코인이 설정 화면에 남아 있다.
+        # 처음 설정에서 고른 보관 기간과 코인이 설정 화면에 남아 있는지 적는다(값은 끝에서
+        # 본다). 통계가 보인 때에는 저장한 설정(`SettingsView`)이 이미 창에 왔으므로(자료
+        # 스레드가 저장 뒤에 받는다) 기다리지 않고 한 번에 읽는다. 그래서 틀리면 안전 시간이
+        # 아니라 끝의 확인에서 실패한다.
         settings = screen_widget(made[0], ScreenId.SETTINGS)
         radio = _find(settings, QRadioButton, "settingsRetention30")
-        if radio is None or not radio.isChecked():
-            return False
         box = _find(settings, QCheckBox, f"settingsCoin_{AAA}")
         chosen = _find(settings, QListWidget, "settingsCoinsSelected")
         picked = [chosen.item(i).text() for i in range(chosen.count())] if chosen else []
-        if not ((box is not None and box.isChecked()) or any("AAA" in t for t in picked)):
-            return False
-        seen["settings"] = (radio.isChecked(), box is not None and box.isChecked(), picked)
+        seen["settings"] = {
+            "retention_30": radio is not None and radio.isChecked(),
+            "coin": (box is not None and box.isChecked()) or any("AAA" in t for t in picked),
+        }
         return True
 
     def the_next_fetch_time_comes_once_the_data_thread_rests() -> bool:
@@ -296,9 +299,9 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
     values = dict(zip(TABLE_COLUMNS, [row[1] for row in seen["stats"]], strict=True))
     assert values["bar_count"] == "200개"  # 처음 설정의 봉 개수 기본값
     assert values["change"].endswith("%")
-    assert ERROR_NOT_ENOUGH_CANDLES not in values.values()
+    assert INSUFFICIENT_TEXT not in values.values()  # 표의 자리 글("봉이 모자람")이 없다
     # 1. 처음 설정에서 고른 보관 기간(30일)과 코인이 설정 화면에 남는다.
-    assert seen["settings"][0]
+    assert seen["settings"] == {"retention_30": True, "coin": True}
     # 3. 알림센터의 오류 알림 탭에 그 줄이 보인다(코인과 오류 이름).
     (line,) = [text for text in seen["lines"] if ERROR_NETWORK in text]
     assert "AAA" in line

@@ -210,6 +210,15 @@ def good_parts(draw: st.DrawFn) -> dict[str, str]:
     }
 
 
+def is_wrong_token(token: str) -> bool:
+    """틀린 토큰인지: 오른쪽 빈칸을 지운 값에 토큰 글자가 아닌 것이 있다.
+
+    주소의 끝에 오는 토큰은 앱과 기준이 앞뒤 빈칸을 지운 뒤에 보므로, 빈칸이 오른쪽 끝에만 붙은
+    토큰(예: 60자 넘는 맞는 토큰 + " ")은 맞는 토큰이 될 수 있다. 그런 값은 틀린 값에서 뺀다.
+    """
+    return any(c not in TOKEN_CHARS for c in token.rstrip())
+
+
 WRONG = {
     "lead": st.sampled_from(["x", "/", "."]),
     "scheme": st.sampled_from(["http:" + "//", "https:/", "HTTPS:" + "//", "", "ftp:" + "//"]),
@@ -225,9 +234,7 @@ WRONG = {
     ),
     "token": st.one_of(
         st.text("".join(sorted(TOKEN_CHARS)), min_size=1, max_size=59),
-        st.text("Ab9-_.~ /?\u00e9", min_size=60, max_size=70).filter(
-            lambda t: any(c not in TOKEN_CHARS for c in t)
-        ),
+        st.text("Ab9-_.~ /?\u00e9", min_size=60, max_size=70).filter(is_wrong_token),
     ),
     "tail": st.sampled_from(["/", "?", "#", "/x", "?a=1", "#x"]),
 }
@@ -282,6 +289,15 @@ ONE_WRONG = {
 def test_the_webhook_url_check_matches_a_step_by_step_reading_of_the_rules(text):
     """`is_webhook_url`의 답이 명세의 조건을 하나씩 본 기준과 같다."""
     assert is_webhook_url(text) == reference_is_webhook_url(text)
+
+
+def test_a_token_with_only_trailing_spaces_is_not_a_wrong_token():
+    """빈칸이 오른쪽 끝에만 붙은 맞는 토큰은 틀린 값이 아니다(지우면 맞는 주소가 된다)."""
+    token = "Tk-_." * 13 + "  "
+    assert not is_wrong_token(token)
+    assert is_webhook_url(join({**GOOD, "token": token, "tail": ""}))
+    assert is_wrong_token("Tk-_." * 13 + " x")
+    assert is_wrong_token("Tk-_." * 12 + "?" + "Tk-_.")
 
 
 @pytest.mark.parametrize("part", PARTS)
