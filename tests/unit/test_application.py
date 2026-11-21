@@ -103,7 +103,7 @@ def test_run_gui_shows_the_window_and_logs_start_and_stop(env: Any) -> None:
     seen = _finish(seen)
     assert seen["visible"] is True
     assert seen["title"] == "Coin Report Trader"
-    assert seen["status"].startswith("바탕 버전 0.0.1 · 매매 기능 없음 · 자료 폴더 ")
+    assert seen["status"].startswith("판 v0.0.1 · 매매 기능 없음 · 자료 폴더 ")
     assert seen["status"].endswith(
         f"{ROOT_TOKEN}{'\\' if sys.platform == 'win32' else '/'}coin-report-trader"
     )

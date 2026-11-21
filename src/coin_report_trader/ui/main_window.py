@@ -75,7 +75,7 @@ ConfirmHandler = Callable[[str, str], bool]
 
 
 def status_line_text(context: UiContext) -> str:
-    return f"바탕 버전 {context.version} · 매매 기능 없음 · 자료 폴더 {context.data_dir_display}"
+    return f"판 v{context.version} · 매매 기능 없음 · 자료 폴더 {context.data_dir_display}"
 
 
 class MainWindow(QMainWindow):
