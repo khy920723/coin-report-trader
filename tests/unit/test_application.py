@@ -103,7 +103,7 @@ def test_run_gui_shows_the_window_and_logs_start_and_stop(env: Any) -> None:
     seen = _finish(seen)
     assert seen["visible"] is True
     assert seen["title"] == "Coin Report Trader"
-    assert seen["status"].startswith("판 v0.0.1 · 매매 기능 없음 · 자료 폴더 ")
+    assert seen["status"].startswith("판 v0.1.0 · 매매 기능 없음 · 자료 폴더 ")
     assert seen["status"].endswith(
         f"{ROOT_TOKEN}{'\\' if sys.platform == 'win32' else '/'}coin-report-trader"
     )
@@ -112,7 +112,7 @@ def test_run_gui_shows_the_window_and_logs_start_and_stop(env: Any) -> None:
         assert folder.is_dir()
     assert (env.root / "data" / "app.db").is_file()
     log = _log_text(env)
-    assert "시작: 버전 0.0.1" in log
+    assert "시작: 버전 0.1.0" in log
     assert "종료: 코드 0" in log
     assert log.index("시작") < log.index("종료")
     assert str(env.data_home) not in log

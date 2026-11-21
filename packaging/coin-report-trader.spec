@@ -17,12 +17,19 @@
 # 앱은 QtNetwork로 네트워크에 나가지 않으므로 Qt의 TLS 플러그인(plugins/tls)과, QtNetwork 훅이 그
 # 플러그인을 위해 모으는 OpenSSL 라이브러리는 넣지 않는다(Python의 `_ssl` 등이 import하는 것은 둔다).
 #
+# 판 정보(M1 명세 3.15): `src/coin_report_trader/__init__.py`의 글에서 `__version__`을 읽고(import하지
+# 않는다), `packaging/version_info.py`의 `version_fields` 값으로 Windows의 `EXE(version=…)`을 만든다.
+# 빌드 뒤에 만든 exe의 판 정보를 다시 읽어 "v{판}"의 두 글과 숫자 칸을 견준다(Windows에서만. 판 정보는
+# Windows 실행 파일에만 있다).
+#
 # 빌드를 멈추는 경우: GPL로만 제공되는 Qt 모듈이 번들에 들어감, 개발·빌드 전용 패키지가 번들에
 # 들어감, (Windows) Python·패키지 밖에서 가져온 바이너리가 섞임, 미리 넣은 모듈(REQUIRED_MODULES)이
 # 번들에 없음, 번들에 든 패키지의 라이선스 이름이나 파일을 메타데이터에서 찾지 못함, 고지가 가리키는
-# 파일이 없음, 빌드한 번들에 Qt의 TLS 플러그인이나 QtNetwork 훅이 모은 OpenSSL 라이브러리가 있음.
+# 파일이 없음, 빌드한 번들에 Qt의 TLS 플러그인이나 QtNetwork 훅이 모은 OpenSSL 라이브러리가 있음,
+# `__version__`을 읽지 못하거나 꼴이 틀림, (Windows) 빌드한 exe의 판 정보가 다르거나 읽지 못함.
 
 import importlib.metadata
+import importlib.util
 import re
 import shutil
 import sys
@@ -42,6 +49,7 @@ VERSION_TOKEN = "@PYSIDE6_VERSION@"
 CERTIFI_VERSION_TOKEN = "@CERTIFI_VERSION@"
 CERTIFI_LICENSE_TOKEN = "@CERTIFI_LICENSE@"
 CERTIFI_SOURCE_TOKEN = "@CERTIFI_SOURCE@"
+VERSION_LINE = re.compile(r'^__version__ = "([^"]*)"$', re.MULTILINE)
 
 # 앱이 아직 import하지 않는 런타임 패키지(M1 명세 4절 5번). 미리 넣고, 번들에 들었는지 확인한다.
 REQUIRED_MODULES = ["httpx", "certifi", "keyring", "keyring.backends.Windows"]
@@ -63,6 +71,83 @@ GPL_ONLY_QT_BINARY = re.compile(
     r"|qt6charts|chartsqml|datavisualization|designer",
     re.IGNORECASE,
 )
+
+
+def app_version():
+    """루트의 `__version__`(`src/coin_report_trader/__init__.py`의 글에서 읽는다. import하지 않는다)."""
+    found = VERSION_LINE.findall((SRC / PACKAGE / "__init__.py").read_text(encoding="utf-8"))
+    if len(found) != 1:
+        raise SystemExit("src/coin_report_trader/__init__.py에서 __version__ = \"…\"를 하나 찾지 못했습니다.")
+    return found[0]
+
+
+def load_version_info():
+    """`packaging/version_info.py`(PyPI의 `packaging`과 이름이 겹쳐 파일 경로로 읽는다)."""
+    spec = importlib.util.spec_from_file_location("coin_report_trader_version_info", PACKAGING / "version_info.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def version_resource(fields):
+    """`version_fields`의 값으로 만든 PyInstaller의 `VSVersionInfo`(Windows에서만 부른다)."""
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo,
+        StringFileInfo,
+        StringStruct,
+        StringTable,
+        VarFileInfo,
+        VarStruct,
+        VSVersionInfo,
+    )
+
+    strings = [StringStruct(name, text) for name, text in fields["strings"].items()]
+    translation = [int(fields["language"], 16), int(fields["codepage"], 16)]
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=fields["filevers"], prodvers=fields["prodvers"]),
+        kids=[
+            StringFileInfo([StringTable(fields["language"] + fields["codepage"], strings)]),
+            VarFileInfo([VarStruct("Translation", translation)]),
+        ],
+    )
+
+
+def split_version(most, least):
+    """판 정보의 두 DWORD를 네 자리 숫자로 푼다."""
+    return (most >> 16, most & 0xFFFF, least >> 16, least & 0xFFFF)
+
+
+def version_info_problems(exe_path, fields):
+    """빌드한 exe의 판 정보를 다시 읽어 `fields`와 다른 것(Windows에서만 부른다)."""
+    from PyInstaller.utils.win32.versioninfo import StringFileInfo, read_version_info_from_executable
+
+    try:
+        info = read_version_info_from_executable(str(exe_path))
+    except Exception as exc:  # 읽지 못한 까닭을 그대로 알린다
+        return [f"판 정보를 읽지 못했습니다: {type(exc).__name__}: {exc}"]
+    if info is None or info.ffi is None:
+        return ["판 정보가 없습니다"]
+    strings = {
+        struct.name: struct.val
+        for kid in info.kids
+        if isinstance(kid, StringFileInfo)
+        for table in kid.kids
+        for struct in table.kids
+    }
+    ffi = info.ffi
+    found = {
+        "ProductVersion": strings.get("ProductVersion"),
+        "FileVersion": strings.get("FileVersion"),
+        "filevers": split_version(ffi.fileVersionMS, ffi.fileVersionLS),
+        "prodvers": split_version(ffi.productVersionMS, ffi.productVersionLS),
+    }
+    wanted = {
+        "ProductVersion": fields["strings"]["ProductVersion"],
+        "FileVersion": fields["strings"]["FileVersion"],
+        "filevers": tuple(fields["filevers"]),
+        "prodvers": tuple(fields["prodvers"]),
+    }
+    return [f"{name}: {found[name]!r} (기대 {wanted[name]!r})" for name in wanted if found[name] != wanted[name]]
 
 
 def runtime_distributions():
@@ -323,6 +408,11 @@ def components_text(pyside_version, packages):
     return "\n".join(lines) + "\n"
 
 
+try:
+    VERSION_FIELDS = load_version_info().version_fields(app_version())
+except ValueError as exc:
+    raise SystemExit(f"판 정보를 만들지 못했습니다: {exc}") from exc
+
 datas = [
     (str(PACKAGING / "licenses" / "LGPL-3.0.txt"), LICENSES),
     (str(PACKAGING / "licenses" / "GPL-3.0.txt"), LICENSES),
@@ -421,6 +511,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    version=version_resource(VERSION_FIELDS) if sys.platform == "win32" else None,
 )
 coll = COLLECT(
     exe,
@@ -441,6 +532,14 @@ contents = dist_dir / (exe.contents_directory or ".")
 qt_tls_left = qt_tls_left_in(contents, qt_openssl_names)
 if qt_tls_left:
     raise SystemExit("Qt의 TLS 플러그인이나 OpenSSL이 번들에 남았습니다:\n  " + "\n  ".join(qt_tls_left))
+
+# 빌드한 exe의 판 정보를 다시 읽어 본다(M1 명세 3.15). 다르거나 읽지 못하면 빌드를 멈춘다.
+if sys.platform == "win32":
+    version_problems = version_info_problems(dist_dir / f"{APP_NAME}.exe", VERSION_FIELDS)
+    if version_problems:
+        raise SystemExit("exe의 판 정보가 다릅니다:\n  " + "\n  ".join(version_problems))
+    # Windows의 표준 출력은 한글을 쓰지 못할 수 있으므로(위 components.txt) ASCII로 찍는다.
+    print(f"version info: {VERSION_FIELDS['strings']['ProductVersion']} ok", flush=True)
 pyside_version = importlib.metadata.version("PySide6-Essentials")
 
 # 번들에 든 Python 패키지마다 제 라이선스 파일을 licenses/<이름>/에 둔다.
