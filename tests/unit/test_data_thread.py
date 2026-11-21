@@ -31,6 +31,7 @@ from coin_report_trader.core import (
     SettingsView,
     StorageError,
     UiUpdate,
+    empty_bar_stats,
 )
 from coin_report_trader.core.texts import (
     ERROR_BLOCKED,
@@ -1772,7 +1773,7 @@ def test_an_exception_in_the_first_calculation_does_not_end_the_thread(
     assert rig.worker.thread.is_alive()
     first = rig.sink.coin(AAA)[0]
     assert (first.state, first.error_name, first.stats) == (
-        LoadState.FAILED, "RuntimeError", None,
+        LoadState.FAILED, "RuntimeError", empty_bar_stats(AAA, HOUR, 100),
     )  # fmt: skip
     assert rig.sink.coin(BBB)[0].state is LoadState.NO_DATA  # 남은 코인의 `CoinView`도 온다
     assert [r.market for r in rig.quote.candle_requests()] == [AAA, BBB]  # (가) 받기
@@ -1832,7 +1833,8 @@ def test_a_stored_candle_that_cannot_be_read_at_the_start_is_an_a30_of_that_coin
     rig.start()
     first = rig.sink.coin(AAA)[0]
     assert (first.state, first.error_name, first.fetched_at) == (LoadState.FAILED, "DB 오류", None)
-    assert first.stats is None
+    assert first.stats == empty_bar_stats(AAA, HOUR, 100)  # 값이 없어도 `stats`는 늘 있다
+    assert first.last_incomplete is False
     assert rig.sink.coin(BBB)[0].state is LoadState.NO_DATA
     (alert,) = rig.alerts()
     assert (alert.code, alert.category, alert.coin) == ("A-30", AlertCategory.OTHER, AAA)

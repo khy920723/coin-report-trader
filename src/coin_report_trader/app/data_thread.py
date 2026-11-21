@@ -48,6 +48,7 @@ from coin_report_trader.core import (
     SettingsView,
     StorageError,
     UiUpdate,
+    empty_bar_stats,
     redact,
 )
 from coin_report_trader.core.texts import (
@@ -996,9 +997,7 @@ class DataWorker:
         last = self._last_view.get(market)
         fetched_at, as_of = self._fetched_at(market), self._clock.now()
         if last is None:
-            return CoinView(
-                market, state, fetched_at=fetched_at, error_name=error_name, as_of=as_of
-            )
+            return self._build_view(market, state, None, error_name=error_name)
         return replace(
             last,
             state=state,
@@ -1020,6 +1019,10 @@ class DataWorker:
         blocked_until = self._blocked_until if blocked else None
         fetched_at = self._fetched_at(market)
         as_of = self._clock.now()
+        chosen = self._chosen()
+        if computed is None and chosen is not None:
+            # 셈한 값이 없어도 `stats`는 늘 담는다(3.4). 봉이 하나도 없는 값이다.
+            computed = (empty_bar_stats(market, chosen[0], chosen[1]), False)
         if computed is None:
             return CoinView(
                 market, state, fetched_at=fetched_at, error_name=error_name,
