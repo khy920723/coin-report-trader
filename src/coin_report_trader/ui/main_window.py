@@ -3,12 +3,14 @@
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QMainWindow,
+    QScrollArea,
     QStackedWidget,
     QWidget,
 )
@@ -74,6 +76,30 @@ ConfirmHandler = Callable[[str, str], bool]
 """확인 창을 대신하는 함수. `(제목, 본문)`을 받아 "확인"이면 참, "취소"면 거짓을 돌려준다."""
 
 
+SCROLL_PREFIX = "screenScroll_"
+INITIAL_SIZE = (1280, 800)
+"""창의 처음 크기(M2 명세 3.12.5). 쓸 수 있는 영역이 더 작으면 그 영역의 90%다."""
+SMALL_SCREEN_RATIO = 0.9
+
+
+def initial_size(available_width: int, available_height: int) -> tuple[int, int]:
+    """쓸 수 있는 영역의 크기로 창의 처음 크기를 정한다. 어느 쪽이든 영역 안에 든다."""
+    width, height = INITIAL_SIZE
+    if available_width < width or available_height < height:
+        return int(available_width * SMALL_SCREEN_RATIO), int(available_height * SMALL_SCREEN_RATIO)
+    return width, height
+
+
+def _scroll_page(screen_id: ScreenId, screen: QWidget) -> QScrollArea:
+    """화면 하나를 세로로 스크롤되는 자리에 담는다. 내용은 제 높이보다 작게 눌리지 않는다."""
+    page = QScrollArea()
+    page.setObjectName(SCROLL_PREFIX + screen_id.value)
+    page.setFrameShape(QScrollArea.Shape.NoFrame)
+    page.setWidgetResizable(True)
+    page.setWidget(screen)
+    return page
+
+
 def status_line_text(context: UiContext) -> str:
     return f"판 v{context.version} · 매매 기능 없음 · 자료 폴더 {context.data_dir_display}"
 
@@ -120,13 +146,13 @@ class MainWindow(QMainWindow):
         for screen_id in ScreenId:
             nav.addItem(SCREEN_TITLES[screen_id])
             if screen_id is ScreenId.FIRST_SETUP:
-                stack.addWidget(self._first_setup)
+                stack.addWidget(_scroll_page(screen_id, self._first_setup))
             elif screen_id is ScreenId.SETTINGS:
-                stack.addWidget(self._settings)
+                stack.addWidget(_scroll_page(screen_id, self._settings))
             elif screen_id is ScreenId.STATUS:
-                stack.addWidget(self._status)
+                stack.addWidget(_scroll_page(screen_id, self._status))
             else:
-                stack.addWidget(build_screen(screen_id))
+                stack.addWidget(_scroll_page(screen_id, build_screen(screen_id)))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
         nav.itemClicked.connect(self._on_nav_clicked)
         nav.setCurrentRow(0)
@@ -144,6 +170,8 @@ class MainWindow(QMainWindow):
         status.setObjectName(STATUS_LINE_NAME)
         status.setTextFormat(Qt.TextFormat.PlainText)
         self.statusBar().addWidget(status, 1)
+
+        self._fit_to_screen()
 
         self._saved_timer = QTimer(self)
         self._saved_timer.setSingleShot(True)
@@ -167,6 +195,16 @@ class MainWindow(QMainWindow):
         stack.currentChanged.connect(self._on_screen_changed)
 
         self._update()
+
+    def _fit_to_screen(self) -> None:
+        """처음 크기와 자리를 화면의 쓸 수 있는 영역 안에 둔다(M2 명세 3.12.5의 처음 크기)."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        width, height = initial_size(area.width(), area.height())
+        self.resize(width, height)
+        self.move(area.x() + (area.width() - width) // 2, area.y() + (area.height() - height) // 2)
 
     # --- 바깥에서 쓰는 것 ---
 
@@ -624,8 +662,18 @@ def screen_order(window: QMainWindow) -> tuple[ScreenId, ...]:
     stack = _stack(window)
     prefix = screen_object_name(ScreenId.FIRST_SETUP).removesuffix(ScreenId.FIRST_SETUP.value)
     return tuple(
-        ScreenId(stack.widget(i).objectName().removeprefix(prefix)) for i in range(stack.count())
+        ScreenId(_screen_of(stack.widget(i)).objectName().removeprefix(prefix))
+        for i in range(stack.count())
     )
+
+
+def _screen_of(page: QWidget) -> QWidget:
+    """스크롤 자리 안의 화면(스크롤 자리가 아니면 그 위젯)."""
+    if isinstance(page, QScrollArea):
+        inner = page.widget()
+        if inner is not None:
+            return inner
+    return page
 
 
 def screen_widget(window: QMainWindow, screen_id: ScreenId) -> QWidget:
