@@ -137,7 +137,7 @@ def test_the_old_stats_values_are_gone_from_coin_view() -> None:
 
 def test_settings_view_gets_unit_and_count_last_with_none_as_the_default() -> None:
     names = [field.name for field in dataclasses.fields(SettingsView)]
-    assert names[-7:-4] == ["candle_unit", "candle_count", "ai_choices"]  # 2단계가 맨 뒤에 더했다
+    assert names[-8:-5] == ["candle_unit", "candle_count", "ai_choices"]  # 2단계가 맨 뒤에 더했다
     view = SettingsView(("KRW-AAA",), 30, True)
     assert (view.candle_unit, view.candle_count) == (None, None)
     chosen = SettingsView(
@@ -150,11 +150,11 @@ def test_save_settings_of_the_port_takes_unit_and_count_with_none_as_the_default
     parameters = inspect.signature(UiActions.save_settings).parameters
     assert list(parameters) == [
         "self", "coins", "retention_days", "first_setup", "candle_unit", "candle_count",
-        "ai_choices", "autostart", "trade", "accept_below_stop",
+        "ai_choices", "autostart", "trade", "accept_below_stop", "live",
     ]  # fmt: skip
     for name in (
         "first_setup", "candle_unit", "candle_count", "ai_choices", "autostart", "trade",
-        "accept_below_stop",
+        "accept_below_stop", "live",
     ):  # fmt: skip
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["candle_unit"].default is None
@@ -191,6 +191,7 @@ def test_the_actions_hand_unit_and_count_to_the_data_thread() -> None:
                 "autostart": None,
                 "trade": None,
                 "accept_below_stop": (),
+                "live": None,
             },
         ),
         (
@@ -204,6 +205,7 @@ def test_the_actions_hand_unit_and_count_to_the_data_thread() -> None:
                 "autostart": None,
                 "trade": None,
                 "accept_below_stop": (),
+                "live": None,
             },
         ),
     ]

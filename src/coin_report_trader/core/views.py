@@ -20,6 +20,7 @@ from coin_report_trader.core.ai import (
     Verdict,
 )
 from coin_report_trader.core.alerts import AlertCategory, Mode
+from coin_report_trader.core.exchange import LiveConfirmView, LiveSettings
 from coin_report_trader.core.market import CandleUnit, Market
 from coin_report_trader.core.stats import BarStats
 from coin_report_trader.core.trade import (
@@ -104,6 +105,8 @@ class SettingsView:
     """마지막 맞추기의 실패 글. 없으면 `None`."""
     trade: TradeSettings | None = None
     """저장된 매매 칸이 모두 있을 때만 값이 있다. 3단계 전(1·2단계)의 기록은 `None`(M3 명세 3.4)."""
+    live: LiveSettings | None = None
+    """저장된 실거래 설정(M5 명세 3.4). 3단계 전의 기록은 `None`."""
 
 
 @dataclass(frozen=True)
@@ -306,6 +309,8 @@ class TradeStatusView:
     uncanceled: tuple[str, ...] = ()
     """오류 멈춤일 때 취소하지 못한 주문의 요약."""
     as_of: datetime | None = None
+    mode: Mode = Mode.PAPER
+    """그때의 모드(M5 명세 3.4)."""
 
 
 @dataclass(frozen=True)
@@ -387,6 +392,8 @@ class HistoryTab(StrEnum):
     ORDERS = "orders"
     FILLS = "fills"
     PAUSES = "pauses"
+    EXTERNAL = "external"
+    """외부 변동(M5 명세 3.4)."""
 
 
 @dataclass(frozen=True)
@@ -423,6 +430,95 @@ class BelowStopView:
     stop_line: Decimal
 
 
+class AccountState(StrEnum):
+    """계정 화면의 상태(M5 명세 3.4, 3.15)."""
+
+    BEFORE_SETUP = "before_setup"
+    """처음 설정 전."""
+    NO_KEY = "no_key"
+    LOADING = "loading"
+    """처음 읽는 중."""
+    OK = "ok"
+    FAILED = "failed"
+    """읽기 실패. 마지막 값을 흐리게 보인다."""
+    BLOCKED = "blocked"
+    """오류 멈춤의 원인이 일시 차단이라 읽지 않음."""
+
+
+@dataclass(frozen=True)
+class AccountRow:
+    """계정 화면의 한 줄(원화가 아닌 통화 하나)."""
+
+    currency: str
+    """코인 기호."""
+    market: str | None
+    """원화 마켓이 있으면 `KRW-{통화}`."""
+    qty: Decimal
+    """주문 가능 + 묶임."""
+    locked: Decimal
+    avg_buy_price: Decimal | None
+    avg_modified: bool
+    price: Decimal | None
+    buy_amount: Decimal | None
+    value: Decimal | None
+    pnl: Decimal | None
+    pnl_rate: Decimal | None
+    picked: bool
+    """이 앱이 고른 코인."""
+    note: str | None
+    """"원화 마켓 없음", "현재가를 읽지 못함", "평균 매수가 없음"."""
+
+
+@dataclass(frozen=True)
+class AccountView:
+    """계정 화면의 값(M5 명세 3.4, 3.15). 금액이 없으면(처음 읽기 전) 금액 칸은 `None`이다."""
+
+    state: AccountState
+    krw_available: Decimal | None
+    krw_locked: Decimal | None
+    holdings_value: Decimal | None
+    total_assets: Decimal | None
+    total_buy: Decimal | None
+    total_pnl: Decimal | None
+    total_pnl_rate: Decimal | None
+    rows: tuple[AccountRow, ...]
+    """3.15.3의 차례."""
+    excluded_value: int
+    """총자산에서 뺀 줄의 수."""
+    excluded_pnl: int
+    """손익 합에서 뺀 줄의 수."""
+    read_utc: datetime | None
+    error_name: str | None
+    reading: bool
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
+class LiveStatusView:
+    mode: Mode
+    allowed: bool
+    """실거래 허용 값."""
+    blocks: tuple[str, ...]
+    """`LiveBlock`의 글."""
+    counts: tuple[tuple[str, int, int], ...]
+    """(코인, 센 수, N)."""
+    sell_all_done: bool
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
+class UpbitKeyView:
+    """업비트 키의 상태. 키의 값은 들지 않는다."""
+
+    present: bool
+    created: date | None
+    expires: date | None
+    can_edit: bool
+    """멈춤 상태."""
+    message: str | None
+    """지우지 못함 등."""
+
+
 UiUpdate = (
     CoinView
     | MarketsView
@@ -440,4 +536,8 @@ UiUpdate = (
     | PerformanceView
     | HistoryView
     | BelowStopView
+    | AccountView
+    | LiveStatusView
+    | UpbitKeyView
+    | LiveConfirmView
 )

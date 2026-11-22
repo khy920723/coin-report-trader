@@ -187,7 +187,7 @@ def test_the_new_views_have_the_fields_of_the_spec_in_order() -> None:
 
 
 def test_the_old_views_get_their_new_fields_last_with_defaults() -> None:
-    assert [f.name for f in dataclasses.fields(SettingsView)][-7:-4] == [
+    assert [f.name for f in dataclasses.fields(SettingsView)][-8:-5] == [
         "candle_unit",
         "candle_count",
         "ai_choices",
@@ -250,7 +250,7 @@ def test_the_quote_source_is_not_changed_by_the_price_source() -> None:
 def test_the_ui_actions_get_two_loads_and_the_ai_choices() -> None:
     names = {name for name in dir(UiActions) if not name.startswith("_")}
     assert {"load_reports", "load_report"} <= names
-    assert list(inspect.signature(UiActions.load_reports).parameters) == ["self", "market"]
+    assert list(inspect.signature(UiActions.load_reports).parameters) == ["self", "market", "mode"]
     assert list(inspect.signature(UiActions.load_report).parameters) == ["self", "report_id"]
     parameter = inspect.signature(UiActions.save_settings).parameters["ai_choices"]
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
@@ -301,9 +301,10 @@ def test_the_actions_hand_the_new_calls_to_the_data_thread() -> None:
                 "autostart": None,
                 "trade": None,
                 "accept_below_stop": (),
+                "live": None,
             },
         ),
-        ("load_reports", ("KRW-AAA",), {}),
+        ("load_reports", ("KRW-AAA", None), {}),
         ("load_report", (12,), {}),
     ]
 
@@ -331,6 +332,7 @@ def test_the_data_thread_queues_the_new_calls(tmp_path: Path) -> None:
 def test_the_services_get_ai_last_and_none_by_default() -> None:
     assert [f.name for f in dataclasses.fields(Services)] == [
         "quote", "webhook", "vault", "clock", "ai", "autostart", "book", "min_order",
+        "exchange_transport",
     ]  # fmt: skip
     assert Services().ai is None
 

@@ -26,6 +26,10 @@ class WebhookError(_NamedError):
     """디스코드 보내기가 실패했다. `error_name`은 3.9절의 디스코드 쪽 오류 이름이다."""
 
 
+class ExchangeError(_NamedError):
+    """거래소 요청이 실패했다. `error_name`은 M5 명세 3.5.5의 이름이다."""
+
+
 class SecretStoreError(Exception):
     """비밀 값 보관소(Windows 자격 증명 보관소)를 쓰지 못했다."""
 

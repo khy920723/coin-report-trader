@@ -403,7 +403,7 @@ class _Actions:
         self, coins: tuple[str, ...], retention_days: int, *, first_setup: bool
     ) -> None: ...
 
-    def load_reports(self, market: str) -> None: ...
+    def load_reports(self, market: str, mode: Any = None) -> None: ...
 
     def load_report(self, report_id: int) -> None: ...
 
@@ -432,6 +432,20 @@ class _Actions:
     def load_history(self, tab: Any, market: str | None, day: Any) -> None: ...
 
     def export_history(self, tab: Any, market: str | None, path: str) -> None: ...
+
+    def save_upbit_key(self, access: str, secret: str, created: Any) -> None: ...
+
+    def delete_upbit_key(self) -> None: ...
+
+    def prepare_live_on(self) -> None: ...
+
+    def turn_live_on(self) -> None: ...
+
+    def turn_live_off(self) -> None: ...
+
+    def account_visible(self, visible: bool) -> None: ...
+
+    def refresh_account(self) -> None: ...
 
 
 def test_system_clock_wait() -> None:
@@ -522,6 +536,13 @@ def test_ui_actions_has_the_actions_of_the_spec() -> None:
         "resume_error",
         "load_history",
         "export_history",
+        "save_upbit_key",
+        "delete_upbit_key",
+        "prepare_live_on",
+        "turn_live_on",
+        "turn_live_off",
+        "account_visible",
+        "refresh_account",
     }
 
 

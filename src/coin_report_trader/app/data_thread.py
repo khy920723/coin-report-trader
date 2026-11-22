@@ -45,6 +45,7 @@ from coin_report_trader.core import (
     Clock,
     CoinView,
     HistoryTab,
+    LiveSettings,
     LoadState,
     MarketsView,
     Mode,
@@ -370,6 +371,7 @@ class DataWorker(ReportRoundMixin):
         autostart: bool | None = None,
         trade: TradeSettings | None = None,
         accept_below_stop: tuple[str, ...] = (),
+        live: LiveSettings | None = None,
     ) -> None:
         """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4).
 
@@ -378,9 +380,9 @@ class DataWorker(ReportRoundMixin):
         `autostart`가 `None`이면 저장된 값을 그대로 둔다(M1 명세 3.16.3).
 
         `trade`와 `accept_below_stop`은 받기만 하고 쓰지 않는다(M3 명세 4절 1번. 23번까지
-        자료 스레드는 아무것도 하지 않는다).
+        자료 스레드는 아무것도 하지 않는다). `live`도 받기만 한다(M5 명세 4절 3번. 15번까지).
         """
-        del trade, accept_below_stop
+        del trade, accept_below_stop, live
         self._put(
             _SaveTask(
                 tuple(coins),
@@ -405,13 +407,39 @@ class DataWorker(ReportRoundMixin):
     def resume_error(self) -> None:
         """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
 
-    def load_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
+    def load_history(
+        self, tab: HistoryTab, market: str | None, day: date, mode: Mode | None = None
+    ) -> None:
         """받기만 하고 하지 않는다(M3 명세 4절 1번. 25번이 `HistoryView`를 보낸다)."""
-        del tab, market, day
+        del tab, market, day, mode
 
     def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None:
         """받기만 하고 하지 않는다(M3 명세 4절 1번. 25번이 쓴다)."""
         del tab, market, path
+
+    def save_upbit_key(self, access: str, secret: str, created: date) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번. 15번이 보관소에 쓴다). 값은 어디에도 남기지
+        않는다."""
+        del access, secret, created
+
+    def delete_upbit_key(self) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
+
+    def prepare_live_on(self) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
+
+    def turn_live_on(self) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
+
+    def turn_live_off(self) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
+
+    def account_visible(self, visible: bool) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번. 15번이 읽는다)."""
+        del visible
+
+    def refresh_account(self) -> None:
+        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
 
     def retry_candles(self) -> None:
         self._put("retry")
