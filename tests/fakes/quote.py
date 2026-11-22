@@ -11,14 +11,23 @@
 - 현재가(M2 명세 3.6): `get_price(market)`는 시험이 코인마다 정한 값(`prices=`나 `set_prices`)을
   준다. 정하지 않은 코인이면 시험의 실수라 `KeyError`다(기록하지 않는다). 정한 `QuoteError`는 아래
   `script`로 낸다(종류 `PRICE`).
+- 호가, 호가 단위, 1분봉(M3 명세 3.6, 3.19. `BookSource`):
+  - `get_best_prices(market)`은 `set_book(market, ask, bid)`로 정한 (매도 호가, 매수 호가),
+    `get_tick_size(market)`은 `set_tick_size(market, tick)`로 정한 값이다.
+    `get_minute_candles(market, *, to, count)`는 `put_minutes(*candles)`로 넣은 1분봉 가운데 `to`
+    앞에 시작한 것을 새것부터 `count`개 준다(`get_candles`와 같은 약속과 같은 인자 검사).
+  - 정하지 않은 코인의 기본값: 호가 단위 1, 최우선 매도·매수 호가는 둘 다 그 코인의 `get_price`
+    값(현재가도 정하지 않았으면 `KeyError`), 1분봉은 없음(빈 튜플).
+  - 정한 `QuoteError`는 `script`로 낸다(종류 `BOOK`, `TICK`, `MINUTES`. 메서드마다).
+  - `make_minutes(market, count, *, last_start)`가 `last_start`에서 끝나는 이어진 1분봉을 만든다.
 - 봉 넣기: `set_candles(market, unit, candles)`는 그 마켓·단위의 봉을 통째로 바꾼다.
   `put_candles(*candles)`는 시작 시각이 같은 봉을 바꾸고 없는 봉을 더한다(새 봉이 생기고 마지막 봉의
   종가가 바뀌는 B9). `set_markets(markets)`는 코인 목록을 바꾼다. 받기 사이에 언제든 불러도 된다.
 - 결과 정하기(`script`): 요청 하나 단위로 정한다. 받기 하나가 도는 동안 시험이 끼어들 수 없으므로
   미리 줄을 세워 둔다.
   - `script(*outcomes, kind=None, market=None, unit=None)`이 결과의 줄 하나를 더한다.
-    `kind`(`MARKETS`, `CANDLES`, `PRICE`), `market`, `unit` 가운데 준 것이 모두 맞는 요청만 그 줄을
-    쓴다(주지 않은 것은 가리지 않는다).
+    `kind`(`MARKETS`, `CANDLES`, `PRICE`, `BOOK`, `TICK`, `MINUTES`), `market`, `unit` 가운데 준
+    것이 모두 맞는 요청만 그 줄을 쓴다(주지 않은 것은 가리지 않는다).
   - 요청이 오면 더한 차례대로 줄을 보고, 맞고 남은 결과가 있는 첫 줄에서 결과 하나를 꺼낸다.
     결과는 `QuoteError`(그 오류를 낸다)나 `OK`(정상으로 답한다)다. 맞는 줄이 없거나 다 썼으면
     정상으로 답한다.
@@ -33,7 +42,8 @@
   - 시계: 만들 때 `clock`(가짜 시계)을 주면 요청마다 그때의 `clock.monotonic()`과 `clock.now()`를
     `monotonic`, `now`에 적는다. 주지 않으면 둘 다 `None`이다. B10은 `monotonic`으로 본다.
   - 거르는 도우미: `candle_requests(market=None, unit=None)`, `market_requests()`,
-    `price_requests(market=None)`. 현재가 요청의 단위, `to`, `count`는 `None`이다.
+    `price_requests(market=None)`, `book_requests(kind=None, market=None)`. 현재가, 호가, 호가 단위
+    요청의 단위, `to`, `count`는 `None`이고, 1분봉 요청은 `to`와 `count`가 있고 단위가 `None`이다.
 - 만든 숫자의 봉: `make_candles(market, unit, count, *, last_start)`가 `last_start`에서 끝나는
   이어진 봉 `count`개를 시작 시각 순으로 만든다(값은 차례에서 셈한 만든 숫자다).
 - 여러 스레드가 함께 써도 된다(잠금 하나).
@@ -43,7 +53,7 @@ import threading
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
@@ -53,6 +63,7 @@ from coin_report_trader.core import (
     CandleUnit,
     Clock,
     Market,
+    MinuteCandle,
     QuoteError,
 )
 
@@ -62,6 +73,15 @@ CANDLES: Final = "candles"
 """봉 요청의 종류."""
 PRICE: Final = "price"
 """현재가 요청의 종류(M2 명세 3.6)."""
+BOOK: Final = "book"
+"""최우선 호가 요청의 종류(M3 명세 3.6)."""
+TICK: Final = "tick"
+"""호가 단위 요청의 종류(M3 명세 3.6)."""
+MINUTES: Final = "minutes"
+"""1분봉 요청의 종류(M3 명세 3.6)."""
+BOOK_KINDS: Final = (BOOK, TICK, MINUTES)
+DEFAULT_TICK_SIZE: Final = Decimal(1)
+"""정하지 않은 코인의 호가 단위(M3 명세 3.6)."""
 MAX_COUNT: Final = 200
 
 UNIT_STEP: Final = CANDLE_UNIT_LENGTHS
@@ -115,7 +135,7 @@ class _Script:
 
 
 class FakeQuoteSource:
-    """`QuoteSource`와 `PriceSource`의 가짜(모듈 설명)."""
+    """`QuoteSource`, `PriceSource`, `BookSource`의 가짜(모듈 설명)."""
 
     def __init__(
         self,
@@ -129,6 +149,9 @@ class FakeQuoteSource:
         self._clock = clock
         self._markets: tuple[Market, ...] = tuple(markets)
         self._prices: dict[str, Decimal] = dict(prices or {})
+        self._books: dict[str, tuple[Decimal, Decimal]] = {}
+        self._ticks: dict[str, Decimal] = {}
+        self._minutes: dict[str, dict[datetime, MinuteCandle]] = {}
         self._candles: dict[tuple[str, CandleUnit], dict[datetime, Candle]] = {}
         self._scripts: list[_Script] = []
         self.requests: list[QuoteRequest] = []
@@ -140,6 +163,21 @@ class FakeQuoteSource:
     def set_markets(self, markets: Iterable[Market]) -> None:
         with self._lock:
             self._markets = tuple(markets)
+
+    def set_book(self, market: str, ask: Decimal, bid: Decimal) -> None:
+        """그 코인의 최우선 매도 호가와 매수 호가를 정한다."""
+        with self._lock:
+            self._books[market] = (Decimal(ask), Decimal(bid))
+
+    def set_tick_size(self, market: str, tick: Decimal) -> None:
+        with self._lock:
+            self._ticks[market] = Decimal(tick)
+
+    def put_minutes(self, *candles: MinuteCandle) -> None:
+        """1분봉을 더한다. 시작 시각이 같은 봉은 바꾼다."""
+        with self._lock:
+            for candle in candles:
+                self._minutes.setdefault(candle.market, {})[candle.start] = candle
 
     def set_prices(self, prices: Mapping[str, Decimal]) -> None:
         """코인마다의 현재가를 더하거나 바꾼다(준 코인만)."""
@@ -177,7 +215,7 @@ class FakeQuoteSource:
         unit: CandleUnit | None = None,
     ) -> None:
         """결과의 줄 하나를 더한다(모듈 설명)."""
-        if kind not in (None, MARKETS, CANDLES, PRICE):
+        if kind not in (None, MARKETS, CANDLES, PRICE, *BOOK_KINDS):
             raise ValueError(f"script: 모르는 종류다: {kind!r}")
         for outcome in outcomes:
             if not isinstance(outcome, QuoteError | _Ok):
@@ -216,6 +254,56 @@ class FakeQuoteSource:
                 for r in self.requests
                 if r.kind == PRICE and (market is None or r.market == market)
             ]
+
+    def book_requests(
+        self, kind: str | None = None, market: str | None = None
+    ) -> list[QuoteRequest]:
+        """호가, 호가 단위, 1분봉 요청(`kind`를 주면 그 종류만)."""
+        with self._lock:
+            return [
+                r
+                for r in self.requests
+                if r.kind in BOOK_KINDS
+                and (kind is None or r.kind == kind)
+                and (market is None or r.market == market)
+            ]
+
+    # --- BookSource -----------------------------------------------------------------------
+
+    def get_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
+        """`BookSource`. 정한 호가, 없으면 둘 다 그 코인의 현재가(모듈 설명)."""
+        with self._lock:
+            if market not in self._books and market not in self._prices:
+                raise KeyError(f"get_best_prices: 호가도 현재가도 정하지 않은 코인이다: {market}")
+            self._answer(BOOK, market, None, None, None)
+            if market in self._books:
+                return self._books[market]
+            price = self._prices[market]
+            return price, price
+
+    def get_tick_size(self, market: str) -> Decimal:
+        """`BookSource`. 정한 호가 단위, 없으면 1."""
+        with self._lock:
+            self._answer(TICK, market, None, None, None)
+            return self._ticks.get(market, DEFAULT_TICK_SIZE)
+
+    def get_minute_candles(
+        self, market: str, *, to: datetime | None, count: int
+    ) -> tuple[MinuteCandle, ...]:
+        """`BookSource`. `to` 앞에 시작한 1분봉을 새것부터 `count`개. 없으면 빈 튜플."""
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_COUNT:
+            raise ValueError(f"count는 1에서 {MAX_COUNT}까지의 정수다: {count!r}")
+        if to is not None and (to.tzinfo is None or to.utcoffset() is None):
+            raise ValueError("to는 시간대가 붙은 datetime이어야 한다")
+        with self._lock:
+            self._answer(MINUTES, market, None, to, count)
+            stored = self._minutes.get(market, {})
+            chosen = sorted(
+                (c for c in stored.values() if to is None or c.start < to),
+                key=lambda candle: candle.start,
+                reverse=True,
+            )
+            return tuple(chosen[:count])
 
     # --- QuoteSource ----------------------------------------------------------------------
 
@@ -313,3 +401,27 @@ def make_candles(
 def with_close(candle: Candle, close: Decimal) -> Candle:
     """종가만 바꾼 봉(B9처럼 마지막 봉이 바뀌는 시험에 쓴다)."""
     return replace(candle, close=close)
+
+
+def make_minutes(market: str, count: int, *, last_start: datetime) -> tuple[MinuteCandle, ...]:
+    """`last_start`에서 끝나는 이어진 1분봉 `count`개(시작 시각 순).
+
+    값은 차례에서 셈한 만든 숫자다.
+    """
+    if last_start.tzinfo is None:
+        raise ValueError("last_start는 시간대가 붙은 datetime이어야 한다")
+    step = timedelta(minutes=1)
+    first = last_start - step * (count - 1)
+    candles = []
+    for i in range(count):
+        base = Decimal(1000 + (i * 3) % 20)
+        candles.append(
+            MinuteCandle(
+                market=market,
+                start=first + step * i,
+                high=base + Decimal(2),
+                low=base - Decimal(2),
+                close=base,
+            )
+        )
+    return tuple(candles)

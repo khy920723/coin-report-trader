@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from coin_report_trader.core.market import MARKET_PREFIX, Candle, CandleUnit, Market
+from coin_report_trader.core.ports import MinuteCandle
 
 MARKET_CODE = re.compile(r"[A-Z0-9]+-[A-Z0-9]+")
 """마켓 코드의 꼴(`KRW-AAA`). 대문자·숫자와 `-` 하나."""
@@ -128,6 +129,58 @@ def to_markets(data: Any) -> tuple[Market, ...]:
     """코인 목록 응답. 원화 마켓만 받은 차례대로 준다."""
     markets = (to_market(item) for item in items(data))
     return tuple(m for m in markets if m.market.startswith(MARKET_PREFIX))
+
+
+def _single(data: Any, market: str, what: str) -> Mapping[str, Any]:
+    """마켓 하나로 부른 응답의 항목. 꼭 하나이고 그 마켓의 것이어야 한다."""
+    entries = items(data)
+    if len(entries) != 1:
+        raise ShapeError(f"{what} 응답의 항목이 하나가 아니다")
+    item = _mapping(entries[0])
+    if market_code(_field(item, "market")) != market:
+        raise ShapeError(f"다른 마켓의 {what}다")
+    return item
+
+
+def _positive(value: Any) -> Decimal:
+    number = decimal_value(value)
+    if number <= 0:
+        raise ShapeError("0보다 큰 값이 아니다")
+    return number
+
+
+def to_best_prices(data: Any, market: str) -> tuple[Decimal, Decimal]:
+    """호가 응답(`/v1/orderbook`, 마켓 하나)의 첫 줄: (최우선 매도 호가, 최우선 매수 호가).
+
+    M3 명세 3.6. 값은 0보다 큰 유한한 `Decimal`이어야 한다.
+    """
+    item = _single(data, market, "호가")
+    units = items(_field(item, "orderbook_units"))
+    if not units:
+        raise ShapeError("호가가 비어 있다")
+    first = _mapping(units[0])
+    return _positive(_field(first, "ask_price")), _positive(_field(first, "bid_price"))
+
+
+def to_tick_size(data: Any, market: str) -> Decimal:
+    """호가 정책 응답(`/v1/orderbook/instruments`, 마켓 하나)의 `tick_size`(M3 명세 3.6)."""
+    return _positive(_field(_single(data, market, "호가 정책"), "tick_size"))
+
+
+def to_minute_candle(value: Any) -> MinuteCandle:
+    """1분봉 응답의 항목 하나. 봉 받기와 같은 필드 이름과 변환이다(M1 명세 3.4)."""
+    item = _mapping(value)
+    return MinuteCandle(
+        market=market_code(_field(item, "market")),
+        start=utc_from_naive(_field(item, "candle_date_time_utc")),
+        high=decimal_value(_field(item, "high_price")),
+        low=decimal_value(_field(item, "low_price")),
+        close=decimal_value(_field(item, "trade_price")),
+    )
+
+
+def to_minute_candles(data: Any) -> tuple[MinuteCandle, ...]:
+    return tuple(to_minute_candle(item) for item in items(data))
 
 
 def to_price(data: Any, market: str) -> Decimal:
