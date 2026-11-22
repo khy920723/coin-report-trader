@@ -227,7 +227,7 @@ class CoinPicker(QWidget):
                 caution = make_label(
                     CAUTION_LABEL, f"{self._prefix}CoinCaution_{market.market}", Tone.WARNING
                 )
-                caution.setStyleSheet(f"color: {theme.CAUTION};")  # '주의' 색(5-1 판 2)
+                caution.setStyleSheet(f"color: {theme.CAUTION};")  # '주의' 색(5-1 판 3)
                 row_layout.addWidget(caution)
             row_layout.addStretch(1)
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, row)

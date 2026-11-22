@@ -1,4 +1,4 @@
-"""카드와 카드를 늘어놓는 자리(M1 명세 3.14.7, 화면 설계서 5-0 판 2의 18장, 20장)."""
+"""카드와 카드를 늘어놓는 자리(M1 명세 3.14.7, 화면 설계서 5-0 판 3의 18장, 20장)."""
 
 from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QVBoxLayout, QWidget

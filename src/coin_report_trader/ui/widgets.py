@@ -9,7 +9,7 @@ from coin_report_trader.ui.state import Message, Tone
 TONE_PROPERTY = "tone"
 """라벨의 동적 속성. 값은 "normal"이나 "warning". 시험은 이 속성으로 경고 색을 알아본다."""
 WARNING_COLOR = theme.ERROR
-"""경고 글의 색. 5-0 판 2의 '오류' 토큰이다."""
+"""경고 글의 색. 5-0 판 3의 '오류' 토큰이다."""
 
 
 def make_label(text: str, name: str, tone: Tone = Tone.NORMAL) -> QLabel:

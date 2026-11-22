@@ -1,4 +1,4 @@
-"""'ⓘ' 아이콘과 툴팁(M1 명세 3.14.7, 화면 설계서 5-0 판 2의 11장)."""
+"""'ⓘ' 아이콘과 툴팁(M1 명세 3.14.7, 화면 설계서 5-0 판 3의 11장)."""
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt

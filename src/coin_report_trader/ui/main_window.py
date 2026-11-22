@@ -627,8 +627,11 @@ def create_main_window(context: UiContext) -> MainWindow:
 
     - 글 라벨: `firstSetupMessage`(2 자리. 불러오는 중, 설정을 읽지 못함, 저장 거절·실패),
       `firstSetupLegacyNotice`(예전 기록일 때만 보임. 그 아래 2 자리),
-      `screenNotice`(10의 가), `noticeDiscordOffline`(마), `noticeDiscordNoAddress`(바),
+      `firstSetupNoticesTitle`('꼭 읽을 글' 카드의 제목),
       `firstSetupDone`(처음 설정을 마친 뒤의 글).
+    - 'ⓘ'(`InfoIcon`. 툴팁과 읽는 설명이 같고 읽는 이름은 "{제목} 설명"): `firstSetupNoticesInfo`
+      (제목 옆. 툴팁이 10의 가, 마, 바 세 글을 "• "로 시작하는 줄로 잇는다), `firstSetupCandleNote`,
+      `firstSetupRetentionInfo`. 설정 자리에는 `settingsCandleNote`, `settingsRetentionInfo`가 있다.
     - 묶음: `firstSetupForm`(칸 전체), `firstSetupNotices`, `firstSetupDonePanel`.
     - 단추: `firstSetupStart`("저장하고 시작"), `firstSetupToSettings`("설정 화면으로").
     - 코인 고르기(`firstSetupCoins`, 찾기 칸 `firstSetupCoinSearch`), 봉 단위와 봉 개수(라디오
@@ -650,12 +653,14 @@ def create_main_window(context: UiContext) -> MainWindow:
     - 코인 칸: 묶음 `statusCoins` 안에 고른 코인마다 `statusCoin_<m>`(설정 목록 순서, 최대 셋).
       그 안에 `statusCoinName_<m>`, 값 자리의 글 `statusCoinNote_<m>`(글이 없으면 숨김),
       "다시 시도" `statusCoinRetry_<m>`(받지 못함과 일시 차단 중에만 보임),
-      `statusCoinIncomplete_<m>`(미완성 봉 글), `statusCoinDisclaimer_<m>`(보장 아님 글).
+      `statusCoinIncomplete_<m>`(미완성 봉 글), `statusCoinDisclaimer_<m>`('ⓘ'. 툴팁이
+      보장 아님 글).
     - 봉 통계(`CoinView.stats`. M1 명세 3.14.5): 묶음 `statusStats`, 코인 고르기
       `statusStatsCoin`(`QComboBox`), 표 자리의 글 `statusStatsNote`, 표 위 글 `statusStatsSummary`,
       표 묶음 `statusStatsTable`(머리 `statusStatsHeader_<0~1>`,
       칸 `statusStatsCell_<줄 0~12>_<칸 0~1>`. 칸 0은 항목, 칸 1은 값),
-      보장 아님 글 `statusStatsDisclaimer`, `statusStatsFetched`("마지막으로 받은 때" 줄),
+      제목 옆 'ⓘ' `statusStatsDisclaimer`(툴팁이 보장 아님 글),
+      `statusStatsFetched`("마지막으로 받은 때" 줄),
       `statusStatsIncomplete`, 표 아래의 하나뿐인 "다시 시도" `statusStatsRetry`.
       코인 칸 안은 `statusCoinStats_<m>`(묶음. 흐리게 남기면 `isEnabled()`가 거짓),
       `statusCoinStatsHeader_<m>`(첫 줄), `statusCoinStatsRow_<m>_<0~4>`("이름 값").
