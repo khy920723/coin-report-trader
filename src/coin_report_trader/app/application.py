@@ -23,6 +23,7 @@ from coin_report_trader.config.paths import (
     resolve_app_paths,
 )
 from coin_report_trader.core import APP_ID, Clock, StorageError, UiContext
+from coin_report_trader.storage.backups import BACKUPS_FOLDER, copy_before_upgrade
 from coin_report_trader.storage.database import (
     SCHEMA_VERSION,
     migrate,
@@ -100,7 +101,7 @@ def _run(argv: Sequence[str] | None, services: Services | None, instance: "Start
             log.warning("%s", instance.note)  # 그대로 켠다(한 번 더 켜기만 막지 못한다)
         try:
             _check_database(paths)
-            _migrate_database(paths)
+            _migrate_database(paths, clock)
         except Exception as exc:
             _record_startup_error(paths, clock, exc)
             raise
@@ -124,9 +125,14 @@ def _check_database(paths: AppPaths) -> None:
         )
 
 
-def _migrate_database(paths: AppPaths) -> None:
-    """스키마를 이 프로그램이 아는 번호로 올린다(`open_database`는 열기만 한다)."""
+def _migrate_database(paths: AppPaths, clock: Clock) -> None:
+    """스키마를 이 프로그램이 아는 번호로 올린다(`open_database`는 열기만 한다).
+
+    올려야 하고 번호가 1 이상인 DB는 올리기 전에 `backups`에 사본을 만든다(M3 명세 3.13). 사본을
+    만들지 못하면 올리지 않고 `StorageError`로 끝낸다(창을 띄우지 못한 오류, A-29 "켜기").
+    """
     with contextlib.closing(open_database(paths.database_file)) as conn:
+        copy_before_upgrade(conn, paths.root / BACKUPS_FOLDER, clock.now())
         migrate(conn)
 
 
