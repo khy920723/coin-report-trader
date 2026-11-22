@@ -1,4 +1,5 @@
-"""응답 변환(M1 명세 3.2, 3.4): 공개 시세 응답의 JSON을 `Market`과 `Candle`로 바꾼다.
+"""응답 변환(M1 명세 3.2, 3.4, M2 명세 3.6): 공개 시세 응답의 JSON을 `Market`, `Candle`, 현재가로
+바꾼다.
 
 - JSON의 숫자는 모두 `Decimal`로 읽는다(부동소수점을 거치지 않는다). 숫자 글(`"123.4"`)도 받는다.
   참·거짓, `null`, NaN, 무한대는 숫자로 받지 않는다.
@@ -127,6 +128,23 @@ def to_markets(data: Any) -> tuple[Market, ...]:
     """코인 목록 응답. 원화 마켓만 받은 차례대로 준다."""
     markets = (to_market(item) for item in items(data))
     return tuple(m for m in markets if m.market.startswith(MARKET_PREFIX))
+
+
+def to_price(data: Any, market: str) -> Decimal:
+    """현재가 응답(`/v1/ticker`, 마켓 하나). 그 마켓의 최근 체결가(`trade_price`)다(M2 명세 3.6).
+
+    항목이 꼭 하나이고 그 마켓의 것이어야 한다. 값은 0보다 큰 유한한 `Decimal`이어야 한다.
+    """
+    entries = items(data)
+    if len(entries) != 1:
+        raise ShapeError("현재가 응답의 항목이 하나가 아니다")
+    item = _mapping(entries[0])
+    if market_code(_field(item, "market")) != market:
+        raise ShapeError("다른 마켓의 현재가다")
+    price = decimal_value(_field(item, "trade_price"))
+    if price <= 0:
+        raise ShapeError("현재가가 0보다 크지 않다")
+    return price
 
 
 def to_candle(value: Any, unit: CandleUnit) -> Candle:

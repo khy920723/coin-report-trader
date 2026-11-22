@@ -1,6 +1,8 @@
 """감싸는 부품 `QuoteClient`(M1 명세 3.4, 3.5): 나눠 받기와 요청 한도를 맡는다. `app`은 이것만 쓴다.
 
 - `list_markets()`: 요청 한 번이다.
+- `read_price(market)`: 현재가(M2 명세 3.6). 요청 한 번이고 실패하면 `QuoteError`를 그대로 낸다.
+  소스가 `PriceSource`가 아니면 `TypeError`다.
 - `fetch_recent(market, unit, *, count, last_start, first_start, missing)`: 1단계 보완의
   받기(3.5.3). `RecentCandles(candles, reached_oldest)`를 돌려준다.
   - `last_start`가 `None`이면 처음 받기다. 가장 최근부터 200개씩 거슬러, 받은 완성된 봉이
@@ -17,7 +19,7 @@
   - 돌려주는 봉은 시작 시각 순이고 시작 시각이 겹치지 않는다.
 - 중간에 실패하면 그때까지 받은 봉을 돌려주지 않고 `QuoteError`를 그대로 낸다
   (3.5의 "끝까지 성공했을 때만 저장한다").
-- 요청 한도(3.10)는 `RequestLimiter`가 `clock`으로 지킨다. 코인 목록과 봉 요청을 함께 센다.
+- 요청 한도(3.10)는 `RequestLimiter`가 `clock`으로 지킨다. 코인 목록, 현재가, 봉 요청을 함께 센다.
 - "요청 한도 초과"를 받아도 그 자리에서 기다려 다시 보내지 않는다(3.9). 일시 차단의
   `blocked_until`은 이 부품이 들지 않는다(`app`이 든다).
 - `source`가 약속(3.4)을 어긴 응답(다른 마켓·단위의 봉, `to` 뒤에 시작한 봉, `count`보다 많은 봉)을
@@ -28,11 +30,12 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from coin_report_trader.core.clock import Clock
 from coin_report_trader.core.errors import QuoteError
 from coin_report_trader.core.market import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, Market
-from coin_report_trader.core.ports import QuoteSource
+from coin_report_trader.core.ports import PriceSource, QuoteSource
 from coin_report_trader.core.texts import ERROR_BAD_RESPONSE
 from coin_report_trader.trading.quote.ratelimit import RequestLimiter
 
@@ -85,6 +88,16 @@ class QuoteClient:
         """원화 마켓의 코인 목록. 요청 한 번이다."""
         self._limiter.acquire()
         return tuple(self._source.list_markets())
+
+    def read_price(self, market: str) -> Decimal:
+        """현재가(M2 명세 3.6). 요청 한 번이고 봉 받기와 같은 요청 한도 장치를 쓴다.
+
+        소스가 `PriceSource`가 아니면 요청을 내지 않고 `TypeError`다.
+        """
+        if not isinstance(self._source, PriceSource):
+            raise TypeError("소스가 PriceSource가 아니어서 현재가를 읽을 수 없다")
+        self._limiter.acquire()
+        return self._source.get_price(market)
 
     def fetch_recent(
         self,

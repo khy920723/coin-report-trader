@@ -15,13 +15,14 @@ from fakes.quote import (
     CANDLES,
     MARKETS,
     OK,
+    PRICE,
     FakeQuoteSource,
     QuoteRequest,
     make_candles,
     with_close,
 )
 
-from coin_report_trader.core import CandleUnit, Market, QuoteError, QuoteSource
+from coin_report_trader.core import CandleUnit, Market, PriceSource, QuoteError, QuoteSource
 from coin_report_trader.core.texts import ERROR_BLOCKED, ERROR_NETWORK, ERROR_TIMEOUT
 
 M = "KRW-AAA"
@@ -309,3 +310,73 @@ def test_threads_can_share_the_fake() -> None:
     for thread in threads:
         thread.join()
     assert len(source.requests) == 400
+
+
+# --- 현재가(M2 명세 3.6) --------------------------------------------------------------------
+
+
+def test_is_a_price_source() -> None:
+    assert isinstance(FakeQuoteSource(), PriceSource)
+
+
+def test_get_price_gives_the_price_set_per_coin() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(100), "KRW-BBB": Decimal("99.5")})
+    assert source.get_price(M) == Decimal(100)
+    assert source.get_price("KRW-BBB") == Decimal("99.5")
+    source.set_prices({M: Decimal(103)})
+    assert source.get_price(M) == Decimal(103)
+    assert source.get_price("KRW-BBB") == Decimal("99.5")  # 주지 않은 코인은 그대로
+
+
+def test_get_price_of_a_coin_not_set_is_a_test_mistake() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(100)})
+    with pytest.raises(KeyError, match="KRW-ZZZ"):
+        source.get_price("KRW-ZZZ")
+    assert source.requests == []
+
+
+def test_price_requests_are_recorded_with_the_clock() -> None:
+    clock = FakeClock()
+    source = FakeQuoteSource(prices={M: Decimal(100), "KRW-BBB": Decimal(101)}, clock=clock)
+    source.get_price(M)
+    clock.advance(0.5)
+    source.get_price("KRW-BBB")
+    first = source.requests[0]
+    assert (first.kind, first.market, first.unit, first.to, first.count) == (
+        PRICE,
+        M,
+        None,
+        None,
+        None,
+    )
+    assert first.error_name is None
+    assert source.requests[1].monotonic == first.monotonic + 0.5
+    assert [r.market for r in source.price_requests()] == [M, "KRW-BBB"]
+    assert [r.market for r in source.price_requests("KRW-BBB")] == ["KRW-BBB"]
+    assert source.candle_requests() == []
+    assert source.market_requests() == []
+
+
+def test_script_can_aim_at_one_coin_price() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(100), "KRW-BBB": Decimal(101)})
+    source.script(QuoteError(ERROR_BLOCKED, 120.0), kind=PRICE, market="KRW-BBB")
+    assert source.get_price(M) == Decimal(100)
+    with pytest.raises(QuoteError) as caught:
+        source.get_price("KRW-BBB")
+    assert (caught.value.error_name, caught.value.retry_after) == (ERROR_BLOCKED, 120.0)
+    assert source.requests[-1].error_name == ERROR_BLOCKED
+    assert source.get_price("KRW-BBB") == Decimal(101)  # 다 쓴 뒤에는 정상이다
+
+
+def test_script_kinds_and_units_keep_price_apart() -> None:
+    source = FakeQuoteSource(
+        candles=make_candles(M, CandleUnit.MINUTE_60, 2, last_start=TODAY),
+        prices={M: Decimal(100)},
+    )
+    source.script(QuoteError(ERROR_NETWORK), kind=CANDLES)
+    source.script(QuoteError(ERROR_TIMEOUT), unit=CandleUnit.MINUTE_60)
+    assert source.get_price(M) == Decimal(100)  # 봉에 정한 줄은 현재가에 쓰지 않는다
+    source.script(QuoteError(ERROR_BLOCKED))  # 종류를 주지 않은 줄은 현재가에도 쓴다
+    with pytest.raises(QuoteError) as caught:
+        source.get_price(M)
+    assert caught.value.error_name == ERROR_BLOCKED

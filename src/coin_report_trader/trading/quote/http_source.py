@@ -1,6 +1,8 @@
 """진짜 `QuoteSource`(M1 명세 3.4): 거래소의 공개 시세를 `httpx`로 부른다.
 
 - 봉 단위는 넷이다: 30분봉, 60분봉, 240분봉, 일봉(요청 경로는 3.5.3).
+- `PriceSource`도 갖춘다: `get_price(market)`는 `/v1/ticker`(마켓 코드 하나)의 최근 체결가다(M2 명세
+  3.6). 응답 변환과 오류 이름은 다른 요청과 같다(읽지 못하면 "응답 형식 오류").
 
 - 공개 시세만 부른다(키 없음). 계정, 주문, 서명, 웹소켓은 없다.
 - 한 번 부르는 것이 요청 한 번이다. 안에서 다시 보내지 않고(`retries=0`), 리다이렉트를 따라가지
@@ -16,6 +18,7 @@
 import ssl
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from types import MappingProxyType
 from typing import Any
@@ -41,6 +44,8 @@ MAX_COUNT = 200
 """요청 한 번에 받는 봉의 수의 상한(제품 규칙 7절)."""
 
 MARKETS_PATH = "/v1/market/all"
+PRICE_PATH = "/v1/ticker"
+"""현재가(최근 체결가)의 요청 경로(M2 명세 3.6). 마켓 코드 하나로 부른다."""
 CANDLE_PATHS: MappingProxyType[CandleUnit, str] = MappingProxyType(
     {
         CandleUnit.MINUTE_30: "/v1/candles/minutes/30",
@@ -135,6 +140,13 @@ class HttpQuoteSource:
         """원화 마켓만 준다(유의·주의 표시 포함)."""
         data = self._get(MARKETS_PATH, {"is_details": "true"})
         return _parse(convert.to_markets, data)
+
+    def get_price(self, market: str) -> Decimal:
+        """`PriceSource`(M2 명세 3.4, 3.6). 그 마켓의 현재가(최근 체결가)다. 요청 한 번이다."""
+        if not isinstance(market, str) or convert.MARKET_CODE.fullmatch(market) is None:
+            raise ValueError(f"마켓 코드의 꼴이 아니다: {market!r}")
+        data = self._get(PRICE_PATH, {"markets": market})
+        return _parse(lambda value: convert.to_price(value, market), data)
 
     def get_candles(
         self, market: str, unit: CandleUnit, *, to: datetime | None, count: int
