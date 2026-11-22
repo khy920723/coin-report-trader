@@ -126,6 +126,7 @@ def test_the_judgment_and_result_words_are_the_csv_and_screen_text() -> None:
         ("SKIPPED", "skipped"),
         ("INTERRUPTED", "interrupted"),
         ("ERROR", "error"),
+        ("DISCARDED", "discarded"),
     ]
     assert [r.value for r in SkipReason] == ["봉 통계를 만들지 못함", "현재가를 읽지 못함"]
     assert [(t.name, t.value) for t in RoundTrigger] == [("BAR_CLOSE", "bar_close")]
@@ -298,6 +299,8 @@ def test_the_actions_hand_the_new_calls_to_the_data_thread() -> None:
                 "candle_count": None,
                 "ai_choices": choices,
                 "autostart": None,
+                "trade": None,
+                "accept_below_stop": (),
             },
         ),
         ("load_reports", ("KRW-AAA",), {}),
@@ -327,7 +330,7 @@ def test_the_data_thread_queues_the_new_calls(tmp_path: Path) -> None:
 
 def test_the_services_get_ai_last_and_none_by_default() -> None:
     assert [f.name for f in dataclasses.fields(Services)] == [
-        "quote", "webhook", "vault", "clock", "ai", "autostart",
+        "quote", "webhook", "vault", "clock", "ai", "autostart", "book", "min_order",
     ]  # fmt: skip
     assert Services().ai is None
 
@@ -336,7 +339,7 @@ def test_the_new_texts_follow_the_spec() -> None:
     assert texts.STAGE_PRICE == "현재가 읽기"
     assert texts.STAGE_REPORT == "AI 보고서"
     assert texts.STAGE_REPORT_SAVE == "보고서 저장"
-    assert texts.STAGES[-3:] == ("현재가 읽기", "AI 보고서", "보고서 저장")
+    assert texts.STAGES[-11:-8] == ("현재가 읽기", "AI 보고서", "보고서 저장")
     assert [
         texts.CODE_PRICE_FAILED,
         texts.CODE_REPORT_FAILED,

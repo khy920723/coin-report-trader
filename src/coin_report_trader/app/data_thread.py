@@ -22,7 +22,7 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
@@ -44,6 +44,7 @@ from coin_report_trader.core import (
     CandleUnit,
     Clock,
     CoinView,
+    HistoryTab,
     LoadState,
     MarketsView,
     Mode,
@@ -52,6 +53,7 @@ from coin_report_trader.core import (
     SaveResult,
     SettingsView,
     StorageError,
+    TradeSettings,
     UiUpdate,
     empty_bar_stats,
     redact,
@@ -366,13 +368,19 @@ class DataWorker(ReportRoundMixin):
         candle_count: int | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
         autostart: bool | None = None,
+        trade: TradeSettings | None = None,
+        accept_below_stop: tuple[str, ...] = (),
     ) -> None:
         """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4).
 
         `ai_choices`가 `None`이나 빈 튜플이면 저장된 칸을 그대로 둔다(M2 명세 3.10).
 
         `autostart`가 `None`이면 저장된 값을 그대로 둔다(M1 명세 3.16.3).
+
+        `trade`와 `accept_below_stop`은 받기만 하고 쓰지 않는다(M3 명세 4절 1번. 23번까지
+        자료 스레드는 아무것도 하지 않는다).
         """
+        del trade, accept_below_stop
         self._put(
             _SaveTask(
                 tuple(coins),
@@ -384,6 +392,26 @@ class DataWorker(ReportRoundMixin):
                 None if ai_choices is None else tuple(ai_choices),
             )
         )
+
+    def pause(self) -> None:
+        """받기만 하고 하지 않는다(M3 명세 4절 1번. 23번이 멈춤을 만든다)."""
+
+    def pause_and_sell_all(self) -> None:
+        """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
+
+    def resume_user(self) -> None:
+        """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
+
+    def resume_error(self) -> None:
+        """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
+
+    def load_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
+        """받기만 하고 하지 않는다(M3 명세 4절 1번. 25번이 `HistoryView`를 보낸다)."""
+        del tab, market, day
+
+    def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None:
+        """받기만 하고 하지 않는다(M3 명세 4절 1번. 25번이 쓴다)."""
+        del tab, market, path
 
     def retry_candles(self) -> None:
         self._put("retry")

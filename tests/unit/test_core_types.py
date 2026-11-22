@@ -8,6 +8,7 @@ import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -420,6 +421,18 @@ class _Actions:
 
     def send_test(self, category: AlertCategory) -> None: ...
 
+    def pause(self) -> None: ...
+
+    def pause_and_sell_all(self) -> None: ...
+
+    def resume_user(self) -> None: ...
+
+    def resume_error(self) -> None: ...
+
+    def load_history(self, tab: Any, market: str | None, day: Any) -> None: ...
+
+    def export_history(self, tab: Any, market: str | None, path: str) -> None: ...
+
 
 def test_system_clock_wait() -> None:
     clock = SystemClock()
@@ -503,6 +516,12 @@ def test_ui_actions_has_the_actions_of_the_spec() -> None:
         "save_webhook",
         "delete_webhook",
         "send_test",
+        "pause",
+        "pause_and_sell_all",
+        "resume_user",
+        "resume_error",
+        "load_history",
+        "export_history",
     }
 
 

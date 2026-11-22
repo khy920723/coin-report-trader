@@ -150,9 +150,12 @@ def test_save_settings_of_the_port_takes_unit_and_count_with_none_as_the_default
     parameters = inspect.signature(UiActions.save_settings).parameters
     assert list(parameters) == [
         "self", "coins", "retention_days", "first_setup", "candle_unit", "candle_count",
-        "ai_choices", "autostart",
+        "ai_choices", "autostart", "trade", "accept_below_stop",
     ]  # fmt: skip
-    for name in ("first_setup", "candle_unit", "candle_count", "ai_choices", "autostart"):
+    for name in (
+        "first_setup", "candle_unit", "candle_count", "ai_choices", "autostart", "trade",
+        "accept_below_stop",
+    ):  # fmt: skip
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["candle_unit"].default is None
     assert parameters["candle_count"].default is None
@@ -186,6 +189,8 @@ def test_the_actions_hand_unit_and_count_to_the_data_thread() -> None:
                 "candle_count": None,
                 "ai_choices": None,
                 "autostart": None,
+                "trade": None,
+                "accept_below_stop": (),
             },
         ),
         (
@@ -197,6 +202,8 @@ def test_the_actions_hand_unit_and_count_to_the_data_thread() -> None:
                 "candle_count": 100,
                 "ai_choices": None,
                 "autostart": None,
+                "trade": None,
+                "accept_below_stop": (),
             },
         ),
     ]
