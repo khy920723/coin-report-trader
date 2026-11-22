@@ -60,9 +60,22 @@ class FakeActions:
         self.calls.append(("refresh_markets",))
 
     def save_settings(
-        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+        self,
+        coins,
+        retention_days,
+        *,
+        first_setup,
+        candle_unit=None,
+        candle_count=None,
+        ai_choices=None,
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
+
+    def load_reports(self, market) -> None:
+        pass  # 2단계의 동작. 화면이 부르기 전까지 아무것도 하지 않는다
+
+    def load_report(self, report_id) -> None:
+        pass
 
     def retry_candles(self) -> None:
         self.calls.append(("retry_candles",))

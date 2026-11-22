@@ -66,6 +66,12 @@ def test_the_right_hand_cards_keep_their_content_at_the_top(window, prefix):
     screen = screen_widget(window, screen_id)
     coins = screen.findChild(QWidget, f"{prefix}Coins")
     assert coins is not None
+    # 2단계의 칸 카드(M2)가 오른쪽 열을 채우면 남는 높이가 없다. 이 시험은 남는 높이가 있는
+    # 모습(v0.1.3의 고장이 나던 때)을 만들려고 그 카드를 숨긴다.
+    ai = screen.findChild(QWidget, f"{prefix}Ai")
+    assert ai is not None
+    ai.parentWidget().hide()
+    QApplication.processEvents()
     for name in (f"{prefix}Candle", f"{prefix}Retention"):
         content = screen.findChild(QWidget, name)
         assert content is not None

@@ -51,6 +51,7 @@ from coin_report_trader.ui.texts import (
     LAST_CANDLE_INCOMPLETE,
     LOADING_TEXT,
     NO_CANDLES_YET,
+    REPORT_VIEW_TEXT,
     RETRY_TEXT,
     STATS_TABLE_COLUMNS,
     STATS_TITLE,
@@ -293,10 +294,16 @@ class CoinCard(Card):
     """
 
     retry_requested = Signal()
+    report_requested = Signal(str)
+    """"보고서 보기"를 눌렀다(M2 명세 3.12.4)."""
+    chosen = Signal(str)
+    """코인 칸의 빈 곳이나 글을 눌렀다(봉 통계 자리의 코인 고르기가 이 코인으로 바뀐다)."""
 
     def __init__(self, market: str) -> None:
         super().__init__(f"statusCoin_{market}")
         self.market = market
+        self.setProperty("clickable", True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         layout = self.body
         name = title_label(coin_label(market), f"statusCoinName_{market}")
         set_role(name, theme.ROLE_BIG)
@@ -335,7 +342,26 @@ class CoinCard(Card):
         set_role(self._incomplete, theme.ROLE_SUB)
         layout.addWidget(self._incomplete)
         layout.addStretch(1)
+        # 맨 아래의 "보고서 보기"(M2 명세 3.12.4). 코인 칸이 있는 동안 상태와 상관없이 보인다.
+        self._report = QPushButton(REPORT_VIEW_TEXT)
+        self._report.setObjectName(f"statusCoinReport_{market}")
+        self._report.clicked.connect(lambda: self.report_requested.emit(self.market))
+        layout.addWidget(self._report, 0, Qt.AlignmentFlag.AlignLeft)
         self.render(None)
+
+    def mousePressEvent(self, event) -> None:
+        """단추 말고 칸의 빈 곳이나 글을 누르면 봉 통계 자리의 코인이 이 코인으로 바뀐다."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.chosen.emit(self.market)
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.chosen.emit(self.market)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def render(self, view: CoinView | None) -> None:
         look = look_of(view)
@@ -453,6 +479,14 @@ class StatsPanel(Card):
         data = self._chooser.currentData()
         return data if isinstance(data, str) else None
 
+    def choose(self, market: str) -> bool:
+        """코인 고르기에서 그 코인을 고른다(사용자가 고른 것과 같다. `chosen`이 난다)."""
+        index = self._chooser.findData(market)
+        if index < 0:
+            return False
+        self._chooser.setCurrentIndex(index)
+        return True
+
     def render(self, view: CoinView | None) -> None:
         look = look_of(view)
         show_message(self._note, Message(look.note) if look.note else None)
@@ -483,6 +517,8 @@ class StatusScreen(QWidget):
     """현황 화면. 설정을 불러오는 중, 처음 설정 전, 설정을 읽지 못함에는 글 하나만 보인다."""
 
     retry_requested = Signal()
+    report_requested = Signal(str)
+    """코인 칸의 "보고서 보기"를 눌렀다(그 코인의 마켓 코드)."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -550,8 +586,14 @@ class StatusScreen(QWidget):
             if market not in self._cards:
                 card = CoinCard(market)
                 card.retry_requested.connect(self.retry_requested)
+                card.report_requested.connect(self.report_requested)
+                card.chosen.connect(self._stats.choose)
                 self._cards[market] = card
         self._cards_holder.set_cards([self._cards[market] for market in self._coins])
+
+    def card_of(self, market: str) -> QWidget | None:
+        """그 코인의 칸. 고른 코인에 없으면 `None`."""
+        return self._cards.get(market)
 
     def _render_stats(self) -> None:
         market = self._stats.chosen_market()

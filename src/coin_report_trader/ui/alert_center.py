@@ -68,6 +68,7 @@ from coin_report_trader.ui.texts import (
     DETAIL_ERROR_NAME,
     DETAIL_STAGE,
     DISCORD_FAILED_TEXT,
+    GO_TEXT,
     LOADING_TEXT,
     UNSEEN_DOT,
     WEBHOOK_CANCEL_TEXT,
@@ -77,6 +78,7 @@ from coin_report_trader.ui.texts import (
     WEBHOOK_SAVE_TEXT,
     WEBHOOK_SAVED_SUFFIX,
     WEBHOOK_TEST_TEXT,
+    WEBHOOK_UNREADABLE,
     no_alerts_text,
     tab_title_text,
     webhook_title_text,
@@ -92,14 +94,27 @@ _FAILURE_MESSAGES = frozenset({WEBHOOK_BAD_FORMAT, WEBHOOK_SAVE_FAILED, WEBHOOK_
 
 
 class ClickableLabel(QLabel):
-    """누르면 `clicked`가 나는 라벨."""
+    """누르면 `clicked`가 나는 라벨. Tab으로 초점을 받고 Enter나 Space로도 `clicked`가 난다
+    (M2 명세 3.12.7). 초점이 있으면 '초점' 색 2px 테두리가 보인다."""
 
     clicked = Signal()
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("alertLine", True)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         super().mouseReleaseEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def line_text(alert: AlertView) -> str:
@@ -146,6 +161,8 @@ class AlertCenter(QWidget):
     save_webhook_requested = Signal(object, str)
     delete_webhook_requested = Signal(object)
     send_test_requested = Signal(object)
+    go_requested = Signal(object)
+    """알림이 가리키는 곳으로 가려 한다(`AlertView`. M2 명세 3.12.6). 화면만 바꾼다."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -208,6 +225,9 @@ class AlertCenter(QWidget):
         for button in (self._save, self._change, self._delete, self._cancel, self._test):
             webhook_row.addWidget(button)
         layout.addLayout(webhook_row)
+        self._unreadable = make_label(WEBHOOK_UNREADABLE, "alertWebhookUnreadable", Tone.WARNING)
+        self._unreadable.hide()
+        layout.addWidget(self._unreadable)
         self._webhook_message = make_label("", "alertWebhookMessage")
         self._test_message = make_label("", "alertWebhookTestMessage")
         layout.addWidget(self._webhook_message)
@@ -374,15 +394,24 @@ class AlertCenter(QWidget):
         label.setVisible(detail is not None and alert.id in self._expanded)
         outer.addWidget(label)
         if detail is not None:
-            line.clicked.connect(lambda i=alert.id, w=label: self._toggle(i, w))
+            # 오류·기타 알림: 줄은 펼치고 접으며, 펼친 글의 "가 보기"가 그 곳으로 간다.
+            go = QPushButton(GO_TEXT)
+            go.setObjectName(f"alertGo_{alert.id}")
+            go.setVisible(alert.id in self._expanded)
+            go.clicked.connect(lambda _checked=False, a=alert: self.go_requested.emit(a))
+            outer.addWidget(go, 0, Qt.AlignmentFlag.AlignLeft)
+            line.clicked.connect(lambda i=alert.id, w=label, g=go: self._toggle(i, w, g))
+        else:
+            line.clicked.connect(lambda a=alert: self.go_requested.emit(a))
         return row
 
-    def _toggle(self, alert_id: int, detail: QLabel) -> None:
+    def _toggle(self, alert_id: int, detail: QLabel, go: QPushButton) -> None:
         if alert_id in self._expanded:
             self._expanded.discard(alert_id)
         else:
             self._expanded.add(alert_id)
         detail.setVisible(alert_id in self._expanded)
+        go.setVisible(alert_id in self._expanded)
 
     def _mark_seen(self) -> None:
         """현황 화면이 보이고 그 탭이 골라진 동안, 목록에 든 보지 않은 줄을 한 번씩 알린다.
@@ -440,6 +469,7 @@ class AlertCenter(QWidget):
         not_set = first is not None and first.text == WEBHOOK_NOT_SET
         self._webhook_info.setVisible(not_set)
         show_message(self._webhook_message, None if not_set else first)
+        self._unreadable.setVisible(view is not None and view.unreadable)
         show_message(self._test_message, self._second_line(view))
 
     def _first_line(self, view: WebhookView | None, category: AlertCategory) -> Message | None:

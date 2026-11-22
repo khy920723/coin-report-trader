@@ -178,14 +178,15 @@ def test_the_new_views_have_the_fields_of_the_spec_in_order() -> None:
         "report_id", "market", "round_number", "close_utc", "state", "failure", "base_price",
         "search_judgment", "candle_judgment", "direction", "predicted_price", "predicted_reason",
         "buy_price", "sell_price", "result_text", "last_result", "compared", "checklist",
-        "evidence", "sources", "tokens", "elapsed_report_seconds", "as_of",
+        "evidence", "sources", "tokens", "elapsed_report_seconds", "as_of", "order_summary",
+        "no_order_reason", "elapsed_order_seconds",
     ]  # fmt: skip
     assert AiStatusView(AiStatus.ON, "2.1.314").as_of is None
     assert ReportView.__dataclass_fields__["as_of"].default is None
 
 
 def test_the_old_views_get_their_new_fields_last_with_defaults() -> None:
-    assert [f.name for f in dataclasses.fields(SettingsView)][-6:-3] == [
+    assert [f.name for f in dataclasses.fields(SettingsView)][-7:-4] == [
         "candle_unit",
         "candle_count",
         "ai_choices",

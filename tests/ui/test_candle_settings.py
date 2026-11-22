@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from coin_report_trader.core import (
     CANDLE_COUNTS,
+    AiSlot,
     LoadState,
     Market,
     MarketsView,
@@ -69,10 +71,23 @@ class FakeActions:
         self.calls.append(("refresh_markets",))
 
     def save_settings(
-        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+        self,
+        coins,
+        retention_days,
+        *,
+        first_setup,
+        candle_unit=None,
+        candle_count=None,
+        ai_choices=None,
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
         self.candles.append((candle_unit, candle_count))
+
+    def load_reports(self, market) -> None:
+        pass  # 2단계의 동작. 화면이 부르기 전까지 아무것도 하지 않는다
+
+    def load_report(self, report_id) -> None:
+        pass
 
     def retry_candles(self) -> None:
         self.calls.append(("retry_candles",))
@@ -146,6 +161,13 @@ def _flat(layout) -> list[str]:
         elif item.layout() is not None:
             names.extend(_flat(item.layout()))
     return names
+
+
+def _choose_ai(screen: QWidget, prefix: str = "firstSetup") -> None:
+    """여덟 칸(네 칸의 모델과 노력 값)을 모두 고른다(M2 명세 3.12.2)."""
+    for slot in AiSlot:
+        _find(screen, QComboBox, f"{prefix}AiModel_{slot.value}").setCurrentIndex(1)
+        _find(screen, QComboBox, f"{prefix}AiEffort_{slot.value}").setCurrentIndex(1)
 
 
 def _radio(screen: QWidget, name: str) -> QRadioButton:
@@ -318,6 +340,7 @@ def test_first_setup_start_needs_a_coin_a_retention_and_a_unit(make_window, acti
     assert not start.isEnabled()
     _pick(first, "firstSetup", "KRW-AAA")
     _find(first, QRadioButton, "firstSetupRetention30").click()
+    _choose_ai(first)
     # 코인과 보관 기간이 있어도 봉 단위가 없으면 누를 수 없다(봉 개수는 처음부터 골라져 있다).
     assert not start.isEnabled()
     start.click()
@@ -338,6 +361,7 @@ def test_first_setup_start_sends_the_chosen_unit_and_count(make_window, actions,
     first = _ready_first_setup(window)
     _pick(first, "firstSetup", "KRW-BBB", "KRW-AAA")
     _find(first, QRadioButton, "firstSetupRetention7").click()
+    _choose_ai(first)
     _radio(first, f"firstSetupUnit_{unit.value}").click()
     _radio(first, f"firstSetupCount_{count}").click()
     _find(first, QPushButton, "firstSetupStart").click()
@@ -350,6 +374,7 @@ def test_first_setup_start_sends_the_default_count_when_it_is_not_touched(make_w
     first = _ready_first_setup(window)
     _pick(first, "firstSetup", "KRW-AAA")
     _find(first, QRadioButton, "firstSetupRetention30").click()
+    _choose_ai(first)
     _radio(first, "firstSetupUnit_day").click()
     _find(first, QPushButton, "firstSetupStart").click()
     assert actions.candles == [(CandleUnit.DAY, 200)]
@@ -360,6 +385,7 @@ def test_a_failed_save_keeps_the_unit_and_count(make_window, actions):
     first = _ready_first_setup(window)
     _pick(first, "firstSetup", "KRW-AAA")
     _find(first, QRadioButton, "firstSetupRetention30").click()
+    _choose_ai(first)
     _radio(first, "firstSetupUnit_minute240").click()
     _radio(first, "firstSetupCount_500").click()
     _find(first, QPushButton, "firstSetupStart").click()
@@ -540,6 +566,7 @@ def test_a_legacy_record_cannot_change_the_coins_or_the_retention_by_clicking(ma
     _window, first = _legacy_window(make_window, actions)
     _find(first, QCheckBox, "firstSetupCoin_KRW-AAA").click()
     _find(first, QRadioButton, "firstSetupRetention7").click()
+    _choose_ai(first)
     assert _find(first, QCheckBox, "firstSetupCoin_KRW-AAA").isChecked()
     assert _find(first, QRadioButton, "firstSetupRetention90").isChecked()
     assert not _find(first, QRadioButton, "firstSetupRetention7").isChecked()
@@ -555,6 +582,8 @@ def test_a_legacy_record_starts_with_the_saved_coins_and_retention_and_the_chose
     start.click()
     assert actions.count("save_settings") == 0
     _radio(first, "firstSetupUnit_minute30").click()
+    assert not start.isEnabled()  # 여덟 칸도 골라야 한다(M2 명세 3.12.2)
+    _choose_ai(first)
     assert start.isEnabled()
     _radio(first, "firstSetupCount_100").click()
     start.click()
@@ -568,6 +597,7 @@ def test_a_legacy_record_starts_with_the_saved_coins_and_retention_and_the_chose
 def test_the_notice_and_the_locks_go_away_once_the_first_setup_is_done(make_window, actions):
     window, first = _legacy_window(make_window, actions)
     _radio(first, "firstSetupUnit_day").click()
+    _choose_ai(first)
     _find(first, QPushButton, "firstSetupStart").click()
     window.apply(
         SettingsView(("KRW-BBB", "KRW-AAA"), 90, True, candle_unit=CandleUnit.DAY, candle_count=200)

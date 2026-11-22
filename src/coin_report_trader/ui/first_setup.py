@@ -3,8 +3,9 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from coin_report_trader.core import SCREEN_TITLES, CandleUnit, Market, ScreenId
+from coin_report_trader.core import SCREEN_TITLES, AiChoice, CandleUnit, Market, ScreenId
 from coin_report_trader.ui import theme
+from coin_report_trader.ui.ai_choice import AiChoices
 from coin_report_trader.ui.candle_choice import CandleChoice
 from coin_report_trader.ui.cards import Card, CardGrid, title_row
 from coin_report_trader.ui.coin_picker import CoinPicker
@@ -18,13 +19,17 @@ from coin_report_trader.ui.screens import (
 from coin_report_trader.ui.state import Message, Phase, PickerMode
 from coin_report_trader.ui.texts import (
     ADVICE_NOTICE,
+    AI_USAGE_NOTE,
     COINS_LABEL_REQUIRED,
     FIRST_SETUP_DONE,
+    FIRST_SETUP_INTRO,
     LEGACY_NOTICE,
     NOTICE_DISCORD_NO_ADDRESS,
     NOTICE_DISCORD_OFFLINE,
+    NOTICE_PERSONAL,
     NOTICES_TITLE,
     RETENTION_LABEL_REQUIRED,
+    START_REASON,
     START_TEXT,
     TO_SETTINGS_TEXT,
 )
@@ -41,6 +46,8 @@ DONE_PANEL_NAME = "firstSetupDonePanel"
 DONE_NAME = "firstSetupDone"
 TO_SETTINGS_NAME = "firstSetupToSettings"
 START_NAME = "firstSetupStart"
+START_REASON_NAME = "firstSetupStartReason"
+INTRO_INFO_NAME = "firstSetupIntroInfo"
 
 
 class FirstSetupScreen(QWidget):
@@ -49,7 +56,7 @@ class FirstSetupScreen(QWidget):
 
     "저장하고 시작"은 코인, 알림 보관 기간, 봉 단위가 골라져 있을 때만 눌린다(봉 개수는 처음부터
     "200개"가 골라져 있다). 누르면 `start_requested(coins, retention_days, candle_unit,
-    candle_count)`, "다시 시도"를 누르면 `retry_requested`, "설정 화면으로"를 누르면
+    candle_count, ai_choices)`, "다시 시도"를 누르면 `retry_requested`, "설정 화면으로"를 누르면
     `open_settings_requested`가 난다. 이 화면은 동작을 직접 부르지 않는다(창이 부른다).
 
     예전 기록(1단계 보완 전에 처음 설정을 마침. M1 명세 3.14.4)이면 코인 고르기와 알림 보관 기간
@@ -61,7 +68,7 @@ class FirstSetupScreen(QWidget):
     옛 글 라벨은 없다(M1 명세 3.14.6).
     """
 
-    start_requested = Signal(object, int, object, int)
+    start_requested = Signal(object, int, object, int, object)
     retry_requested = Signal()
     open_settings_requested = Signal()
     edited = Signal()
@@ -76,7 +83,17 @@ class FirstSetupScreen(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
         layout.setSpacing(theme.CARD_GAP)
-        layout.addWidget(title_label(SCREEN_TITLES[ScreenId.FIRST_SETUP], TITLE_NAME))
+        title_line = QHBoxLayout()
+        title_line.setContentsMargins(0, 0, 0, 0)
+        title_line.setSpacing(theme.ICON_GAP)
+        title_line.addWidget(title_label(SCREEN_TITLES[ScreenId.FIRST_SETUP], TITLE_NAME))
+        # 2 자리의 안내 글은 제목 옆 'ⓘ'의 툴팁이다. 처음 설정을 마친 뒤에는 숨긴다(M2 명세 3.12.5).
+        self._intro_info = InfoIcon(
+            SCREEN_TITLES[ScreenId.FIRST_SETUP], FIRST_SETUP_INTRO, INTRO_INFO_NAME
+        )
+        title_line.addWidget(self._intro_info)
+        title_line.addStretch(1)
+        layout.addLayout(title_line)
         self._message = make_label("", MESSAGE_NAME)
         self._message.hide()
         layout.addWidget(self._message)
@@ -92,8 +109,9 @@ class FirstSetupScreen(QWidget):
         self._picker = CoinPicker(PREFIX, COINS_LABEL_REQUIRED)
         self._candle = CandleChoice(PREFIX)
         self._retention = RetentionChoice(PREFIX, RETENTION_LABEL_REQUIRED)
+        self._ai = AiChoices(PREFIX, required=True)
         cards = []
-        for part in (self._picker, self._candle, self._retention):
+        for part in (self._picker, self._candle, self._retention, self._ai):
             card = Card()
             card.body.addWidget(part)
             if part is not self._picker:
@@ -106,10 +124,16 @@ class FirstSetupScreen(QWidget):
         layout.addWidget(self._form)
 
         notices = Card(NOTICES_NAME)
-        # 10 자리: 가, 마, 바 순서(설계서 10.2). 세 글은 제목 옆 'ⓘ'의 툴팁이다.
+        # 10 자리: 가, 마, 바, 사, 아 순서(M2 명세 3.12.3). 다섯 글은 제목 옆 'ⓘ'의 툴팁이다.
         notices_info = InfoIcon(
             NOTICES_TITLE,
-            info_text(ADVICE_NOTICE, NOTICE_DISCORD_OFFLINE, NOTICE_DISCORD_NO_ADDRESS),
+            info_text(
+                ADVICE_NOTICE,
+                NOTICE_DISCORD_OFFLINE,
+                NOTICE_DISCORD_NO_ADDRESS,
+                NOTICE_PERSONAL,
+                AI_USAGE_NOTE,
+            ),
             NOTICES_INFO_NAME,
         )
         notices.body.addLayout(title_row(NOTICES_TITLE, NOTICES_TITLE_NAME, notices_info))
@@ -131,8 +155,11 @@ class FirstSetupScreen(QWidget):
         self._start.setObjectName(START_NAME)
         set_role(self._start, theme.ROLE_PRIMARY)
         self._start.clicked.connect(self._on_start)
+        self._start_reason = make_label(START_REASON, START_REASON_NAME)
+        set_role(self._start_reason, theme.ROLE_SUB)
         start_row = QHBoxLayout()
         start_row.addStretch(1)
+        start_row.addWidget(self._start_reason)
         start_row.addWidget(self._start)
         layout.addLayout(start_row)
         layout.addStretch(1)
@@ -140,6 +167,7 @@ class FirstSetupScreen(QWidget):
         self._picker.changed.connect(self._on_edit)
         self._candle.changed.connect(self._on_edit)
         self._retention.changed.connect(self._on_edit)
+        self._ai.changed.connect(self._on_edit)
         self._picker.retry_requested.connect(self.retry_requested)
         self._done_panel.hide()
         self._update_start()
@@ -170,6 +198,7 @@ class FirstSetupScreen(QWidget):
         self._form.setVisible(not (phase is Phase.READY and done))
         self._start.setVisible(not (phase is Phase.READY and done))
         self._done_panel.setVisible(phase is Phase.READY and done)
+        self._intro_info.setVisible(not (phase is Phase.READY and done))
         # 불러오는 중이거나 설정을 읽지 못했으면 칸은 흐리다('ⓘ'는 흐린 때도 듣는다).
         set_dim(self._form, not editing)
         self._picker.show_mode(picker)
@@ -188,14 +217,21 @@ class FirstSetupScreen(QWidget):
         self.edited.emit()
 
     def _update_start(self) -> None:
-        self._start.setEnabled(self._ready_values() is not None)
+        ready = self._ready_values() is not None
+        self._start.setEnabled(ready)
+        # 누를 수 없을 때 단추 곁에 까닭이 늘 보인다(누를 수 있으면 보이지 않는다).
+        self._start_reason.setVisible(not ready and not self._start.isHidden())
 
-    def _ready_values(self) -> tuple[tuple[str, ...], int, CandleUnit, int] | None:
-        """ "저장하고 시작"을 누를 수 있는 값(코인, 보관 기간, 봉 단위, 봉 개수). 없으면 `None`."""
+    def _ready_values(
+        self,
+    ) -> tuple[tuple[str, ...], int, CandleUnit, int, tuple[AiChoice, ...]] | None:
+        """ "저장하고 시작"을 누를 수 있는 값(코인, 보관 기간, 봉 단위, 봉 개수, 네 칸의
+        `AiChoice`). 하나라도 비면 `None`."""
         coins = self._picker.picks()
         days = self._retention.value()
         unit = self._candle.unit()
         count = self._candle.count()
+        ai = self._ai.choices()
         if (
             self._phase is not Phase.READY
             or self._done
@@ -203,9 +239,10 @@ class FirstSetupScreen(QWidget):
             or days is None
             or unit is None
             or count is None
+            or ai is None
         ):
             return None
-        return coins, days, unit, count
+        return coins, days, unit, count, ai
 
     def _on_start(self) -> None:
         values = self._ready_values()

@@ -107,4 +107,6 @@ class CandleChoice(QWidget):
     def _refresh_tooltips(self) -> None:
         unit = self.unit()
         for count, button in self._count_buttons.items():
-            button.setToolTip(candle_count_tooltip(unit, count))
+            tip = candle_count_tooltip(unit, count)
+            button.setToolTip(tip)
+            button.setAccessibleDescription(tip)  # 툴팁과 같은 글(M2 명세 3.12.5)

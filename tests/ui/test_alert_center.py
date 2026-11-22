@@ -89,9 +89,22 @@ class FakeActions:
         self.calls.append(("refresh_markets",))
 
     def save_settings(
-        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+        self,
+        coins,
+        retention_days,
+        *,
+        first_setup,
+        candle_unit=None,
+        candle_count=None,
+        ai_choices=None,
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
+
+    def load_reports(self, market) -> None:
+        pass  # 2단계의 동작. 화면이 부르기 전까지 아무것도 하지 않는다
+
+    def load_report(self, report_id) -> None:
+        pass
 
     def retry_candles(self) -> None:
         self.calls.append(("retry_candles",))
@@ -276,8 +289,8 @@ def test_a_tab_shows_the_unseen_count_after_its_name(make_window):
             unseen={AlertCategory.ERROR: 2, AlertCategory.OTHER: 1},
         )
     )
-    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림(2)"
-    assert _tab(screen, AlertCategory.OTHER).text() == "기타 알림(1)"
+    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림 (2)"
+    assert _tab(screen, AlertCategory.OTHER).text() == "기타 알림 (1)"
     assert _tab(screen, AlertCategory.TRADE).text() == "매매 알림"  # 키가 없으면 0이다.
 
 
@@ -1091,6 +1104,6 @@ def test_other_updates_and_odd_values_raise_nothing(make_window, actions):
     window.apply(AlertsView((_alert(1, AlertCategory.ERROR),), {AlertCategory.ERROR: 3}))
     _tab(screen, AlertCategory.ERROR).click()
     assert _rows(screen) == [1]
-    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림(3)"
+    assert _tab(screen, AlertCategory.ERROR).text() == "오류 알림 (3)"
     # 새 `AlertsView`가 오기 전 지운 줄의 id로 `mark_seen`을 불러도 된다(조립이 처리한다).
     assert actions.count("save_settings") == 0

@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -22,11 +22,20 @@ from coin_report_trader.core.ai import (
 from coin_report_trader.core.alerts import AlertCategory, Mode
 from coin_report_trader.core.market import CandleUnit, Market
 from coin_report_trader.core.stats import BarStats
+from coin_report_trader.core.trade import (
+    ErrorPauseCause,
+    OrderRecord,
+    PaperHolding,
+    RoundStage,
+    TradeSettings,
+)
 
 SAVE_TARGET_SETTINGS = "settings"
 SAVE_TARGET_ALERT_DELETE = "alert_delete"
 SAVE_TARGET_REPORT = "report"
 """보고서를 읽지 못했을 때만 쓴다(M2 명세 3.12.1)."""
+SAVE_TARGET_EXPORT = "history_export"
+"""기록 화면의 CSV 내보내기 결과(M3 명세 3.15.2)."""
 
 
 class LoadState(StrEnum):
@@ -93,6 +102,8 @@ class SettingsView:
     """이 실행에서 레지스트리를 쓸 수 있는지. 자료 스레드가 `supported()`로 채운다."""
     autostart_error: str | None = None
     """마지막 맞추기의 실패 글. 없으면 `None`."""
+    trade: TradeSettings | None = None
+    """저장된 매매 칸이 모두 있을 때만 값이 있다. 3단계 전(1·2단계)의 기록은 `None`(M3 명세 3.4)."""
 
 
 @dataclass(frozen=True)
@@ -160,6 +171,8 @@ class SaveResult:
     """`SAVE_TARGET_SETTINGS`나 `SAVE_TARGET_ALERT_DELETE`. 주소 칸의 결과는 쓰지 않는다."""
     ok: bool
     message: str | None = None
+    field_errors: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    """칸 이름(M3 명세 3.11.2)에서 그 칸의 글."""
 
 
 @dataclass(frozen=True)
@@ -268,6 +281,146 @@ class ReportView:
     tokens: TokenUsage | None
     elapsed_report_seconds: int | None
     as_of: datetime | None = None
+    order_summary: str | None = None
+    no_order_reason: str | None = None
+    elapsed_order_seconds: int | None = None
+    """주문까지 걸린 시간(`reports.elapsed_order_s`. M3 명세 3.4)."""
+
+
+@dataclass(frozen=True)
+class TradeStatusView:
+    """상태 띠와 상태 줄(M3 명세 3.4)."""
+
+    user_paused: bool
+    error_paused: bool
+    error_cause: ErrorPauseCause | None
+    error_detail: str | None
+    """거래소 오류면 {오류 종류}."""
+    stop_loss_off: bool
+    """"지금 손절이 동작하지 않음"."""
+    starting_step: str | None
+    """켜는 중의 글."""
+    next_round_utc: datetime | None
+    blocked_until: datetime | None = None
+    """원인이 일시 차단이면 차단이 풀리는 때(3.10.2)."""
+    uncanceled: tuple[str, ...] = ()
+    """오류 멈춤일 때 취소하지 못한 주문의 요약."""
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
+class CoinTradeView:
+    """코인 칸의 3단계 값(M3 명세 3.4)."""
+
+    market: str
+    price: Decimal | None
+    price_read_utc: datetime | None
+    holding: PaperHolding | None
+    sellable_qty: Decimal
+    value: Decimal | None
+    """평가 금액."""
+    stop_line: Decimal | None
+    dust: bool
+    """팔 수 없는 잔량."""
+    last_direction: Direction | None
+    last_round: int | None
+    open_orders: tuple[OrderRecord, ...]
+    buy_blocked: tuple[str, ...]
+    """"새 매수 막힘"의 까닭들."""
+    caution: bool
+    sell_all: str | None
+    """전량 매도 결과의 글(3.10.3)."""
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
+class TodayView:
+    realized_pnl: Decimal
+    daily_loss_limit: Decimal
+    used: Decimal
+    """전체 매수 원가와 걸린 매수 주문."""
+    budget: Decimal
+    """예산. 고른 코인 전체의 상한(5.5절)."""
+    paper_krw: Decimal
+    limit_reached: bool
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
+class RoundNowView:
+    round_number: int | None
+    stage: RoundStage | None
+    next_round_utc: datetime | None
+    paused: bool
+    as_of: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PerformanceRow:
+    """모의 성적의 한 줄(M3 명세 3.16.1). 합계 줄은 `market`이 `None`이다."""
+
+    market: str | None
+    ok_rounds: int
+    hits: int
+    countable: int
+    realized_pnl: Decimal
+    wins: int
+    sells: int
+    unrealized_pnl: Decimal | None
+    asset_change: Decimal | None
+    """합계 줄만."""
+    diff_mean: Decimal | None
+    diff_abs_mean: Decimal | None
+    """예측 차이 평균과 그 크기의 평균. 셀 수 있는 판단이 없으면 `None`."""
+
+
+@dataclass(frozen=True)
+class PerformanceView:
+    rows: tuple[PerformanceRow, ...]
+    """코인마다, 끝에 합계 한 줄."""
+    as_of: datetime | None = None
+
+
+class HistoryTab(StrEnum):
+    ROUNDS = "rounds"
+    JUDGMENTS = "judgments"
+    ORDERS = "orders"
+    FILLS = "fills"
+    PAUSES = "pauses"
+
+
+@dataclass(frozen=True)
+class HistoryRow:
+    key: str
+    cells: tuple[str, ...]
+    """화면에 보일 글."""
+    detail: tuple[tuple[str, str], ...]
+    """자세한 글의 이름과 값."""
+    report_id: int | None
+    market: str | None = None
+    """그 줄의 코인. 판단 줄의 "보고서 보기"가 `load_reports(market)`를 부를 때 쓴다."""
+
+
+@dataclass(frozen=True)
+class HistoryView:
+    tab: HistoryTab
+    market: str | None
+    """`None`은 모든 코인."""
+    day: date
+    """한국 날짜."""
+    columns: tuple[str, ...]
+    rows: tuple[HistoryRow, ...]
+    state: LoadState
+
+
+@dataclass(frozen=True)
+class BelowStopView:
+    """SCR-06-5를 띄울 값(3.11.4)."""
+
+    market: str
+    avg_price: Decimal
+    price: Decimal
+    stop_line: Decimal
 
 
 UiUpdate = (
@@ -280,4 +433,11 @@ UiUpdate = (
     | AiStatusView
     | ReportListView
     | ReportView
+    | TradeStatusView
+    | CoinTradeView
+    | TodayView
+    | RoundNowView
+    | PerformanceView
+    | HistoryView
+    | BelowStopView
 )

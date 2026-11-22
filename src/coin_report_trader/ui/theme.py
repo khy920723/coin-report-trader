@@ -123,6 +123,7 @@ QPushButton[{ROLE_PROPERTY}="{ROLE_PRIMARY}"] {{ background: {ACCENT}; color: #F
 QPushButton:disabled, QPushButton[{ROLE_PROPERTY}="{ROLE_PRIMARY}"]:disabled {{
     background: {SURFACE}; color: {TEXT_DISABLED};
 }}
+QFrame[{CARD_PROPERTY}="true"][clickable="true"]:focus {{ border: 2px solid {FOCUS}; }}
 QPushButton:flat {{ background: transparent; border-radius: 0; }}
 QPushButton[tab="true"] {{
     background: transparent; color: {TEXT_SUB}; border: 0; border-bottom: 2px solid transparent;
@@ -133,6 +134,7 @@ QPushButton[tab="true"][selected="true"] {{
 }}
 QPushButton[tab="true"]:focus {{ border: 2px solid {FOCUS}; }}
 QWidget[alertRow="true"] {{ border-bottom: 1px solid {DIVIDER}; }}
+QLabel[alertLine="true"]:focus {{ border: 2px solid {FOCUS}; }}
 QLabel[cell="true"] {{ border-bottom: 1px solid {DIVIDER}; min-height: {ROW_HEIGHT - 1}px; }}
 QPushButton:focus, QLineEdit:focus, QComboBox:focus, QRadioButton:focus, QCheckBox:focus,
 QListWidget:focus {{ border: 2px solid {FOCUS}; }}
