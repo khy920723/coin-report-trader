@@ -768,3 +768,224 @@ def test_below_stop_cancel_saves_nothing_and_keeps_the_values(window, actions):
 def test_the_card_count_of_the_first_setup_is_eight(window):
     first = _first(window)
     assert len(first.findChildren(Card)) == 8
+
+
+# --- 검토의 고칠 것: 칸마다 확인 ---
+
+REQUIRED_LINES = (
+    "Budget",
+    "CoinRatio_KRW-AAA",
+    "CoinRatio_KRW-CCC",
+    "AddRatio",
+    "Tolerance",
+    "StopRatio",
+    "DailyLoss",
+    "OrderInterval",
+    "MrLoss",
+    "PaperFunds",
+    "BackupDays",
+)
+REQUIRED_CHOICES = ("Method_trend", "PauseStop_keep", "MrSell_no")
+
+
+def _ready_first_two(window) -> QWidget:
+    first = _ready_first(window)
+    _pick(first, "firstSetup", "KRW-CCC")
+    fill_trade_fields(first)
+    return first
+
+
+def _uncheck(button: QRadioButton) -> None:
+    """고른 둥근 단추를 코드로 푼다(묶음의 한 개 고르기를 잠깐 끈다)."""
+    group = button.group()
+    group.setExclusive(False)
+    button.setChecked(False)
+    group.setExclusive(True)
+
+
+@pytest.mark.parametrize("name", [*REQUIRED_LINES, "FirstRatio"])
+def test_start_is_off_with_the_reason_when_any_one_required_line_is_empty(window, name):
+    first = _ready_first_two(window)
+    start = _find(first, QPushButton, "firstSetupStart")
+    reason = _find(first, QLabel, "firstSetupStartReason")
+    assert start.isEnabled()
+    box = _line(first, f"firstSetup{name}")
+    box.setText("")
+    assert not start.isEnabled(), name
+    assert not reason.isHidden(), name
+    box.setText("3")
+    assert start.isEnabled(), name
+    assert reason.isHidden(), name
+
+
+@pytest.mark.parametrize("name", REQUIRED_CHOICES)
+def test_start_is_off_with_the_reason_when_any_one_required_choice_is_missing(window, name):
+    first = _ready_first_two(window)
+    start = _find(first, QPushButton, "firstSetupStart")
+    _uncheck(_find(first, QRadioButton, f"firstSetup{name}"))
+    assert not start.isEnabled(), name
+    assert not _find(first, QLabel, "firstSetupStartReason").isHidden(), name
+
+
+def test_start_needs_the_first_ratio_of_the_chosen_method_only(window):
+    first = _ready_first_two(window)
+    start = _find(first, QPushButton, "firstSetupStart")
+    _line(first, "firstSetupMrFirstRatio").setText("")
+    assert start.isEnabled()  # 고르지 않은 방식(평균회귀)의 칸은 비어도 된다
+    _find(first, QRadioButton, "firstSetupMethod_mean_reversion").click()
+    assert not start.isEnabled()  # 이제 평균회귀 칸이 꼭 넣는 칸이다
+    _line(first, "firstSetupMrFirstRatio").setText("12")
+    _line(first, "firstSetupFirstRatio").setText("")
+    assert start.isEnabled()  # 추세추종 칸은 이제 비어도 된다
+
+
+def test_start_is_off_when_no_coin_is_chosen(window):
+    first = _ready_first_two(window)
+    start = _find(first, QPushButton, "firstSetupStart")
+    _pick(first, "firstSetup", "KRW-AAA", "KRW-CCC")  # 둘 다 뺀다
+    assert not start.isEnabled()
+    assert not _find(first, QLabel, "firstSetupStartReason").isHidden()
+
+
+@pytest.mark.parametrize("name", [*REQUIRED_LINES, "FirstRatio"])
+def test_settings_save_is_off_when_any_one_required_line_is_empty(window, name):
+    settings = _settings(window, make_trade())
+    save = _find(settings, QPushButton, "settingsSave")
+    assert save.isEnabled()
+    box = _line(settings, f"settings{name}")
+    box.setText("")
+    assert not save.isEnabled(), name
+    box.setText("3")
+    assert save.isEnabled(), name
+
+
+@pytest.mark.parametrize("name", REQUIRED_CHOICES)
+def test_settings_save_is_off_when_any_one_required_choice_is_missing(window, name):
+    settings = _settings(window, make_trade())
+    _uncheck(_find(settings, QRadioButton, f"settings{name}"))
+    assert not _find(settings, QPushButton, "settingsSave").isEnabled(), name
+
+
+def test_settings_save_needs_the_first_ratio_of_the_saved_method_only(window):
+    settings = _settings(window, make_trade())
+    save = _find(settings, QPushButton, "settingsSave")
+    _line(settings, "settingsMrFirstRatio").setText("")
+    assert save.isEnabled()
+    _find(settings, QRadioButton, "settingsMethod_mean_reversion").click()
+    assert not save.isEnabled()
+
+
+# 처음 값과 다른 값(칸마다 서로 다르다). 읽지 않고 상수를 돌려주는 고장을 잡는다.
+UNIQUE_TEXT = {
+    "Budget": "2,345,678",
+    "CoinRatio_KRW-AAA": "60.25",
+    "CoinRatio_KRW-CCC": "39.75",
+    "FirstRatio": "17.5",
+    "MrFirstRatio": "12.25",
+    "AddRatio": "8.75",
+    "Tolerance": "1.25",
+    "StopRatio": "7.5",
+    "DailyLoss": "4,200",
+    "OrderInterval": "90",
+    "MrLoss": "3.5",
+    "PaperFunds": "7,654,321",
+    "BackupDays": "14",
+}
+
+
+def _unique_trade() -> TradeSettings:
+    return TradeSettings(
+        budget=Decimal("2345678"),
+        coin_ratios={"KRW-AAA": Decimal("60.25"), "KRW-CCC": Decimal("39.75")},
+        first_ratio=Decimal("17.5"),
+        mr_first_ratio=Decimal("12.25"),
+        add_ratio=Decimal("8.75"),
+        tolerance=Decimal("1.25"),
+        stop_ratio=Decimal("7.5"),
+        daily_loss_limit=Decimal("4200"),
+        order_interval_s=90,
+        method=TradeMethod.MEAN_REVERSION,
+        pause_stop_loss=PauseStopLoss.STOP,
+        mr_sell_unknown_fee=True,
+        mr_tolerable_loss=Decimal("3.5"),
+        paper_funds=Decimal("7654321"),
+        backup_days=14,
+    )
+
+
+def _type_unique(screen: QWidget, prefix: str) -> None:
+    for name, text in UNIQUE_TEXT.items():
+        _line(screen, f"{prefix}{name}").setText(text)
+    _find(screen, QRadioButton, f"{prefix}Method_mean_reversion").click()
+    _find(screen, QRadioButton, f"{prefix}PauseStop_stop").click()
+    _find(screen, QRadioButton, f"{prefix}MrSell_yes").click()
+
+
+def test_every_field_of_the_first_setup_reaches_the_trade_settings(window, actions):
+    first = _ready_first(window)
+    _pick(first, "firstSetup", "KRW-CCC")
+    _find(first, QCheckBox, "firstSetupRead").setChecked(True)
+    _type_unique(first, "firstSetup")
+    _find(first, QPushButton, "firstSetupStart").click()
+    ((args, kwargs),) = actions.saves
+    assert args[0] == ("KRW-AAA", "KRW-CCC")
+    assert kwargs["trade"] == _unique_trade()
+
+
+def test_every_field_of_the_settings_reaches_the_trade_settings(window, actions):
+    settings = _settings(window, make_trade())
+    _type_unique(settings, "settings")
+    _find(settings, QPushButton, "settingsSave").click()
+    ((_args, kwargs),) = actions.saves
+    assert kwargs["trade"] == _unique_trade()
+
+
+def test_the_other_methods_first_ratio_is_kept_when_it_is_filled(window, actions):
+    settings = _settings(window, make_trade())
+    _type_unique(settings, "settings")
+    _line(settings, "settingsFirstRatio").setText("")
+    _find(settings, QPushButton, "settingsSave").click()
+    ((_args, kwargs),) = actions.saves
+    assert kwargs["trade"].first_ratio is None
+    assert kwargs["trade"].mr_first_ratio == Decimal("12.25")
+
+
+FIELD_KEYS = {
+    "budget": "Budget",
+    "first_ratio": "FirstRatio",
+    "mr_first_ratio": "MrFirstRatio",
+    "add_ratio": "AddRatio",
+    "tolerance": "Tolerance",
+    "stop_ratio": "StopRatio",
+    "daily_loss_limit": "DailyLoss",
+    "order_interval_s": "OrderInterval",
+    "mr_tolerable_loss": "MrLoss",
+    "paper_funds": "PaperFunds",
+    "backup_days": "BackupDays",
+    "coin_ratio:KRW-AAA": "CoinRatio_KRW-AAA",
+    "coin_ratio:KRW-CCC": "CoinRatio_KRW-CCC",
+    "coin_ratios": "CoinRatioSum",
+}
+
+
+@pytest.mark.parametrize("key", list(FIELD_KEYS))
+@pytest.mark.parametrize("prefix", ["firstSetup", "settings"])
+def test_each_field_error_key_shows_its_text_under_its_own_field_only(window, key, prefix):
+    if prefix == "firstSetup":
+        screen = _ready_first(window)
+        _pick(screen, "firstSetup", "KRW-CCC")
+    else:
+        screen = _settings(window, make_trade())
+    window.apply(SaveResult("settings", ok=False, field_errors={key: f"글 {key}"}))
+    shown = {
+        name: _find(screen, QLabel, f"{prefix}{name}Error")
+        for name in FIELD_KEYS.values()
+        if screen.findChild(QLabel, f"{prefix}{name}Error") is not None
+    }
+    for other_key, name in FIELD_KEYS.items():
+        label = shown[name]
+        if other_key == key:
+            assert not label.isHidden(), key
+            assert label.text() == f"글 {key}", key
+        else:
+            assert label.isHidden(), (key, other_key)

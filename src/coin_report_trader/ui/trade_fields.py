@@ -223,7 +223,7 @@ class _Choice(QWidget):
             if tip:
                 button.setToolTip(tip)
                 button.setAccessibleDescription(tip)  # 화면 읽기 도구의 설명에도(REQ-USE-002)
-            button.clicked.connect(self.changed)
+            button.toggled.connect(self.changed)  # 코드가 고른 때도 같다(`set_value`는 막는다)
             self._group.addButton(button)
             self.buttons[value] = button
             row.addWidget(button)
@@ -241,10 +241,17 @@ class _Choice(QWidget):
         return None
 
     def set_value(self, value: str | None) -> None:
+        """고른 값을 바꾼다(`changed`를 내지 않는다)."""
+        self.blockSignals(True)
+        for button in self.buttons.values():
+            button.blockSignals(True)
         self._group.setExclusive(False)
         for key, button in self.buttons.items():
             button.setChecked(key == value)
         self._group.setExclusive(True)
+        for button in self.buttons.values():
+            button.blockSignals(False)
+        self.blockSignals(False)
 
 
 class TradeFields(QObject):
