@@ -619,10 +619,12 @@ class ReportRoundMixin:
         except Exception as exc:
             self._write_error_report(pending.report_id, type(exc).__name__)
             self._ai_off(pending.market, exc, hide_text=True)
+        try:
+            self._post_report_list(pending.market)
+            # 회차를 `done`으로 쓰다 난 알림도 그 회차 안이다
+            self._maybe_finish_round(pending.round)
         finally:
             self._alert_round = None
-        self._post_report_list(pending.market)
-        self._maybe_finish_round(pending.round)
 
     def _finish_session(self, pending: _Pending, result: SessionResult) -> None:
         judged = self._judge(pending, result)

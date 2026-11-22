@@ -6,7 +6,9 @@
 import csv
 import io
 import json
+import sqlite3
 import time
+import traceback
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -25,13 +27,15 @@ from coin_report_trader.core import (
     AiChoice,
     AiSlot,
     CandleUnit,
+    ClaudeState,
     Effort,
     Market,
     QuoteError,
     SettingsView,
     StorageError,
 )
-from coin_report_trader.core.texts import ERROR_NETWORK
+from coin_report_trader.core.texts import ERROR_NETWORK, ERROR_TIMEOUT
+from coin_report_trader.storage import reports as report_store
 from coin_report_trader.storage.database import migrate, open_database
 from coin_report_trader.storage.settings import write_settings
 
@@ -145,6 +149,7 @@ def test_the_message_joins_text_and_content_and_masks_in_four_steps() -> None:
         ("버전 1.2.3 그리고 1.2.3.4.5", "버전 1.2.3 그리고 1.2.3.4.5"),
         ("서버 256.1.1.1 응답", "서버 256.1.1.1 응답"),
         ("주소 fe80::1 끝", "주소 (가려서 보임) 끝"),
+        ("주소 1::2 끝", "주소 (가려서 보임) 끝"),  # 16진수 글자 없이 `::`만 든 주소
         ("주소 2001:db8:0:0:0:0:0:1 끝", "주소 (가려서 보임) 끝"),
         ("시각 10:30:00 끝", "시각 10:30:00 끝"),
         ("경로 C:\\Temp\\a.txt 끝", "경로 (경로) 끝"),
@@ -437,6 +442,7 @@ def test_an_unexpected_error_line_carries_the_app_place_and_hides_the_answer_tex
     assert line["source"].startswith("app/report_round.py:")
     assert line["round_number"] == "1"
     assert "답에서 온 글" not in line["message"]
+    assert "ValueError · app/report_round.py:" in line["message"]  # 예외 종류와 자리뿐이다
     assert webhook() not in json.dumps(line)
 
 
@@ -514,3 +520,92 @@ def test_a_failure_to_write_the_table_does_not_stop_the_work(
     finally:
         conn.close()
     assert "A-2" in codes  # 알림은 그대로 만든다
+
+
+def test_the_microseconds_of_the_time_are_cut_to_the_second() -> None:
+    assert pr.kst_text(KST_WHEN + timedelta(microseconds=123456)) == "2026-11-22T03:15:20+09:00"
+
+
+def test_count_recent_counts_a_line_at_the_very_time_of_the_new_one(tmp_path: Path) -> None:
+    report = pr.ProblemReport(tmp_path)
+    report.append(row(occurred_kst=pr.kst_text(KST_WHEN), fingerprint="f" * 12))
+    assert report.count_recent("f" * 12, KST_WHEN) == 1  # `occurred` 이하
+
+
+def test_the_source_is_the_last_app_place_when_the_traceback_has_several() -> None:
+    closed = sqlite3.connect(":memory:")
+    closed.close()
+    with pytest.raises(StorageError) as caught:
+        report_store.read_report(closed, 1)
+    frames = [
+        f.filename
+        for f in traceback.extract_tb(caught.value.__traceback__)
+        if "coin_report_trader" in f.filename
+    ]
+    assert len(set(frames)) >= 2  # 앱 안의 자리가 둘 이상이다
+    assert pr.problem_source(caught.value, "app.data_thread").startswith("storage/database.py:")
+
+
+def test_alerts_after_a_round_and_the_a19_have_a_blank_round_number(rig: Any) -> None:
+    runner = FakeAiRunner()
+    item = rig(runner)
+    item.start()
+    item.round()  # 회차 1이 정상으로 끝났다
+    item.quote.script(QuoteError(ERROR_NETWORK), kind="candles", market=AAA)
+    runner.set_check(ClaudeState.VERSION_OUT_OF_RANGE, "2.2.5")
+    item.round()
+    rows = {r["code"]: r for r in item.table()}
+    assert set(rows) == {"A-1", "A-19"}
+    assert rows["A-1"]["round_number"] == ""  # 회차를 쓰기 전의 받기
+    assert rows["A-19"]["round_number"] == ""
+
+
+def test_an_alert_that_the_repeat_rule_blocks_in_memory_still_writes_a_blank_id_line(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = rig()
+    item.start()
+    from coin_report_trader.app import data_thread
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise StorageError("쓰기 실패")
+
+    monkeypatch.setattr(data_thread.alert_store, "insert_alert", broken)
+    item.quote.script(QuoteError(ERROR_NETWORK), kind="price", market=AAA)
+    item.round()
+    item.quote.script(QuoteError(ERROR_TIMEOUT), kind="price", market=AAA)
+    item.round()  # 알림 저장이 한 번도 성공하지 않아 둘째 A-29는 만들지 않는다
+    ids = [r["alert_id"] for r in item.table() if r["code"] == "A-29"]
+    assert len(ids) == 2
+    assert ids[0].startswith("-")
+    assert ids[1] == ""
+
+
+def test_an_alert_from_writing_the_round_as_done_has_the_round_number(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = rig()
+    item.start()
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise StorageError("쓰기 실패")
+
+    monkeypatch.setattr(report_round.report_store, "finish_round", broken)
+    item.round()
+    (line,) = [r for r in item.table() if r["code"] == "A-29"]
+    assert (line["stage"], line["round_number"]) == ("보고서 저장", "1")
+
+
+def test_after_a_round_without_sessions_the_next_alert_has_a_blank_round_number(rig: Any) -> None:
+    runner = FakeAiRunner(state=ClaudeState.LOGGED_OUT)
+    item = rig(runner)
+    item.start()
+    item.round()  # 로그인 만료: 세션 없이 회차가 끝난다(A-18은 회차 안이다)
+    item.quote.script(QuoteError(ERROR_NETWORK), kind="candles", market=AAA)
+    item.round()
+    rows = item.table()
+    assert [(r["code"], r["round_number"]) for r in rows] == [
+        ("A-18", "1"),
+        ("A-1", ""),  # 앞 회차의 번호가 남아 있지 않다
+        ("A-18", "2"),  # 되풀이로 만들지 않은 A-18의 줄도 그 회차의 번호다
+    ]
