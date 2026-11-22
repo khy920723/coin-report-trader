@@ -399,6 +399,7 @@ def test_the_app_actions_hand_the_new_calls_to_the_data_thread() -> None:
     actions.load_reports("KRW-AAA", Mode.LIVE)
     actions.load_history(HistoryTab.EXTERNAL, None, created, Mode.LIVE)
     actions.save_settings(("KRW-AAA",), 7, first_setup=False, live=live)
+    actions.account_visible(False)  # 숨음도 그대로 넘긴다
     assert data.calls[0] == ("save_upbit_key", ("접근", "비밀", created), {})
     assert [c[0] for c in data.calls[1:7]] == [
         "delete_upbit_key", "prepare_live_on", "turn_live_on", "turn_live_off",
@@ -408,6 +409,7 @@ def test_the_app_actions_hand_the_new_calls_to_the_data_thread() -> None:
     assert data.calls[7] == ("load_reports", ("KRW-AAA", Mode.LIVE), {})
     assert data.calls[8] == ("load_history", (HistoryTab.EXTERNAL, None, created, Mode.LIVE), {})
     assert data.calls[9][2]["live"] is live
+    assert data.calls[10] == ("account_visible", (False,), {})
 
 
 def test_the_data_thread_takes_the_new_calls_and_keeps_no_key_value(tmp_path: Path) -> None:
