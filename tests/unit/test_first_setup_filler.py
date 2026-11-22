@@ -19,17 +19,21 @@ from coin_report_trader.core import PauseStopLoss, TradeMethod, TradeSettings
 from coin_report_trader.trading.orders import check_trade_settings
 
 MARKETS = ("KRW-AAA", "KRW-BBB", "KRW-CCC")
+# M3 명세 3.17.5의 객체 이름(앞머리 `firstSetup` 뒤). 도구의 이름과 따로 글로 적는다.
+SPEC_LINES = ("Budget", "FirstRatio", "MrFirstRatio", "AddRatio", "Tolerance", "StopRatio",
+              "DailyLoss", "OrderInterval", "MrLoss", "PaperFunds", "BackupDays")  # fmt: skip
+SPEC_BUTTONS = ("Method_trend", "PauseStop_keep", "MrSell_no")
 
 
 def screen(*, coins: tuple[str, ...] = MARKETS, skip: tuple[str, ...] = ()) -> QWidget:
     """3.17.5의 이름을 가진 칸을 둔 흉내 낸 처음 설정 화면(`skip`의 이름은 두지 않는다)."""
     root = QWidget()
-    for name, _ in LINE_VALUES:
+    for name in SPEC_LINES:
         if name not in skip:
             QLineEdit(root).setObjectName(f"firstSetup{name}")
     for market in coins:
         QLineEdit(root).setObjectName(f"firstSetupCoinRatio_{market}")
-    for name in BUTTONS:
+    for name in SPEC_BUTTONS:
         button = QRadioButton(root)
         button.setObjectName(f"firstSetup{name}")
         button.setAutoExclusive(False)  # 진짜 화면은 묶음마다 따로다. 흉내 낸 화면은 한 부모 아래다
@@ -42,6 +46,11 @@ def text(root: QWidget, name: str) -> str:
     box = root.findChild(QLineEdit, name)
     assert box is not None, name
     return box.text()
+
+
+def test_the_names_of_the_tool_are_the_object_names_of_the_spec() -> None:
+    assert tuple(name for name, _ in LINE_VALUES) == SPEC_LINES
+    assert BUTTONS == SPEC_BUTTONS
 
 
 def test_without_the_trade_fields_nothing_is_done_and_zero_is_returned(qapp: QApplication) -> None:
@@ -58,10 +67,10 @@ def test_every_field_is_filled_and_the_buttons_and_the_read_box_are_chosen(
     root = screen()
     assert trade_fields_exist(root)
     filled = fill_trade_fields(root)
-    assert filled == len(LINE_VALUES) + len(MARKETS) + len(BUTTONS) + 1
+    assert filled == len(SPEC_LINES) + len(MARKETS) + len(SPEC_BUTTONS) + 1
     for name, value in LINE_VALUES:
         assert text(root, f"firstSetup{name}") == value, name
-    for name in BUTTONS:
+    for name in SPEC_BUTTONS:
         assert root.findChild(QRadioButton, f"firstSetup{name}").isChecked(), name
     assert root.findChild(QCheckBox, "firstSetupRead").isChecked()
 
