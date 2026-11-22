@@ -200,3 +200,11 @@ def test_texts_on_the_same_key_are_joined_by_newlines() -> None:
     assert got["coin_ratio:KRW-AAA"] == "0보다 큰 값을 넣으세요."
     assert got["coin_ratio:KRW-BBB"] == "첫 매수와 추가 한 번을 합친 금액이 BBB의 예산보다 큽니다."
     assert "coin_ratios" not in got  # −10 + 110 = 100
+
+
+def test_first_buy_at_exactly_the_floor_passes() -> None:
+    # 최소 주문 금액 5,000원, 손절 50%면 하한은 5,000 ÷ 0.5 × 1.1 = 11,000원이다. 예산 100,000원 ×
+    # 투자 비율 50% × 첫 매수 22% = 11,000원은 "하한보다 작음"이 아니라 통과한다.
+    assert first_buy_floor(MIN, D(50)) == D(11_000)
+    assert errors(stop_ratio=D(50), first_ratio=D(22)) == {}
+    assert "first_ratio" in errors(stop_ratio=D(50), first_ratio=D("21.99"))

@@ -341,3 +341,10 @@ def test_a_holding_row_of_zero_is_no_holding() -> None:
     assert run(TREND, UP, empty).plan == limit(OrderSide.BUY, "990", "10.10101010")
     assert run(TREND, DOWN, empty) == Decision(None, NoOrderReason.NOTHING, None)
     assert run(MR, UP, empty) == Decision(None, NoOrderReason.NOTHING, None)
+
+
+def test_buy_at_exactly_the_min_order_is_placed() -> None:
+    # 최소 주문 금액"보다 작으면" 내지 않는다: 코인 예산 50,000원 × 10% = 5,000원을 1,000에 사면
+    # 가격 × 수량이 5,000원으로 같으므로 낸다.
+    decision = run(TREND, UP, rep=report(buy="1000"), first_ratio=D(10))
+    assert decision == Decision(limit(OrderSide.BUY, "1000", "5"), None, None)
