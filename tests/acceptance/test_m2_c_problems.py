@@ -266,8 +266,9 @@ def test_c33_old_files_are_pruned_a_bad_header_file_is_kept_as_bad_and_a_new_fil
     folder.mkdir()
     for name in ("problems-2026-08.csv", "problems-2026-08.csv.bad", "problems-2026-09.csv",
                  "problems-2026-10.csv", "problems-2026-11.csv", "notes.txt"):  # fmt: skip
-        (folder / name).write_text("만든 글\r\n", encoding="utf-8")
-    (folder / "problems-2026-12.csv").write_text(BOM + "a,b,c\r\n1,2,3\r\n", encoding="utf-8")
+        (folder / name).write_bytes("만든 글\r\n".encode())
+    bad = BOM + "a,b,c\r\n1,2,3\r\n"
+    (folder / "problems-2026-12.csv").write_bytes(bad.encode())  # 줄 끝을 바꾸지 않게 바이트로
     rig.start()
     rig.round()  # A-30
     assert sorted(p.name for p in folder.iterdir()) == [
@@ -277,7 +278,7 @@ def test_c33_old_files_are_pruned_a_bad_header_file_is_kept_as_bad_and_a_new_fil
         "problems-2026-12.csv",
         "problems-2026-12.csv.bad",
     ]
-    assert file_text(folder / "problems-2026-12.csv.bad") == BOM + "a,b,c\r\n1,2,3\r\n"
+    assert file_text(folder / "problems-2026-12.csv.bad") == bad
     lines = file_text(folder / "problems-2026-12.csv").removeprefix(BOM).split("\r\n")
     assert lines[0] == HEADER
     assert lines[1].split(",")[5] == "A-30"
