@@ -501,3 +501,129 @@ def test_setting_events_take_only_the_four_kinds(conn: sqlite3.Connection) -> No
         ("coin_added", AAA, None),
         ("method_changed", None, "trend"),
     ]
+
+
+# --- 검토의 고칠 것(경계와 길) ------------------------------------------------------------------
+
+
+def test_a_save_without_trade_keeps_three_even_when_the_stage3_keys_are_short(
+    conn: sqlite3.Connection,
+) -> None:
+    write_settings(
+        conn, view(coins=(AAA,), trade=trade(coin_ratios={AAA: D("100")})), created_at=T0
+    )
+    assert level(conn) == "3"
+    write_settings(conn, view(coins=(AAA, BBB)))  # 새 코인의 비율이 없어 3단계 키가 모자란다
+    assert read_settings(conn).trade is None
+    assert level(conn) == "3"  # `trade=None`의 저장도 낮추지 않는다
+
+
+def test_the_first_three_without_funds_is_a_value_error_and_leaves_nothing(
+    conn: sqlite3.Connection,
+) -> None:
+    write_settings(conn, view())
+    for key, value in {
+        "budget": "1000", "coin_ratio:KRW-AAA": "60", "coin_ratio:KRW-BBB": "40",
+        "first_ratio": "30", "add_ratio": "10", "tolerance": "0", "stop_ratio": "5",
+        "daily_loss_limit": "3000", "order_interval_s": "60", "trade_method": "trend",
+        "pause_stop_loss": "stop", "mr_sell_unknown_fee": "no", "mr_tolerable_loss": "5",
+        "backup_days": "3",
+    }.items():  # fmt: skip
+        conn.execute("INSERT INTO settings VALUES (?, ?)", (key, value))
+    conn.execute("INSERT INTO settings VALUES ('paper_funds', '5000')")
+    conn.commit()
+    for event in ("INSERT", "UPDATE"):  # 단계를 쓰는 순간 가상 자금 키가 사라진다
+        conn.execute(
+            f"CREATE TRIGGER drop_funds_{event} AFTER {event} ON settings"
+            " WHEN NEW.key = 'first_setup_level' BEGIN DELETE FROM settings"
+            " WHERE key = 'paper_funds'; END"
+        )
+    with pytest.raises(ValueError, match="가상 자금"):
+        write_settings(conn, view(), created_at=T0)
+    for event in ("INSERT", "UPDATE"):
+        conn.execute(f"DROP TRIGGER drop_funds_{event}")
+    assert "paper_funds" in keys(conn)  # 되돌렸다
+    assert level(conn) == "2"  # 한 트랜잭션: 단계도 계정도 남지 않는다
+    assert trading.read_paper_account(conn, PAPER) is None
+
+
+def test_an_account_made_before_the_first_three_keeps_its_krw(conn: sqlite3.Connection) -> None:
+    trading.create_paper_account(conn, PAPER, D("70000"), created_at=T0)
+    trading.write_paper_account(conn, PAPER, PaperAccount(D("65000"), D("100"), ()))
+    write_settings(conn, view(trade=trade()), created_at=T0 + timedelta(1))
+    assert level(conn) == "3"
+    account = trading.read_paper_account(conn, PAPER)
+    assert account is not None
+    assert (account.krw, account.locked_krw) == (D("65000"), D("100"))
+    assert trading.read_paper_funds(conn, PAPER) == D("70000")
+
+
+def test_the_day_ranges_include_the_start_and_exclude_the_end(conn: sqlite3.Connection) -> None:
+    start, end = T0, T0 + timedelta(days=1)
+    trading.create_paper_account(conn, PAPER, D("10000"), created_at=T0)
+    account = PaperAccount(D("10000"), D("0"), ())
+    for uid, at in (("s", start), ("e", end)):
+        record = trading.insert_order(
+            conn, plan(side=OrderSide.SELL), mode=PAPER, uid=uid, round_id=None, created_at=at,
+            judged_until=at,
+        )  # fmt: skip
+        trading.update_order(conn, record.order_id, state=OrderState.CANCELED, closed_at=at)
+    assert trading.count_canceled_judgment_orders(conn, PAPER, AAA, start=start, end=end) == 1
+    for uid, at, pnl in (("fs", start, "-10"), ("fe", end, "-20")):
+        record = trading.insert_order(
+            conn, plan(side=OrderSide.SELL), mode=PAPER, uid=uid, round_id=None, created_at=at,
+            judged_until=at,
+        )  # fmt: skip
+        trading.record_fill(conn, fill_of(record.order_id, OrderSide.SELL, pnl, at), account)
+    assert [f.filled_utc for f in trading.list_fills(conn, PAPER, start=start, end=end)] == [start]
+    assert trading.realized_pnl_between(conn, PAPER, start=start, end=end) == D("-10")
+    assert [o.uid for o in trading.list_orders(conn, PAPER, start=start, end=end)] == ["fs", "s"]
+
+
+def test_the_last_stop_loss_fill_is_the_latest_stop_loss_one(conn: sqlite3.Connection) -> None:
+    trading.create_paper_account(conn, PAPER, D("10000"), created_at=T0)
+    account = PaperAccount(D("10000"), D("0"), ())
+    for uid, reason, hours in (
+        ("early", OrderReason.STOP_LOSS, 1),
+        ("late", OrderReason.STOP_LOSS, 2),
+        ("judged", OrderReason.JUDGMENT, 3),
+    ):
+        at = T0 + timedelta(hours=hours)
+        record = trading.insert_order(
+            conn, plan(side=OrderSide.SELL, reason=reason), mode=PAPER, uid=uid, round_id=None,
+            created_at=at, judged_until=at,
+        )  # fmt: skip
+        trading.record_fill(conn, fill_of(record.order_id, OrderSide.SELL, "1", at), account)
+    found = trading.last_stop_loss_fill(conn, PAPER, AAA)
+    assert found is not None
+    assert found.filled_utc == T0 + timedelta(hours=2)
+
+
+def test_the_round_bounds_and_the_earliest_round_after(conn: sqlite3.Connection) -> None:
+    first = a_round(conn, 1, T0)
+    report_store.finish_round(conn, first, state="done", ended_at=T0 + timedelta(minutes=10))
+    assert trading.round_running_at(conn, PAPER, T0)  # 시작 때는 든다
+    assert trading.round_running_at(conn, PAPER, T0 + timedelta(minutes=9))
+    assert not trading.round_running_at(conn, PAPER, T0 + timedelta(minutes=10))  # 끝 때는 빠진다
+    assert not trading.round_running_at(conn, PAPER, T0 - timedelta(seconds=1))
+    later = a_round(conn, 3, T0 + timedelta(hours=2))
+    second = a_round(conn, 2, T0 + timedelta(hours=1))
+    assert trading.first_round_after(conn, PAPER, T0) == second  # 가장 이른 것
+    assert (
+        trading.first_round_after(conn, PAPER, T0 + timedelta(hours=1)) == later
+    )  # 같은 때는 뒤가 아니다
+    assert trading.first_round_after(conn, PAPER, T0 - timedelta(seconds=1)) == first
+
+
+@pytest.mark.parametrize(
+    ("key", "text"),
+    [("order_interval_s", "60.5"), ("backup_days", "7.0"), ("budget", "NaN"),
+     ("tolerance", "Infinity"), ("stop_ratio", "-Infinity")],
+)  # fmt: skip
+def test_a_wrong_integer_or_a_non_finite_number_makes_the_trade_none(
+    conn: sqlite3.Connection, key: str, text: str
+) -> None:
+    write_settings(conn, view(trade=trade()), created_at=T0)
+    conn.execute("UPDATE settings SET value = ? WHERE key = ?", (text, key))
+    conn.commit()
+    assert read_settings(conn).trade is None

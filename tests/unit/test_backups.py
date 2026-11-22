@@ -69,7 +69,8 @@ def test_prune_keeps_the_last_n_days_and_touches_nothing_else(tmp_path: Path) ->
     names = [
         "app-2026-12-01.db", "app-2026-12-02.db", "app-2026-12-03.db", "app-2026-12-04.db",
         "app-2026-12-05.db", "before-schema-3-20261201-090000.db", "app-2026-12-1.db", "note.txt",
-        "app-2026-02-30.db",
+        "app-2026-02-30.db", "app-2026-12-01.db.bak", "x-app-2026-12-01.db",
+        "before-schema-3-app-2026-12-01.db",
     ]  # fmt: skip
     for name in names:
         (folder / name).write_bytes(b"x")
@@ -84,7 +85,10 @@ def test_prune_keeps_the_last_n_days_and_touches_nothing_else(tmp_path: Path) ->
             "app-2026-12-1.db",
             "note.txt",
             "app-2026-02-30.db",
-        ]
+            "app-2026-12-01.db.bak",
+            "x-app-2026-12-01.db",
+            "before-schema-3-app-2026-12-01.db",
+        ]  # 지울 날짜가 든 다른 이름도 건드리지 않는다
     )
     assert prune_daily_backups(tmp_path / "none", date(2026, 12, 5), 3) == ()
     with pytest.raises(ValueError, match="1 이상"):
