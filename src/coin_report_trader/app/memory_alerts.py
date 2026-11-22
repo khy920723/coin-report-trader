@@ -25,6 +25,8 @@ class MemoryAlert:
     seen: bool = False
     discord_state: DiscordState | None = None
     """보낸 결과가 아직 없으면 `None`."""
+    source: str = ""
+    """일어난 자리(문제 보고 표의 `source`. M2 명세 3.11.1)."""
 
     def view(self) -> AlertView:
         return AlertView(
@@ -58,8 +60,11 @@ class MemoryAlerts:
         coin: str | None,
         text: str,
         detail: AlertDetail | None,
+        source: str = "",
     ) -> MemoryAlert:
-        alert = MemoryAlert(self._next_id, created_at, mode, category, code, coin, text, detail)
+        alert = MemoryAlert(
+            self._next_id, created_at, mode, category, code, coin, text, detail, source=source
+        )
         self._next_id -= 1  # 지운 번호도 다시 주지 않는다
         self._items[alert.id] = alert
         return alert

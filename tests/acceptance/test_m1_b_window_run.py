@@ -65,7 +65,7 @@ from coin_report_trader.vault import webhook_secret_name
 LIMIT = 20.0
 """한 `run_gui`가 넘지 않을 실제 시간(안전 타이머). 넘으면 남은 차례가 있어 실패로 끝난다."""
 STARTUP_KEYS = {"kind", "created_utc", "mode", "category", "code", "coin", "text", "stage",
-                "error_name", "content", "after"}  # fmt: skip
+                "error_name", "content", "after", "source"}  # fmt: skip
 
 
 def services(clock: FakeClock | None = None, **kwargs: Any) -> Services:

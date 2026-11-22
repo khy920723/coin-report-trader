@@ -27,6 +27,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from coin_report_trader import __version__
 from coin_report_trader.core import (
     CANDLE_COUNTS,
     CANDLE_UNIT_LENGTHS,
@@ -115,6 +116,14 @@ from .alert_rules import (
 )
 from .autostart import WindowsAutostart, current_command
 from .memory_alerts import MemoryAlert, MemoryAlerts
+from .problem_report import (
+    ProblemReport,
+    ProblemRow,
+    kst_text,
+    problem_fingerprint,
+    problem_message,
+    problem_source,
+)
 from .report_round import SESSIONS_FOLDER, LoadReport, LoadReports, ReportRoundMixin, SessionDone
 from .send_types import (
     AddressState,
@@ -125,6 +134,11 @@ from .send_types import (
 )
 
 log = logging.getLogger(__name__)
+
+_MODULE: Final = __name__.removeprefix("coin_report_trader.")
+_PROBLEM_CATEGORIES: Final = MappingProxyType(
+    {AlertCategory.ERROR: "오류", AlertCategory.OTHER: "기타"}
+)
 
 DATA_THREAD_NAME: Final = "crt-data"
 """자료 스레드의 이름. 시험이 SQLite를 쓰는 스레드와 `apply`를 부르는 스레드를 가린다."""
@@ -260,6 +274,9 @@ class DataWorker(ReportRoundMixin):
         sessions_root: Path | None = None,
     ) -> None:
         self._send = send
+        self._problems = ProblemReport(logs_dir.parent)
+        self._alert_round: int | None = None
+        """회차를 쓴 뒤 그 회차 안에서 만드는 알림의 문제 보고 `round_number`."""
         root = logs_dir.parent / SESSIONS_FOLDER if sessions_root is None else sessions_root
         self._init_reports(ai, root)
         self._autostart: AutostartStore = WindowsAutostart() if autostart is None else autostart
@@ -448,6 +465,7 @@ class DataWorker(ReportRoundMixin):
 
     def _startup(self) -> None:
         self._await_address_states()  # 차례 1
+        self._problems.prune(self._clock.now())  # 남기는 파일(M2 명세 3.11.1. 차례 3의 앞)
         try:
             self._conn = open_database(self._database_file)
         except StorageError as exc:
@@ -496,7 +514,9 @@ class DataWorker(ReportRoundMixin):
                     log.warning("남은 알림의 디스코드 결과를 바꾸지 못했습니다: %s", exc)
                     failure = failure or exc
         try:
-            startup_errors.move_to_alerts(self._conn, self._logs_dir, self._settled_state)
+            startup_errors.move_to_alerts(
+                self._conn, self._logs_dir, self._settled_state, self._on_moved_alert
+            )
         except Exception as exc:
             log.warning("startup-errors.jsonl을 옮기지 못했습니다: %s", type(exc).__name__)
         # 차례 2의 실패의 A-29는 차례 3 뒤에 한 번 만든다(첫 `AlertsView` 앞이다). 앞 실행에서
@@ -965,11 +985,12 @@ class DataWorker(ReportRoundMixin):
             after = after_candles_retry(kst_when_text(due, ended))
         for result in results:
             a1 = result.a1
-            if a1 is not None and self._rules.want_a1(result.market, a1.error_name):
+            if a1 is not None:
+                wanted = self._rules.want_a1(result.market, a1.error_name)
                 spec = alert_rules.candles_failed(
                     result.market, a1.stage, a1.error_name, a1.content, after
                 )
-                self._insert(spec, ended)
+                self._emit_alert(spec, wanted, ended)
         if round_close is not None:
             self._start_round(round_close, results)
 
@@ -1183,18 +1204,117 @@ class DataWorker(ReportRoundMixin):
 
     # --- 알림 저장, 보내기, 보았다는 표시, 지우기 -----------------------------------------------
 
+    def _emit_alert(
+        self,
+        spec: AlertSpec,
+        wanted: bool,
+        created_at: datetime | None = None,
+        *,
+        report_id: int | None = None,
+        exc: BaseException | None = None,
+        module: str | None = None,
+    ) -> bool:
+        """되풀이가 허락한 알림은 표에 쓰고, 막은 알림은 문제 보고 표에만 한 줄 쓴다(3.11.1)."""
+        if wanted:
+            return self._insert(spec, created_at, report_id=report_id, exc=exc, module=module)
+        self._record_problem(
+            spec, None, created_at or self._clock.now(), problem_source(exc, module or _MODULE)
+        )
+        return False
+
+    def _record_problem(
+        self, spec: AlertSpec, alert_id: int | None, when: datetime, source: str
+    ) -> None:
+        """오류 알림과 기타 알림이면 문제 보고 표에 한 줄을 덧붙인다. 실패해도 막지 않는다."""
+        detail = spec.detail
+        self._write_problem(
+            alert_id=alert_id,
+            when=when,
+            category=spec.category,
+            code=spec.code,
+            stage="" if detail is None else detail.stage,
+            error_name="" if detail is None else detail.error_name,
+            coin=spec.coin,
+            text=spec.text,
+            content=None if detail is None else detail.content,
+            source=source,
+        )
+
+    def _write_problem(
+        self,
+        *,
+        alert_id: int | None,
+        when: datetime,
+        category: AlertCategory,
+        code: str,
+        stage: str,
+        error_name: str,
+        coin: str | None,
+        text: str,
+        content: str | None,
+        source: str,
+        mode: Mode = Mode.PAPER,
+    ) -> None:
+        title = _PROBLEM_CATEGORIES.get(AlertCategory(category))
+        if title is None:
+            return  # 다른 분류(보고서 알림의 A-26 등)는 쓰지 않는다
+        try:
+            fingerprint = problem_fingerprint(code, stage, error_name, source)
+            row = ProblemRow(
+                alert_id=alert_id,
+                occurred_kst=kst_text(when),
+                app_version=f"v{__version__}",
+                mode=Mode(mode).value,
+                category=title,
+                code=code,
+                stage=stage,
+                error_name=error_name,
+                source=source,
+                coin=coin or "",
+                round_number=self._alert_round,
+                repeat_24h=self._problems.count_recent(fingerprint, when) + 1,
+                fingerprint=fingerprint,
+                message=problem_message(text, content),
+            )
+            self._problems.append(row)
+        except Exception as exc:  # 알림을 만들지 않고 회차와 다른 일을 막지 않는다
+            log.warning("문제 보고 표에 쓰지 못했습니다: %s", type(exc).__name__)
+
+    def _on_moved_alert(self, alert_id: int, parsed: "startup_errors._Parsed") -> None:
+        detail = parsed.detail
+        self._write_problem(
+            alert_id=alert_id,
+            when=parsed.created_at,
+            category=parsed.category,
+            code=parsed.code,
+            stage="" if detail is None else detail.stage,
+            error_name="" if detail is None else detail.error_name,
+            coin=parsed.coin,
+            text=parsed.text,
+            content=None if detail is None else detail.content,
+            source=parsed.source,
+            mode=parsed.mode,
+        )
+
     def _insert(
-        self, spec: AlertSpec, created_at: datetime | None = None, *, report_id: int | None = None
+        self,
+        spec: AlertSpec,
+        created_at: datetime | None = None,
+        *,
+        report_id: int | None = None,
+        exc: BaseException | None = None,
+        module: str | None = None,
     ) -> bool:
         """알림을 `"not_sent"`로 표에 쓰고 보내기 스레드에 넘긴다. 되풀이가 막은 알림은 여기
         오기 전에 걸러진다(만들지 않은 알림은 보내지도 않는다). 표에 쓰지 못하면 그 알림은 로그에만
         남기고, 알림 저장 실패(A-29)를 메모리 알림으로 둔다(3.9)."""
         if self._conn is None:
             return False
+        when = created_at or self._clock.now()
         try:
             alert_id = alert_store.insert_alert(
                 self._conn,
-                created_at=created_at or self._clock.now(),
+                created_at=when,
                 mode=Mode.PAPER,
                 category=spec.category,
                 code=spec.code,
@@ -1205,11 +1325,12 @@ class DataWorker(ReportRoundMixin):
                 discord_state=DiscordState.NOT_SENT,
                 report_id=report_id,
             )
-        except StorageError as exc:
-            log.warning("알림 %s을 저장하지 못했습니다: %s", spec.code, exc)
-            self._keep_in_memory(exc)
+        except StorageError as store_exc:
+            log.warning("알림 %s을 저장하지 못했습니다: %s", spec.code, store_exc)
+            self._keep_in_memory(store_exc)
             return False
         self._rules.alert_save_succeeded(ALERT_WRITE_INSERT)
+        self._record_problem(spec, alert_id, when, problem_source(exc, module or _MODULE))
         self._submit(alert_id, spec)
         if self._alerts_open:
             self._post_alerts(STAGE_ALERT_SAVE)
@@ -1219,18 +1340,24 @@ class DataWorker(ReportRoundMixin):
         """알림 저장 실패의 A-29를 메모리에 둔다. 화면에 보이고 디스코드로도 보내고,
         `startup-errors.jsonl`에 `"memory"` 줄도 쓴다(쓰지 못하면 이 실행 동안만 보인다).
         표에 쓰지 못한 원래의 알림은 두지 않는다(로그에만 남는다)."""
-        if not self._rules.want_alert_save(ALERT_WRITE_INSERT):
-            return
+        wanted = self._rules.want_alert_save(ALERT_WRITE_INSERT)
         spec = alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc)))
+        when = self._clock.now()
+        source = problem_source(exc, _MODULE)
+        if not wanted:
+            self._record_problem(spec, None, when, source)
+            return
         alert = self._memory.add(
-            created_at=self._clock.now(),
+            created_at=when,
             mode=Mode.PAPER,
             category=spec.category,
             code=spec.code,
             coin=spec.coin,
             text=spec.text,
             detail=spec.detail,
+            source=source,
         )
+        self._record_problem(spec, alert.id, when, source)
         startup_errors.append_line(self._logs_dir, startup_errors.memory_line(alert))
         self._submit(alert.id, spec)
         if self._alerts_open:
@@ -1368,9 +1495,9 @@ class DataWorker(ReportRoundMixin):
         if result.ok:
             self._rules.a29_webhook_succeeded(result.stage, result.category)
             return
-        if self._rules.want_a29_webhook(result.stage, result.category):
-            name = redact(result.error_name or ERROR_VAULT)
-            self._insert(alert_rules.vault_failed(result.stage, name, name))
+        wanted = self._rules.want_a29_webhook(result.stage, result.category)
+        name = redact(result.error_name or ERROR_VAULT)
+        self._emit_alert(alert_rules.vault_failed(result.stage, name, name), wanted)
 
     def _cleanup_old(self, *, always_post: bool = False) -> None:
         """오래된 알림 지우기(3.9). 보관 기간을 고르기 전과 설정을 읽지 못하는 동안은 하지
@@ -1391,16 +1518,20 @@ class DataWorker(ReportRoundMixin):
         if (deleted or always_post) and self._alerts_open:
             self._post_alerts(STAGE_ALERT_DELETE)
 
-    def _emit_save_failed(self, stage: str, coin: str | None, exc: BaseException) -> None:
+    def _emit_save_failed(
+        self, stage: str, coin: str | None, exc: BaseException, *, module: str | None = None
+    ) -> None:
         """A-29: 쓰기의 실패."""
-        if self._rules.want_a29(stage, coin):
-            self._insert(alert_rules.save_failed(stage, coin, redact(str(exc))))
+        wanted = self._rules.want_a29(stage, coin)
+        spec = alert_rules.save_failed(stage, coin, redact(str(exc)))
+        self._emit_alert(spec, wanted, exc=exc, module=module)
 
     def _emit_alert_save_failed(self, kind: str, exc: BaseException) -> None:
         """A-29("알림 저장"): 알림 표의 쓰기(표시, 보낸 결과, 남은 `"not_sent"` 바꾸기)의 실패.
         쓰기의 종류마다 따로 센다. 이 A-29를 표에 쓰지 못하면 `_insert`가 메모리에 둔다."""
-        if self._rules.want_alert_save(kind):
-            self._insert(alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc))))
+        wanted = self._rules.want_alert_save(kind)
+        spec = alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc)))
+        self._emit_alert(spec, wanted, exc=exc)
 
     def _emit_unexpected(
         self,
@@ -1410,18 +1541,19 @@ class DataWorker(ReportRoundMixin):
         *,
         after: str | None = None,
         content: str | None = None,
+        module: str | None = None,
     ) -> None:
         """A-30: 읽기의 실패와 그 밖의 예외. `after`와 `content`는 AI 보고서의 일이 정한다."""
         name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
-        if self._rules.want_a30(stage, coin, type(exc).__name__, self._clock.monotonic()):
-            text = redact(str(exc)) if content is None else content
-            if after is None:
-                spec = alert_rules.unexpected(stage, coin, name, text)
-            else:
-                spec = alert_rules.unexpected(stage, coin, name, text, after)
-            self._insert(spec)
+        wanted = self._rules.want_a30(stage, coin, type(exc).__name__, self._clock.monotonic())
+        text = redact(str(exc)) if content is None else content
+        if after is None:
+            spec = alert_rules.unexpected(stage, coin, name, text)
+        else:
+            spec = alert_rules.unexpected(stage, coin, name, text, after)
+        self._emit_alert(spec, wanted, exc=exc, module=module)
 
     def _emit_markets_failed(self, error_name: str, content: str) -> None:
         """A-31."""
-        if self._rules.want_a31(error_name):
-            self._insert(alert_rules.markets_failed(error_name, content))
+        wanted = self._rules.want_a31(error_name)
+        self._emit_alert(alert_rules.markets_failed(error_name, content), wanted)
