@@ -33,6 +33,7 @@ from coin_report_trader.ui.icons import search_icon
 from coin_report_trader.ui.state import PickerKind, PickerMode, Tone
 from coin_report_trader.ui.texts import (
     CAUTION_LABEL,
+    CAUTION_NOTE,
     MOVE_DOWN_TEXT,
     MOVE_UP_TEXT,
     NO_COIN_FOUND,
@@ -92,6 +93,11 @@ class CoinPicker(QWidget):
         self._pages = QStackedWidget()
         self._pages.setObjectName(f"{prefix}CoinsPages")
         layout.addWidget(self._pages)
+        # 유의·주의 코인을 고르면 목록 아래에 보인다(M3 명세 3.17.5).
+        self._caution_note = make_label(CAUTION_NOTE, f"{prefix}CautionNote")
+        self._caution_note.setStyleSheet(f"color: {theme.CAUTION};")  # 'caution' 색
+        self._caution_note.hide()
+        layout.addWidget(self._caution_note)
 
         message_page = QWidget()
         message_layout = QVBoxLayout(message_page)
@@ -261,6 +267,11 @@ class CoinPicker(QWidget):
             self._selected.setCurrentRow(min(max(current, 0), len(self._picks) - 1))
         self._selected.blockSignals(False)
         self._update_buttons()
+        self._update_caution()
+
+    def _update_caution(self) -> None:
+        cautious = {m.market for m in self._markets if m.caution}
+        self._caution_note.setVisible(any(market in cautious for market in self._picks))
 
     def _update_buttons(self, *_args) -> None:
         row = self._selected.currentRow()

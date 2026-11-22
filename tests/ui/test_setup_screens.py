@@ -7,6 +7,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from acceptance.m3_support import fill_trade_fields
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -81,6 +82,8 @@ class FakeActions:
         candle_unit=None,
         candle_count=None,
         ai_choices=None,
+        trade=None,
+        accept_below_stop=(),
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
         self.candles.append((candle_unit, candle_count))
@@ -499,9 +502,9 @@ def test_markets_ready_lists_the_markets_in_order_and_marks_caution(picker_scree
 
 
 def _coin_boxes(screen: QWidget) -> list[QCheckBox]:
-    """코인 고르기의 체크 상자(설정 화면의 자동 시작 확인란은 코인이 아니라서 뺀다)."""
+    """코인 고르기의 체크 상자(자동 시작과 읽었습니다 확인란은 코인이 아니라서 뺀다)."""
     boxes = screen.findChildren(QCheckBox)
-    return [box for box in boxes if box.objectName() != "settingsAutostart"]
+    return [box for box in boxes if "Coin_" in box.objectName()]
 
 
 def _picks_of(screen: QWidget, prefix: str) -> list[str]:
@@ -509,7 +512,7 @@ def _picks_of(screen: QWidget, prefix: str) -> list[str]:
     return [
         box.objectName().removeprefix(f"{prefix}Coin_")
         for box in screen.findChildren(QCheckBox)
-        if box.isChecked()
+        if box.isChecked() and box.objectName().startswith(f"{prefix}Coin_")
     ]
 
 
@@ -616,6 +619,7 @@ def test_up_down_and_remove_change_the_order(picker_ready, actions):
     if prefix == "firstSetup":
         _choose_unit(screen, prefix, CandleUnit.MINUTE_60)
         _choose_ai(screen, prefix)
+        fill_trade_fields(screen)  # 3단계 칸(M3 명세 3.17.5)을 만든 값으로 채운다
     button = "firstSetupStart" if prefix == "firstSetup" else "settingsSave"
     _button(screen, button).click()
     expected_first = prefix == "firstSetup"
@@ -646,7 +650,7 @@ def test_first_setup_start_needs_both_a_coin_and_a_retention(make_window, action
     window = make_window(actions)
     first = _ready_first_setup(window)
     start = _button(first, "firstSetupStart")
-    assert start.text() == "저장하고 시작"
+    assert start.text() == "모의매매 시작"
     assert not start.isEnabled()
     _choose(first, "firstSetup", "KRW-AAA")
     assert not start.isEnabled()
@@ -656,6 +660,8 @@ def test_first_setup_start_needs_both_a_coin_and_a_retention(make_window, action
     _choose_ai(first, "firstSetup")
     assert not start.isEnabled()
     _choose(first, "firstSetup", "KRW-AAA")
+    assert not start.isEnabled()  # 3단계 칸과 "꼭 읽을 글을 읽었습니다"가 남았다
+    fill_trade_fields(first)
     assert start.isEnabled()
     # 보관 기간은 미리 고른 값이 없고, 처음 고를 때 확인 창이 없다.
     assert actions.count("save_settings") == 0
@@ -668,6 +674,7 @@ def test_first_setup_start_calls_save_settings_and_goes_to_status_when_saved(mak
     _choose_days(first, "firstSetup", 30)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     _choose_ai(first, "firstSetup")
+    fill_trade_fields(first)
     confirm = Confirm(False)
     window.set_confirm_handler(confirm)
     _button(first, "firstSetupStart").click()
@@ -689,6 +696,7 @@ def test_first_setup_goes_to_status_whichever_update_comes_first(make_window, ac
     _choose_days(first, "firstSetup", 7)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     _choose_ai(first, "firstSetup")
+    fill_trade_fields(first)
     _button(first, "firstSetupStart").click()
     window.apply(SettingsView(("KRW-AAA",), 7, True))
     assert current_screen(window) is ScreenId.STATUS
@@ -711,6 +719,7 @@ def test_first_setup_failed_save_stays_and_shows_the_message_in_warning_color(
     _choose_days(first, "firstSetup", 90)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
     _choose_ai(first, "firstSetup")
+    fill_trade_fields(first)
     _button(first, "firstSetupStart").click()
     window.apply(SaveResult("settings", ok=False, message=message))
     assert current_screen(window) is ScreenId.FIRST_SETUP
@@ -752,11 +761,13 @@ def test_first_setup_after_it_is_done_shows_the_texts_and_the_settings_button(ma
 
 def test_first_setup_read_first_texts_are_the_design_texts(make_window):
     first = _first(make_window())
-    # 다섯 글(가, 마, 바, 사, 아)은 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이다(M2 명세 3.12.3).
+    # 일곱 글(가, 나, 라, 마, 바, 사, 아)은 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이다(M3 명세 3.17).
     assert _find(first, QLabel, "firstSetupNoticesTitle").text() == "꼭 읽을 글"
     assert _tip(first, "firstSetupNoticesInfo") == "\n".join(
         (
             "• 이 프로그램은 투자 자문이 아닙니다. AI 판단은 틀릴 수 있습니다.",
+            "• PC가 꺼져 있으면 손절이 없습니다.",
+            "• 주문 전에 확인하는 단계 없이, 판단에 따라 자동으로 주문합니다.",
             "• 프로그램이나 PC가 꺼져 있거나 인터넷이 끊기면 디스코드 알림도 가지 않습니다. "
             "인터넷이 끊긴 동안 보내지 못한 알림은 다시 이어져도 디스코드로 가지 않습니다"
             "(알림센터에서 봅니다).",
@@ -771,12 +782,15 @@ def test_first_setup_read_first_texts_are_the_design_texts(make_window):
     for old in ("screenNotice", "noticeDiscordOffline", "noticeDiscordNoAddress"):
         assert first.findChild(QLabel, old) is None
     names = _flat(_find(first, QWidget, "firstSetupNotices").layout())
-    assert names == ["firstSetupNoticesTitle", "firstSetupNoticesInfo"]
+    assert names == ["firstSetupNoticesTitle", "firstSetupNoticesInfo", "firstSetupRead"]
     # 이 마일스톤에 없는 글과 칸은 없다.
     texts = [label.text() for label in first.findChildren(QLabel)]
     assert not any("모의매매를 시작합니다" in text for text in texts)
     assert not any("손절" in text and "없습니다" in text for text in texts)
-    assert first.findChild(QCheckBox, "firstSetupRead") is None
+    read = first.findChild(QCheckBox, "firstSetupRead")  # 제목과 'ⓘ' 바로 아래(M3 명세 3.17.5)
+    assert read is not None
+    assert read.text() == "꼭 읽을 글을 읽었습니다"
+    assert not read.isChecked()
 
 
 @pytest.mark.parametrize("prefix", ["firstSetup", "settings"])

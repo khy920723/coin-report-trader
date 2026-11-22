@@ -5,6 +5,7 @@
 """
 
 import pytest
+from acceptance.m3_support import fill_trade_fields
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -46,8 +47,8 @@ ALL = (AAA, BBB)
 
 NOTE = "봉 통계를 셈할 봉의 단위와 개수입니다."
 LEGACY_NOTICE = (
-    '봉 단위와 봉 개수가 새로 생겼습니다. 고른 뒤 "저장하고 시작"을 누르세요. '
-    "그 전에는 봉을 받지 않습니다."
+    '모의매매에 필요한 칸이 새로 생겼습니다. 빈 칸을 넣고 "꼭 읽을 글을 읽었습니다"를 고른 뒤 '
+    '"모의매매 시작"을 누르세요. 그 전에는 회차를 돌리지 않습니다.'
 )
 UNITS = (
     CandleUnit.MINUTE_30,
@@ -79,6 +80,8 @@ class FakeActions:
         candle_unit=None,
         candle_count=None,
         ai_choices=None,
+        trade=None,
+        accept_below_stop=(),
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
         self.candles.append((candle_unit, candle_count))
@@ -346,11 +349,15 @@ def test_first_setup_start_needs_a_coin_a_retention_and_a_unit(make_window, acti
     start.click()
     assert actions.count("save_settings") == 0
     _radio(first, "firstSetupUnit_minute60").click()
+    assert not start.isEnabled()  # 3단계 칸과 "꼭 읽을 글을 읽었습니다"가 남았다
+    fill_trade_fields(first)
     assert start.isEnabled()
     # 셋 가운데 하나라도 빠지면 다시 눌리지 않는다.
     _pick(first, "firstSetup", "KRW-AAA")  # 코인을 뺀다
     assert not start.isEnabled()
     _pick(first, "firstSetup", "KRW-AAA")
+    assert not start.isEnabled()  # 다시 고른 코인의 투자 비율 칸은 비어 있다
+    fill_trade_fields(first)
     assert start.isEnabled()
 
 
@@ -364,6 +371,7 @@ def test_first_setup_start_sends_the_chosen_unit_and_count(make_window, actions,
     _choose_ai(first)
     _radio(first, f"firstSetupUnit_{unit.value}").click()
     _radio(first, f"firstSetupCount_{count}").click()
+    fill_trade_fields(first)
     _find(first, QPushButton, "firstSetupStart").click()
     assert actions.calls[-1] == ("save_settings", ("KRW-BBB", "KRW-AAA"), 7, True)
     assert actions.candles == [(unit, count)]
@@ -376,6 +384,7 @@ def test_first_setup_start_sends_the_default_count_when_it_is_not_touched(make_w
     _find(first, QRadioButton, "firstSetupRetention30").click()
     _choose_ai(first)
     _radio(first, "firstSetupUnit_day").click()
+    fill_trade_fields(first)
     _find(first, QPushButton, "firstSetupStart").click()
     assert actions.candles == [(CandleUnit.DAY, 200)]
 
@@ -388,6 +397,7 @@ def test_a_failed_save_keeps_the_unit_and_count(make_window, actions):
     _choose_ai(first)
     _radio(first, "firstSetupUnit_minute240").click()
     _radio(first, "firstSetupCount_500").click()
+    fill_trade_fields(first)
     _find(first, QPushButton, "firstSetupStart").click()
     window.apply(SaveResult("settings", ok=False, message="저장하지 못했습니다."))
     assert current_screen(window) is ScreenId.FIRST_SETUP
@@ -577,13 +587,15 @@ def test_a_legacy_record_starts_with_the_saved_coins_and_retention_and_the_chose
 ):
     window, first = _legacy_window(make_window, actions)
     start = _find(first, QPushButton, "firstSetupStart")
-    assert start.text() == "저장하고 시작"
+    assert start.text() == "모의매매 시작"
     assert not start.isEnabled()  # 봉 단위가 비어 있다
     start.click()
     assert actions.count("save_settings") == 0
     _radio(first, "firstSetupUnit_minute30").click()
     assert not start.isEnabled()  # 여덟 칸도 골라야 한다(M2 명세 3.12.2)
     _choose_ai(first)
+    assert not start.isEnabled()  # 3단계 칸과 "꼭 읽을 글을 읽었습니다"도 있어야 한다(3.11.3)
+    fill_trade_fields(first)
     assert start.isEnabled()
     _radio(first, "firstSetupCount_100").click()
     start.click()
@@ -598,6 +610,7 @@ def test_the_notice_and_the_locks_go_away_once_the_first_setup_is_done(make_wind
     window, first = _legacy_window(make_window, actions)
     _radio(first, "firstSetupUnit_day").click()
     _choose_ai(first)
+    fill_trade_fields(first)
     _find(first, QPushButton, "firstSetupStart").click()
     window.apply(
         SettingsView(("KRW-BBB", "KRW-AAA"), 90, True, candle_unit=CandleUnit.DAY, candle_count=200)

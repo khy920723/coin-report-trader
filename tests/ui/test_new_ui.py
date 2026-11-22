@@ -249,12 +249,15 @@ def test_the_first_card_is_long_on_the_left_when_split(qapp):
     wide.close()
 
 
-def test_the_first_setup_and_settings_cards_are_the_five_and_the_four(window):
+def test_the_first_setup_and_settings_cards_are_the_eight_and_the_seven(window):
     first = screen_widget(window, ScreenId.FIRST_SETUP)
     cards = list(first.findChildren(Card))
-    assert len(cards) == 5  # 코인, 봉 단위·봉 개수, 알림 보관 기간, Claude 모델, 꼭 읽을 글
+    # 코인, 예산과 투자 비율, 매수 비율, 손절과 한도, 봉 단위·봉 개수, Claude 모델, 그 밖의 값,
+    # 꼭 읽을 글
+    assert len(cards) == 8
     settings = screen_widget(window, ScreenId.SETTINGS)
-    assert len(settings.findChildren(Card)) == 4  # 코인, 봉 단위·봉 개수, 그 밖의 값, Claude 모델
+    # 코인, 예산과 투자 비율, 매수 비율, 손절과 한도, 봉 단위·봉 개수, Claude 모델, 그 밖의 값
+    assert len(settings.findChildren(Card)) == 7
     status = _filled(window) and screen_widget(window, ScreenId.STATUS)
     # 코인 카드 둘, 봉 통계 카드, 알림센터 카드.
     assert len(status.findChildren(Card)) == 4

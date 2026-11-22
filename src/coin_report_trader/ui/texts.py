@@ -4,6 +4,7 @@
 `blocked_markets_text` 등)은 여기에 다시 적지 않고 `coin_report_trader.core`에서 받는다.
 """
 
+from decimal import Decimal
 from typing import Final
 
 from coin_report_trader.core import CANDLE_COUNTS, INSUFFICIENT_TEXT, CandleUnit
@@ -50,7 +51,7 @@ RETENTION_OPTIONS: Final = ((7, "7일"), (30, "30일"), (90, "90일"))
 CAUTION_LABEL: Final = "유의·주의"
 LOADING_TEXT: Final = "불러오는 중"
 RETRY_TEXT: Final = "다시 시도"
-START_TEXT: Final = "저장하고 시작"
+START_TEXT: Final = "모의매매 시작"
 SAVE_TEXT: Final = "저장"
 MOVE_UP_TEXT: Final = "위로"
 MOVE_DOWN_TEXT: Final = "아래로"
@@ -67,13 +68,13 @@ NOTICE_PERSONAL: Final = (
 )
 """10 자리의 사(3.12.3)."""
 FIRST_SETUP_INTRO: Final = (
-    '아래 값을 고른 뒤 "저장하고 시작"을 누르세요. 별표(*)가 붙은 칸은 꼭 골라야 합니다.'
+    '아래 값을 고른 뒤 "모의매매 시작"을 누르세요. 별표(*)가 붙은 칸은 꼭 골라야 합니다.'
 )
-"""2 자리의 안내 글(3.12.3). 제목 옆 'ⓘ'의 툴팁이다."""
+"""2 자리의 안내 글(M3 명세 3.17의 표). 제목 옆 'ⓘ'의 툴팁이다."""
 START_REASON: Final = (
-    "코인, 봉 단위, 알림 보관 기간과 여덟 칸의 모델·노력 값을 고르면 누를 수 있습니다."
+    "꼭 넣는 칸을 모두 채우고 '꼭 읽을 글을 읽었습니다'를 고르면 누를 수 있습니다."
 )
-"""저장하고 시작을 누를 수 없을 때 단추 곁의 까닭(3.12.2)."""
+"""모의매매 시작을 누를 수 없을 때 단추 곁의 까닭(M3 명세 3.11.3)."""
 SETTINGS_INTRO: Final = "값을 고친 뒤 저장을 누르면 적용됩니다."
 AI_PARTIAL_WARNING: Final = "네 칸의 모델과 노력 값을 모두 골라야 저장됩니다."
 REVERT_TEXT: Final = "되돌리기"
@@ -157,8 +158,8 @@ NO_COIN_FOUND: Final = "찾는 코인이 없습니다."
 
 # --- 예전 기록일 때의 처음 설정(M1 명세 3.14.4) ---
 LEGACY_NOTICE: Final = (
-    '봉 단위와 봉 개수가 새로 생겼습니다. 고른 뒤 "저장하고 시작"을 누르세요. '
-    "그 전에는 봉을 받지 않습니다."
+    '모의매매에 필요한 칸이 새로 생겼습니다. 빈 칸을 넣고 "꼭 읽을 글을 읽었습니다"를 고른 뒤 '
+    '"모의매매 시작"을 누르세요. 그 전에는 회차를 돌리지 않습니다.'
 )
 
 # --- 봉 개수의 툴팁(M1 명세 3.14.2) ---
@@ -340,3 +341,105 @@ def webhook_delete_body(category_title: str) -> str:
         f"{category_title}의 디스코드 웹후크 주소를 지우면, "
         "이 분류의 알림은 디스코드로 가지 않습니다."
     )
+
+
+# --- 3단계: 처음 설정과 설정의 칸(M3 명세 3.11, 3.17.5) ---
+READ_LABEL: Final = "꼭 읽을 글을 읽었습니다"
+NOTICE_STOP_OFF: Final = "PC가 꺼져 있으면 손절이 없습니다."
+"""10 자리의 나(M3 명세 3.17)."""
+NOTICE_AUTO_ORDER: Final = "주문 전에 확인하는 단계 없이, 판단에 따라 자동으로 주문합니다."
+"""10 자리의 라(M3 명세 3.17)."""
+CAUTION_NOTE: Final = "이 코인은 유의·주의 표시가 있어 새로 사지 않습니다."
+BUDGET_TITLE: Final = "예산과 투자 비율"
+RATIO_TITLE: Final = "매수 비율"
+LIMITS_TITLE: Final = "손절과 한도"
+OTHER_TITLE: Final = "그 밖의 값"
+BUDGET_INFO: Final = (
+    "코인 예산은 예산 × 투자 비율입니다.",
+    "고른 코인의 투자 비율을 합하면 100%여야 합니다. 예산이 고른 코인 전체의 매수 상한입니다.",
+)
+RATIO_INFO: Final = (
+    "허용 범위: 판단의 주문 가격(추세추종은 제안가, 평균회귀는 예측 가격)에서 이 % 안의 가격이면 "
+    "사고팝니다. 살 때는 주문 가격보다 이 %만큼 높은 가격까지, 팔 때는 이 %만큼 낮은 가격까지 "
+    "겁니다.",
+    "0%이면 주문 가격 그대로 겁니다. 0%에서 2%까지 넣습니다.",
+    "모의 성적의 '예측 차이 평균'에서 예측 가격과 실제 값의 차이를 볼 수 있습니다.",
+    "모의매매 수수료율: 살 때와 팔 때 각각 0.05%",
+)
+LIMITS_INFO: Final = "모의매매를 시작하기 위한 예시 값이고 투자 판단이 아닙니다."
+METHOD_TIPS: Final = {
+    "mean_reversion": (
+        "싸게 사서 비싸게 팔기. 보유 중에 '내릴 것'이면 손실 중이어도 예산 안에서 더 삽니다."
+    ),
+    "trend": (
+        "오를 때 사고 내릴 때 팔기. 보유 중에는 '오를 것'이고 현재가가 평균 매수가보다 "
+        "높을 때만 더 삽니다."
+    ),
+}
+
+# 칸 이름(별표는 꼭 넣는 칸, `{코인}`은 코인 기호)
+BUDGET_LABEL: Final = "예산(원)"
+COIN_RATIO_LABEL: Final = "{coin} 투자 비율(%)"
+FIRST_RATIO_LABEL: Final = "추세추종 첫 매수 비율(%)"
+MR_FIRST_RATIO_LABEL: Final = "평균회귀 첫 매수 비율(%)"
+ADD_RATIO_LABEL: Final = "추가 한 번의 비율(%)"
+TOLERANCE_LABEL: Final = "허용 범위(%)"
+STOP_RATIO_LABEL: Final = "손절 비율(%)"
+DAILY_LOSS_LABEL: Final = "하루 손실 한도(원)"
+ORDER_INTERVAL_LABEL: Final = "같은 코인 주문 간격(초)"
+METHOD_LABEL: Final = "매매 방식"
+PAUSE_STOP_LABEL: Final = "'멈춤' 중 손절"
+MR_SELL_LABEL: Final = "'팔지'"
+MR_LOSS_LABEL: Final = "감내할 손해(%)"
+PAPER_FUNDS_LABEL: Final = "모의매매 가상 자금(원)"
+BACKUP_DAYS_LABEL: Final = "DB 백업을 남기는 날 수(일)"
+YES_TEXT: Final = "예"
+NO_TEXT: Final = "아니오"
+
+DEFAULT_STOP_RATIO: Final = "5"
+DEFAULT_DAILY_LOSS: Final = "3,000"
+DEFAULT_ORDER_INTERVAL: Final = "60"
+
+# 화면 쪽 검사의 글(M3 명세 3.11.2)
+FIELD_REQUIRED: Final = "이 값을 넣어야 합니다."
+FIELD_NOT_NUMBER: Final = "숫자로 넣으세요."
+FIELD_TWO_PLACES: Final = "소수 둘째 자리까지 넣으세요."
+FIELD_INTEGER: Final = "정수로 넣으세요."
+
+# SCR-06-6, SCR-06-5(M3 명세 3.17.5, 설계서 3.5)
+HOLDING_REMOVE_TITLE: Final = "보유 중인 코인을 뺄까요?"
+BELOW_STOP_TITLE: Final = "손절선 아래인 보유가 있습니다"
+
+
+def holding_remove_body(coin: str) -> str:
+    return (
+        f"{coin}을 목록에서 빼면 프로그램이 건 주문을 취소하고 이 코인을 더는 다루지 않습니다. "
+        "보유는 그대로 남고, 이 코인의 손절도 없어집니다."
+    )
+
+
+def below_stop_body(coin: str, avg_price: str, price: str, stop_line: str) -> str:
+    return (
+        f"{coin}의 보유가 손절선 아래에 있습니다(평균 매수가 {avg_price}원, 현재가 {price}원, "
+        f"손절선 {stop_line}원). 이 코인을 다루기 시작하면 바로 시장가로 팔립니다. "
+        "다루기 시작할까요?"
+    )
+
+
+def coin_budget_text(amount: str | None) -> str:
+    return f"코인 예산 {amount}원" if amount is not None else "코인 예산 -"
+
+
+def ratio_sum_text(total: str) -> str:
+    return f"합계 {total}%"
+
+
+def buy_amounts_text(first: str | None, add: str | None) -> str:
+    first_text = f"{first}원" if first is not None else "-"
+    add_text = f"{add}원" if add is not None else "-"
+    return f"첫 매수 금액 {first_text}, 추가 한 번 {add_text}"
+
+
+def price_text(value: Decimal) -> str:
+    """가격: 쉼표를 붙이고 뒤의 0은 뗀다(예: 1,000, 0.0012)."""
+    return format(value.normalize(), ",f")

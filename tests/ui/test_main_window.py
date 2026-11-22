@@ -81,14 +81,14 @@ def test_only_first_setup_shows_advice_notice(window):
     for screen_id in ScreenId:
         widget = screen_widget(window, screen_id)
         # 늘 보이는 글 라벨은 없고, 처음 설정의 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이 가장 앞에 둔다
-        # (M1 명세 3.14.6). 10 자리의 글은 가(투자 자문), 마, 바 순서다(설계서 10.2).
+        # (M1 명세 3.14.6). 10 자리의 글은 가(투자 자문)가 맨 앞이다(설계서 10.2).
         assert widget.findChild(QLabel, "screenNotice") is None
         info = widget.findChild(InfoIcon, "firstSetupNoticesInfo")
         if screen_id is ScreenId.FIRST_SETUP:
             assert info is not None
             lines = info.toolTip().split("\n")
             assert lines[0] == f"• {ADVICE_NOTICE}"
-            assert len(lines) == 5  # 가, 마, 바에 사, 아(M2 명세 3.12.3)
+            assert len(lines) == 7  # 가, 나, 라, 마, 바, 사, 아(M3 명세 3.17)
             assert info.accessibleDescription() == info.toolTip()
             assert info.accessibleName() == "꼭 읽을 글 설명"
         else:

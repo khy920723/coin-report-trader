@@ -23,6 +23,7 @@ from coin_report_trader.core import (
     WebhookView,
 )
 from coin_report_trader.ui import create_main_window, screen_widget, select_screen
+from coin_report_trader.ui.cards import Card
 from coin_report_trader.ui.widgets import LineLabel, make_line_label
 
 MARKETS = tuple(Market(f"KRW-C{i}", f"가짜{i}", caution=False) for i in range(60))
@@ -66,21 +67,26 @@ def test_the_right_hand_cards_keep_their_content_at_the_top(window, prefix):
     screen = screen_widget(window, screen_id)
     coins = screen.findChild(QWidget, f"{prefix}Coins")
     assert coins is not None
-    # 2단계의 칸 카드(M2)가 오른쪽 열을 채우면 남는 높이가 없다. 이 시험은 남는 높이가 있는
-    # 모습(v0.1.3의 고장이 나던 때)을 만들려고 그 카드를 숨긴다.
-    ai = screen.findChild(QWidget, f"{prefix}Ai")
-    assert ai is not None
-    ai.parentWidget().hide()
-    QApplication.processEvents()
+    # 오른쪽 열에 카드가 여럿이라(M2, M3) 남는 높이가 없다. 이 시험은 남는 높이가 있는 모습(v0.1.3의
+    # 고장이 나던 때)을 만들려고 시험할 카드 말고 오른쪽 카드를 숨긴다.
+    cards = [c for c in screen.findChildren(Card) if not c.isAncestorOf(coins)]
     for name in (f"{prefix}Candle", f"{prefix}Retention"):
         content = screen.findChild(QWidget, name)
         assert content is not None
         card = content.parentWidget()
+        assert isinstance(card, Card)
+        for other in cards:
+            other.setVisible(other is card)
+        QApplication.processEvents()
         # 카드가 내용보다 훨씬 높아도(왼쪽 코인 카드가 길어서) 내용은 제 높이 그대로다.
         assert card.height() > content.sizeHint().height() + 40, name
         assert content.height() == content.sizeHint().height(), name
-        # 내용은 카드의 위쪽(안쪽 여백 바로 아래)에 붙는다.
-        assert content.y() == card.layout().contentsMargins().top(), name
+        # 카드의 내용은 위쪽(안쪽 여백 바로 아래)에 붙는다. 첫 줄은 내용 자신이거나 제목 줄이다.
+        first = card.layout().itemAt(0)
+        top = first.geometry().y() if first.widget() is None else first.widget().y()
+        assert top == card.layout().contentsMargins().top(), name
+    for other in cards:
+        other.show()
 
 
 def test_the_content_of_a_right_hand_card_does_not_spread_when_the_window_grows(window):
