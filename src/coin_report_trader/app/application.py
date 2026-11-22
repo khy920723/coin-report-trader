@@ -9,6 +9,7 @@
 """
 
 import contextlib
+import gc
 import logging
 import sys
 from collections.abc import Sequence
@@ -52,6 +53,13 @@ def run_gui(argv: Sequence[str] | None = None, *, services: Services | None = No
     `QApplication.instance()`가 있으면 그것을 쓰고 없을 때만 만든다. 이벤트 루프가 끝나면
     종료 코드를 돌려준다. 준비나 창 만들기에서 난 오류는 로그에 쓰고 다시 낸다.
     """
+    try:
+        return _run_gui(argv, services)
+    finally:
+        _release_qt_objects()  # `_run_gui`의 지역 변수(한 번 더 켜기의 창 참조 포함)가 이미 없다
+
+
+def _run_gui(argv: Sequence[str] | None, services: Services | None) -> int:
     instance = _claim_instance(argv)
     if instance is not None and instance.later:
         return 0  # 먼저 켠 쪽에 알렸다. 로그, DB, 창을 만들지 않는다.
@@ -138,6 +146,22 @@ def _record_startup_error(paths: AppPaths, clock: Clock, exc: Exception) -> None
         log.warning("창을 띄우기 전의 오류를 기록하지 못했습니다: %s", type(failure).__name__)
 
 
+def _release_qt_objects() -> None:
+    """창이 끝난 뒤 남은 Qt 객체를 주 스레드에서 지운다.
+
+    창, 다리, 동작이 서로를 붙든 순환 참조는 참조 수만으로는 지워지지 않고 가비지 수집이 지운다.
+    그 수집이 자료 스레드 같은 다른 스레드에서 돌면 Qt 객체가 그 스레드에서 지워져 Windows에서
+    `access violation`으로 죽을 수 있다. 그래서 이 함수가 주 스레드에서 미룬 지우기를 마치고
+    수집을 한 번 돌린다. `run_gui`가 `_run_gui`가 돌아온 뒤에 부르므로, 창과 다리를 붙든 지역 변수는
+    이미 없다.
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    if QCoreApplication.instance() is not None:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    gc.collect()
+
+
 def _run_window(
     paths: AppPaths,
     argv: Sequence[str] | None,
@@ -190,7 +214,7 @@ def _run_window(
         window.show()
     except Exception as exc:
         if bridge is not None:
-            bridge.close()
+            bridge.release()
         _record_startup_error(paths, clock, exc)
         raise
     worker.start()
@@ -205,3 +229,4 @@ def _run_window(
         window.deleteLater()
         worker.join(JOIN_SECONDS)
         sender.join(JOIN_SECONDS)
+        bridge.release()
