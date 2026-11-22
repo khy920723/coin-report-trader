@@ -272,7 +272,8 @@ def test_escape_closes_the_window(help_window):
 
 def test_the_text_takes_the_focus_and_page_down_scrolls_it(qapp, tmp_path):
     long = tmp_path / "guide.md"
-    long.write_text("# 긴 안내\n\n" + "\n\n".join(f"{n}번째 글줄입니다." for n in range(200)))
+    body = "\n\n".join(f"{n}번째 글줄입니다." for n in range(200))
+    long.write_text("# 긴 안내\n\n" + body, encoding="utf-8")
     made = HelpWindow(long)
     made.open_help()
     QApplication.processEvents()
