@@ -28,7 +28,7 @@ from coin_report_trader.ui.texts import (
     START_TEXT,
     TO_SETTINGS_TEXT,
 )
-from coin_report_trader.ui.widgets import make_label, set_role, show_message
+from coin_report_trader.ui.widgets import make_label, set_dim, set_role, show_message
 
 PREFIX = "firstSetup"
 MESSAGE_NAME = "firstSetupMessage"
@@ -96,6 +96,9 @@ class FirstSetupScreen(QWidget):
         for part in (self._picker, self._candle, self._retention):
             card = Card()
             card.body.addWidget(part)
+            if part is not self._picker:
+                # 오른쪽 카드는 내용을 위쪽에 붙이고, 남는 높이는 아래의 빈 자리가 받는다.
+                card.body.addStretch(1)
             cards.append(card)
         grid = CardGrid(split_first=True, max_columns=2)
         grid.set_cards(cards)
@@ -167,13 +170,13 @@ class FirstSetupScreen(QWidget):
         self._form.setVisible(not (phase is Phase.READY and done))
         self._start.setVisible(not (phase is Phase.READY and done))
         self._done_panel.setVisible(phase is Phase.READY and done)
-        # 불러오는 중이거나 설정을 읽지 못했으면 칸은 흐리다.
-        self._form.setEnabled(editing)
+        # 불러오는 중이거나 설정을 읽지 못했으면 칸은 흐리다('ⓘ'는 흐린 때도 듣는다).
+        set_dim(self._form, not editing)
         self._picker.show_mode(picker)
         # 예전 기록: 코인 고르기와 알림 보관 기간은 저장된 값 그대로 잠근다.
         # 고를 수 있는 것은 봉 단위와 봉 개수뿐이다.
         self._picker.set_locked(self._legacy)
-        self._retention.setEnabled(not self._legacy)
+        set_dim(self._retention, not editing or self._legacy)
         self._legacy_notice.setVisible(self._legacy)
         show_message(self._message, message)
         self._update_start()

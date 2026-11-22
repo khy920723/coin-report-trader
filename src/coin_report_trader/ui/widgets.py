@@ -1,9 +1,10 @@
 """글 라벨과 글 색을 다루는 작은 도구."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QLabel, QWidget
 
 from coin_report_trader.ui import theme
+from coin_report_trader.ui.info_icon import InfoIcon
 from coin_report_trader.ui.state import Message, Tone
 
 TONE_PROPERTY = "tone"
@@ -12,8 +13,53 @@ WARNING_COLOR = theme.ERROR
 """경고 글의 색. 5-0 판 3의 '오류' 토큰이다."""
 
 
+class LineLabel(QLabel):
+    """제목처럼 짧은 글의 라벨. 자리가 있으면 한 줄로 놓이고, 자리가 모자랄 때만 줄을 바꾼다.
+
+    줄바꿈이 켜진 `QLabel`의 `sizeHint`는 글을 여러 줄로 접은 꼴의 너비를 돌려주어, 옆에 자리가
+    남아도 두 줄로 꺾인다. 이 라벨은 글 전체가 한 줄에 드는 너비를 바라는 너비로 돌려준다.
+    줄바꿈은 그대로 켜져 있어서, 레이아웃이 그보다 좁게 주면 낱말 사이에서 줄을 바꾼다.
+    """
+
+    def sizeHint(self) -> QSize:
+        self.ensurePolished()
+        base = super().sizeHint()
+        if not self.wordWrap() or not self.text() or "\n" in self.text():
+            return base
+        pad = 2 * (self.margin() + self.frameWidth())
+        width = max(base.width(), self.fontMetrics().horizontalAdvance(self.text()) + pad + 6)
+        return QSize(width, max(self.fontMetrics().lineSpacing() + pad, 1))
+
+
 def make_label(text: str, name: str, tone: Tone = Tone.NORMAL) -> QLabel:
     label = QLabel(text)
+    label.setObjectName(name)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setWordWrap(True)
+    set_tone(label, tone)
+    return label
+
+
+def set_dim(root: QWidget, dim: bool) -> None:
+    """`root` 안의 칸을 흐리게(`dim`이 참) 하거나 다시 고칠 수 있게 한다.
+
+    `root.setEnabled(False)`는 그 안의 'ⓘ'까지 막아, 흐린 모습에서 'ⓘ'가 눌리지도, 초점을 받지도
+    못한다. 'ⓘ'는 설명이라 칸이 흐릴 때도 마우스와 키보드가 들어야 하므로, 'ⓘ'가 든 묶음은
+    열어 두고 그 안의 다른 위젯만 흐리게 한다. 'ⓘ'가 없는 묶음은 통째로 흐리게 한다.
+    """
+    for child in root.children():
+        if not isinstance(child, QWidget) or isinstance(child, InfoIcon):
+            continue
+        if child.findChildren(InfoIcon):
+            child.setEnabled(True)
+            set_dim(child, dim)
+        else:
+            child.setEnabled(not dim)
+
+
+def make_line_label(text: str, name: str, tone: Tone = Tone.NORMAL) -> LineLabel:
+    """`make_label`과 같은 라벨인데, 자리가 있으면 한 줄로 놓인다(`LineLabel`)."""
+    label = LineLabel(text)
     label.setObjectName(name)
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setWordWrap(True)

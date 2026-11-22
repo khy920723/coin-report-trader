@@ -81,7 +81,7 @@ from coin_report_trader.ui.texts import (
     tab_title_text,
     webhook_title_text,
 )
-from coin_report_trader.ui.widgets import make_label, set_role, show_message
+from coin_report_trader.ui.widgets import make_label, make_line_label, set_role, show_message
 
 CATEGORIES = tuple(AlertCategory)
 """탭의 차례(`AlertCategory`의 정의 순서)."""
@@ -183,7 +183,7 @@ class AlertCenter(QWidget):
         tab_row.addWidget(self._clear)
         layout.addLayout(tab_row)
 
-        self._webhook_title = make_label("", "alertWebhookTitle")
+        self._webhook_title = make_line_label("", "alertWebhookTitle")
         set_role(self._webhook_title, theme.ROLE_GROUP)
         self._webhook_info = InfoIcon("", WEBHOOK_NOT_SET, "alertWebhookInfo")
         title_line = QHBoxLayout()

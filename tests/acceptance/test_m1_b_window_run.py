@@ -438,7 +438,8 @@ def test_b38_an_old_record_stays_on_first_setup_until_a_unit_is_chosen(
         ]  # fmt: skip
         seen["count_200"] = find(window, QAbstractButton, "firstSetupCount_200").isChecked()
         seen["coins_locked"] = not find(window, QWidget, "firstSetupCoinSearch").isEnabled()
-        seen["retention_locked"] = not find(window, QWidget, "firstSetupRetention").isEnabled()
+        # 보관 기간 묶음은 'ⓘ'가 들어 열려 있고(M1 명세 3.14.7), 그 안의 고르기 단추가 잠긴다.
+        seen["retention_locked"] = not find(window, QWidget, "firstSetupRetention30").isEnabled()
         find(window, QAbstractButton, f"firstSetupUnit_{CandleUnit.MINUTE_60.value}").click()
         find(window, QAbstractButton, "firstSetupStart").click()
         return True

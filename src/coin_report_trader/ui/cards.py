@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QVBoxLayout, QWi
 
 from coin_report_trader.ui import theme
 from coin_report_trader.ui.info_icon import InfoIcon
-from coin_report_trader.ui.widgets import make_label, set_role
+from coin_report_trader.ui.widgets import make_line_label, set_role
 
 MIN_CARD_WIDTH = 340
 """카드 하나가 한 줄에 놓이려면 필요한 가장 작은 너비. 이보다 좁으면 아래 줄로 내린다."""
@@ -32,7 +32,7 @@ def title_row(
     row = QHBoxLayout()
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(theme.ICON_GAP)
-    label = make_label(title, name)
+    label = make_line_label(title, name)
     set_role(label, role)
     row.addWidget(label)
     if info is not None:
