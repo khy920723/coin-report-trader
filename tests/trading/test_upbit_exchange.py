@@ -59,7 +59,7 @@ from coin_report_trader.trading.live import (
 )
 from coin_report_trader.trading.orders import BuyContext, check_buy
 from coin_report_trader.trading.upbit import UpbitClient, UpbitKeys
-from coin_report_trader.trading.upbit.client import UpbitChance
+from coin_report_trader.trading.upbit.client import UpbitChance, UpbitOrder
 
 A = "KRW-AAA"
 B = "KRW-BBB"
@@ -437,6 +437,7 @@ def test_budget_counts_real_holdings_with_the_exchange_average() -> None:
     account = live_account_for_limits(exchange.read_account())
     holding = account.holdings[0]
     assert (holding.qty, holding.avg_price) == (D(80), D(1000))
+    assert holding.buy_amount_sum == D(80) * D(1000)  # 매수 원가 80,000원
     ctx = BuyContext(
         account=account,
         open_orders=(),
@@ -480,3 +481,80 @@ def test_min_total_is_the_larger_of_the_bid_and_ask_minimums() -> None:
         max_total=None,
     )
     assert exchange.read_rules(A).min_total == D(7000)
+
+
+def test_read_account_keeps_the_locked_krw_apart() -> None:
+    # 걸린 매수 주문에 묶인 원화는 krw(주문 가능)에 들지 않고 krw_locked다(3.6.1).
+    exchange, _, _ = setup(krw="100000")
+    exchange.place(limit(OrderSide.BUY, "990", "10"), "uid-lock")  # 9,904.95원이 묶인다
+    account = exchange.read_account()
+    assert (account.krw, account.krw_locked) == (D("90095.05"), D("9904.95"))
+    limits = live_account_for_limits(account)
+    assert (limits.krw, limits.locked_krw) == (D("90095.05"), D(0))
+
+
+def test_holding_cost_decides_the_coin_budget_and_none_average_costs_nothing() -> None:
+    # 코인 예산 100,000원. 보유 원가 90,000원이 들면 20,000원어치는 넘고, 원가가 없는(평균 매수가
+    # 없음) 보유는 원가 0이라 산다.
+    with_cost = ExchangeAccount(
+        krw=D(500_000),
+        krw_locked=D(0),
+        holdings=(ExchangeHolding(market=A, balance=D(90), locked=D(0), avg_buy_price=D(1000)),),
+        read_utc=START,
+    )
+    no_avg = replace(
+        with_cost,
+        holdings=(ExchangeHolding(market=A, balance=D(90), locked=D(0), avg_buy_price=None),),
+    )
+    assert live_account_for_limits(no_avg).holdings[0].buy_amount_sum == 0
+    rules = OrderRules(tick_size=D(1), min_order=D(5000))
+    plan = limit(OrderSide.BUY, "1000", "20")
+    reasons = []
+    for acc in (with_cost, no_avg):
+        ctx = BuyContext(
+            account=live_account_for_limits(acc),
+            open_orders=(),
+            day_realized_pnl=D(0),
+            caution=False,
+            settings_check_failed=False,
+            last_order_utc=None,
+            unconfirmed=False,
+        )
+        reasons.append(check_buy(plan, ctx, trade_settings(), rules, START))
+    assert reasons == [NoOrderReason.COIN_BUDGET, None]
+
+
+def test_404_with_another_code_is_an_error_for_query_and_cancel() -> None:
+    # "없음"으로 읽는 것은 404 order_not_found뿐이다(3.6.3, 3.6.4).
+    exchange, fake, _ = setup()
+    exchange.place(limit(OrderSide.BUY, "990", "10"), "uid-404")
+    fake.script(Reply(404, code="made_up_code"), method="GET", path="/v1/order")
+    with pytest.raises(ExchangeError) as queried:
+        exchange.query("uid-404")
+    assert queried.value.error_name.startswith("알 수 없는 거래소 오류(404")
+    fake.script(Reply(404, code="made_up_code"), method="DELETE", path="/v1/order")
+    with pytest.raises(ExchangeError) as canceled:
+        exchange.cancel("uid-404")
+    assert canceled.value.error_name.startswith("알 수 없는 거래소 오류(404")
+
+
+@pytest.mark.parametrize(("state", "side"), [("made_up_state", "bid"), ("done", "made_up_side")])
+def test_unknown_state_or_side_is_a_bad_response(state: str, side: str) -> None:
+    # 모르는 상태나 방향을 걸린 주문으로 읽지 않는다(체결인 주문을 걸림으로 읽는 길을 막음).
+    exchange, _, _ = setup()
+    order = UpbitOrder(
+        uuid="made-up-uuid",
+        identifier="uid-odd",
+        market=A,
+        side=side,
+        ord_type="limit",
+        price=D(990),
+        volume=D(1),
+        executed_volume=D(0),
+        state=state,
+        created_at=None,
+    )
+    exchange._client.get_order = lambda identifier: order  # type: ignore[method-assign]
+    with pytest.raises(ExchangeError) as caught:
+        exchange.query("uid-odd")
+    assert caught.value.error_name == ERROR_BAD_RESPONSE

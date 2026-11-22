@@ -30,7 +30,7 @@ from coin_report_trader.core.trade import (
     PaperAccount,
 )
 from coin_report_trader.trading.paper import make_holding, new_account
-from coin_report_trader.trading.paper.exchange import PAPER_TRADE_KEY, PaperExchange
+from coin_report_trader.trading.paper.exchange import PaperExchange
 from coin_report_trader.trading.quote import QuoteClient
 
 A = "KRW-AAA"
@@ -222,9 +222,7 @@ def test_a_limit_buy_above_the_best_ask_fills_at_the_ask_at_once() -> None:
         True,
     )
     assert snapshot.trades == (
-        ExchangeTrade(
-            trade_key=PAPER_TRADE_KEY, price=D(1001), qty=D(10), fee=D("5.005"), filled_utc=T0
-        ),
+        ExchangeTrade(trade_key="paper", price=D(1001), qty=D(10), fee=D("5.005"), filled_utc=T0),
     )
     # 체결 줄과 계정은 한 트랜잭션(apply_fill)으로 썼다: 1001 × 10 × 1.0005 = 10,015.005
     assert store.writes == ["fill"]
