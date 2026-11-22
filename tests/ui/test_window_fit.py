@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QPoint, QRect, QSize
 from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QWidget
 
 from coin_report_trader.core import (
@@ -173,11 +173,37 @@ def test_the_first_size_is_inside_the_available_area(window):
     assert window.height() <= area.height()
 
 
+def _expected_place(window, frame: QSize) -> tuple[QSize, QPoint]:
+    area = window.screen().availableGeometry()
+    width, height = initial_size(area.width(), area.height(), frame.width(), frame.height())
+    top_left = QPoint(
+        area.x() + (area.width() - width - frame.width()) // 2,
+        area.y() + (area.height() - height - frame.height()) // 2,
+    )
+    return QSize(width, height), top_left
+
+
+def test_the_window_is_made_as_big_as_initial_size_says_and_centered(window):
+    size, top_left = _expected_place(window, QSize(0, 0))
+    assert window.size() == size
+    assert window.pos() == top_left
+
+
+@pytest.mark.parametrize("frame", [QSize(16, 39), QSize(2, 31), QSize(0, 39)])
+def test_fitting_again_with_the_frame_puts_the_whole_frame_inside_the_area(window, frame):
+    window._fit_to_screen(frame)
+    size, top_left = _expected_place(window, frame)
+    assert window.size() == size
+    assert window.pos() == top_left
+    area = window.screen().availableGeometry()
+    outer = QRect(window.pos(), window.size() + frame)
+    assert area.contains(outer)
+
+
 @pytest.mark.parametrize(
     ("area", "expected"),
     [
         ((1920, 1080), INITIAL_SIZE),
-        ((1280, 800), INITIAL_SIZE),
         ((1180, 760), (1062, 684)),
         ((1024, 600), (921, 540)),
         ((1400, 700), (1260, 630)),
@@ -185,6 +211,52 @@ def test_the_first_size_is_inside_the_available_area(window):
 )
 def test_initial_size_is_1280_by_800_or_ninety_percent_of_a_smaller_area(area, expected):
     assert initial_size(*area) == expected
+
+
+@pytest.mark.parametrize(
+    ("area", "frame", "expected"),
+    [
+        # 틀을 넣으면 1280 × 800이 영역을 넘는다 → 영역의 90%.
+        ((1280, 800), (16, 39), (1152, 720)),
+        ((1280, 800), (0, 0), INITIAL_SIZE),
+        ((1296, 839), (16, 39), INITIAL_SIZE),
+        ((1295, 839), (16, 39), (1165, 755)),
+        ((1296, 838), (16, 39), (1166, 754)),
+        # 틀을 넣은 90%도 영역 안이다.
+        ((100, 100), (30, 60), (70, 40)),
+        ((1180, 760), (16, 39), (1062, 684)),
+    ],
+)
+def test_initial_size_counts_the_frame_so_the_whole_window_is_inside_the_area(
+    area, frame, expected
+):
+    width, height = initial_size(*area, *frame)
+    assert (width, height) == expected
+    assert width + frame[0] <= area[0]
+    assert height + frame[1] <= area[1]
+
+
+def test_the_first_show_reads_the_frame_and_fits_the_whole_window_into_the_area(
+    window, monkeypatch
+):
+    frame = QSize(16, 39)
+    monkeypatch.setattr(
+        window, "frameGeometry", lambda: QRect(window.geometry().topLeft(), window.size() + frame)
+    )
+    window.show()
+    size, top_left = _expected_place(window, frame)
+    assert window.size() == size
+    assert window.pos() == top_left
+
+
+def test_the_first_show_does_not_refit_a_size_that_was_changed_before(window, monkeypatch):
+    frame = QSize(16, 39)
+    monkeypatch.setattr(
+        window, "frameGeometry", lambda: QRect(window.geometry().topLeft(), window.size() + frame)
+    )
+    window.resize(700, 500)
+    window.show()
+    assert window.size() == QSize(700, 500)
 
 
 def test_a_size_the_user_chose_is_not_touched_by_showing(window):
