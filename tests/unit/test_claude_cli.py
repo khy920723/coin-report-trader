@@ -749,7 +749,10 @@ def test_the_session_prompt_names_the_three_agents_in_order_and_forbids_other_wo
     )
     assert "model과 effort를 넘기지 않는다" in prompt
     assert "다른 일(파일 읽기, 검색)은 스스로 하지 않는다" in prompt
-    assert "하나라도" in prompt  # 두 판별 가운데 하나라도 실패하면 최종 예측을 부르지 않는다
+    # 3.8.5의 판별 실패(검색 실패, 출처 없음, 정한 꼴이 아님)이면 최종 예측을 부르지 않는다
+    assert "search_judge의 search_status가 실패이거나" in prompt
+    assert "출처가 없거나" in prompt
+    assert "정한 머리줄과 줄 수, 값을 지키지 않으면 final_predictor를 부르지 않는다" in prompt
 
 
 def test_the_answer_schema_has_six_string_fields_and_four_required() -> None:

@@ -84,7 +84,8 @@ def coin_session_prompt() -> str:
         "다른 일(파일 읽기, 검색)은 스스로 하지 않는다.",
         "Agent 도구로 서브 에이전트를 부를 때 model과 effort를 넘기지 않는다.",
         f"{search}와 {candle}의 답을 받으면 {final}를 부르는 글에 두 답의 CSV 글을 그대로 붙인다.",
-        f"{search}와 {candle} 가운데 하나라도 답을 못 내면 {final}를 부르지 않는다.",
+        f"{search}의 search_status가 실패이거나 출처가 없거나, {search}나 {candle}의 답이"
+        f" 정한 머리줄과 줄 수, 값을 지키지 않으면 {final}를 부르지 않는다.",
         "마지막에 세 부분의 답을 정한 필드(search_judgment, search_rows, candle_judgment,"
         " candle_rows, final_rows, final_judgment)에 고치지 않고 그대로 담는다.",
         _guards(),
