@@ -148,6 +148,7 @@ class SendWorker:
         self._saved: dict[AlertCategory, bool] = {}
         self._save_message: dict[AlertCategory, str | None] = {}
         self._test_message: dict[AlertCategory, str | None] = {}
+        self._unreadable: dict[AlertCategory, bool] = {}
 
     # --- 주 스레드와 자료 스레드: 시작, 끝, 일 넣기 ----------
 
@@ -246,6 +247,7 @@ class SendWorker:
             for category in AlertCategory:
                 states[category] = self._address_state(category)
                 self._saved[category] = states[category] is AddressState.SAVED
+                self._unreadable[category] = states[category] is AddressState.UNREADABLE
                 self._save_message[category] = None
                 self._test_message[category] = None
                 self._publish(category)
@@ -274,6 +276,7 @@ class SendWorker:
                 self._saved.get(category, False),
                 self._save_message.get(category),
                 self._test_message.get(category),
+                self._unreadable.get(category, False),
             )
         )
 
@@ -386,7 +389,10 @@ class SendWorker:
         self._finish_webhook(category, STAGE_WEBHOOK_DELETE, error_name)
 
     def _finish_webhook(self, category: AlertCategory, stage: str, error_name: str | None) -> None:
-        """결과마다 새 `WebhookView`를 보내고(화면이 칸의 잠금을 푼다) 자료 스레드에 알린다."""
+        """결과마다 새 `WebhookView`를 보내고(화면이 칸의 잠금을 푼다) 자료 스레드에 알린다.
+        주소를 저장하거나 지우는 데 성공하면 `unreadable`은 거짓이 된다(M2 명세 3.12.7)."""
+        if error_name is None:
+            self._unreadable[category] = False
         self._publish(category)
         if self._data is not None and not self._stop.is_set():
             result = WebhookResult(category, stage, error_name is None, error_name)

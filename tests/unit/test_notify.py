@@ -98,12 +98,7 @@ def test_without_a_coin_the_second_line_is_just_the_text() -> None:
 
 
 def test_other_categories_have_two_lines_even_with_a_detail() -> None:
-    for category in (
-        AlertCategory.TRADE,
-        AlertCategory.REPORT,
-        AlertCategory.LIMIT,
-        AlertCategory.HOLDING,
-    ):
+    for category in (AlertCategory.TRADE, AlertCategory.LIMIT, AlertCategory.HOLDING):
         shown = alert_message(
             mode=Mode.PAPER, category=category, coin="KRW-BBB", text="글", detail=DETAIL
         )

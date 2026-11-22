@@ -5,6 +5,7 @@
 - 둘째 줄: "{코인 기호}: {글}"(코인이 없으면 "{글}")
 - 셋째 줄(오류 알림과 기타 알림이고 자세한 글이 있을 때만): "단계: {단계} · 오류: {오류 이름} ·
   그 뒤에 한 일: {한 일}". 내용 전체(`content`)는 넣지 않는다.
+- 셋째 줄(보고서 알림만. M2 명세 3.11): AI 표시 "AI가 쓴 글입니다. 틀릴 수 있습니다."
 - 1,500자에서 자른다(`MAX_MESSAGE_LENGTH`. 자른 표시는 붙이지 않는다).
 재료(글, 단계, 오류 이름, 한 일)는 알림을 만들 때 이미 가린 값이라고 본다. 주소는 글에
 들어가지 않는다.
@@ -20,7 +21,7 @@ from coin_report_trader.core import (
     Mode,
     coin_label,
 )
-from coin_report_trader.core.texts import test_message_text
+from coin_report_trader.core.texts import AI_MARK_TEXT, test_message_text
 
 MAX_MESSAGE_LENGTH: Final = 1500
 _DETAILED_CATEGORIES: Final = frozenset({AlertCategory.ERROR, AlertCategory.OTHER})
@@ -42,6 +43,8 @@ def alert_message(
         lines.append(
             f"단계: {detail.stage} · 오류: {detail.error_name} · 그 뒤에 한 일: {detail.after}"
         )
+    if category is AlertCategory.REPORT:
+        lines.append(AI_MARK_TEXT)
     return "\n".join(lines)[:MAX_MESSAGE_LENGTH]
 
 
