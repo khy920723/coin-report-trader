@@ -328,8 +328,8 @@ def test_the_first_run_asks_for_the_market_list_and_applies_on_the_main_thread(
     # 보내기 스레드의 `WebhookView`(분류마다 하나)와 알림센터의 `AlertsView`는 따로 센다.
     others = [u for _, u in updates if type(u).__name__ not in ("WebhookView", "AlertsView")]
     kinds = [type(update).__name__ for update in others]
-    assert kinds == ["SettingsView", "MarketsView", "MarketsView"]  # 받는 중, 받음
-    assert [state.state for state in others[1:]] == [LoadState.LOADING, LoadState.READY]
+    assert kinds == ["SettingsView", "AiStatusView", "MarketsView", "MarketsView"]  # 받는 중, 받음
+    assert [state.state for state in others[2:]] == [LoadState.LOADING, LoadState.READY]
     assert sum(1 for _, u in updates if type(u).__name__ == "WebhookView") == 6
     first = others[0]
     assert isinstance(first, SettingsView)

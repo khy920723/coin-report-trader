@@ -305,7 +305,7 @@ def test_the_actions_hand_the_new_calls_to_the_data_thread() -> None:
     ]
 
 
-def test_the_data_thread_does_nothing_with_the_new_calls(tmp_path: Path) -> None:
+def test_the_data_thread_queues_the_new_calls(tmp_path: Path) -> None:
     from coin_report_trader.core import SystemClock
 
     worker = DataWorker(
@@ -319,9 +319,10 @@ def test_the_data_thread_does_nothing_with_the_new_calls(tmp_path: Path) -> None
     worker.save_settings(("KRW-AAA",), 7, first_setup=False, ai_choices=choices)
     worker.load_reports("KRW-AAA")
     worker.load_report(3)
-    (only,) = list(worker._queue)  # 설정 저장 하나뿐이다. 15번까지 아무것도 하지 않는다
-    assert (only.candle_unit, only.candle_count) == (None, None)
-    assert not hasattr(only, "ai_choices")
+    saved, reports, report = list(worker._queue)  # 15번부터 세 동작 모두 자료 스레드의 큐에 든다
+    assert (saved.candle_unit, saved.candle_count) == (None, None)
+    assert saved.ai_choices == choices
+    assert (reports.market, report.report_id) == ("KRW-AAA", 3)
 
 
 def test_the_services_get_ai_last_and_none_by_default() -> None:

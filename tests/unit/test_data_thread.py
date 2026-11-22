@@ -295,8 +295,8 @@ def test_actions_that_come_before_the_start_are_not_dropped(build: Any) -> None:
     rig = build(coins=(AAA,), done=False)
     rig.worker.refresh_markets()  # 시작 전에 큐에 들어왔다
     rig.start()
-    assert [type(u).__name__ for u in rig.sink.items][:4] == [
-        "SettingsView", "CoinView", "AlertsView", "MarketsView",
+    assert [type(u).__name__ for u in rig.sink.items][:6] == [
+        "SettingsView", "CoinView", "AlertsView", "AiStatusView", "ReportListView", "MarketsView",
     ]  # fmt: skip
     assert len(rig.quote.market_requests()) == 1
 
@@ -356,6 +356,8 @@ def test_a_sink_that_fails_does_not_stop_the_thread(
         "SettingsView",
         "CoinView",
         "AlertsView",
+        "AiStatusView",
+        "ReportListView",
         "MarketsView",
         "MarketsView",
     ]
@@ -553,6 +555,8 @@ def test_actions_that_arrive_during_a_fetch_run_after_it(build: Any) -> None:
         ("SettingsView", None),
         ("CoinView", LoadState.NO_DATA),
         ("AlertsView", None),
+        ("AiStatusView", None),
+        ("ReportListView", None),
         ("CoinView", LoadState.LOADING),  # 켤 때의 (가) 받기
         ("CoinView", LoadState.READY),
         ("CoinView", LoadState.LOADING),  # 받는 중에 온 "다시 시도"는 그 뒤에 처리했다
@@ -2043,6 +2047,8 @@ def test_actions_queued_before_the_start_run_after_every_view_of_the_first_fetch
         ("CoinView", AAA, LoadState.NO_DATA),
         ("CoinView", BBB, LoadState.NO_DATA),
         ("AlertsView", None, LoadState.READY),
+        ("AiStatusView", None, None),
+        ("ReportListView", AAA, ready), ("ReportListView", BBB, ready),
         ("CoinView", AAA, load), ("CoinView", AAA, ready),  # (가) 받기
         ("CoinView", BBB, load), ("CoinView", BBB, ready),
         ("CoinView", AAA, load), ("CoinView", AAA, ready),  # 시작 전에 넣은 "다시 시도"

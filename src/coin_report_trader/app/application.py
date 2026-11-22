@@ -154,6 +154,7 @@ def _run_window(
         from .actions import AppActions
         from .bridge import UiBridge
         from .data_thread import DataWorker
+        from .report_round import SESSIONS_FOLDER
         from .send_thread import SendWorker
 
         _ensure_application(argv)
@@ -177,6 +178,8 @@ def _run_window(
             sink=bridge.post,
             send=sender,
             autostart=None if services is None else services.autostart,
+            ai=None if services is None else services.ai,
+            sessions_root=paths.root / SESSIONS_FOLDER,
         )
         sender.attach(worker)
         actions = AppActions(worker, sender)
