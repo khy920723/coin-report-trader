@@ -7,6 +7,7 @@
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -310,6 +311,30 @@ def test_fetch_minutes_with_gaps_and_with_nothing() -> None:
     assert got == kept
     # 1분봉이 하나도 없으면 빈 튜플이다(정하지 않은 코인의 기본값).
     assert client.fetch_minutes("KRW-BBB", since=since_of(NOW), until=NOW) == ()
+
+
+def test_fetch_minutes_drops_candles_before_since_when_gaps_reach_back() -> None:
+    # 구간 안에 빈 분이 있으면 한 요청의 count개가 since보다 앞에 시작한 봉까지 닿는다.
+    client, source, _ = setup()
+    candles = make_minutes(M, 30, last_start=datetime(2026, 1, 5, 3, 19, tzinfo=UTC))
+    since = datetime(2026, 1, 5, 3, 5, tzinfo=UTC)
+    until = datetime(2026, 1, 5, 3, 15, tzinfo=UTC)
+    gap = {since + timedelta(minutes=n) for n in range(1, 5)}  # 3:06~3:09는 체결이 없었다
+    before = [
+        replace(c, high=Decimal(9999), low=Decimal(1)) for c in candles if c.start < since
+    ]
+    kept = [c for c in candles if c.start >= since and c.start not in gap]
+    source.put_minutes(*before, *kept)
+    got = client.fetch_minutes(M, since=since, until=until)
+    requests = source.book_requests(MINUTES)
+    assert [(r.to, r.count) for r in requests] == [(until, 10)]
+    # 그 요청은 since 앞의 봉 넷(3:01~3:04)까지 받았다.
+    assert all(since <= c.start < until for c in got)
+    assert [c.start.minute for c in got] == [5, 10, 11, 12, 13, 14]
+    assert not any(c.start < since for c in got)
+    # 앞의 봉이 섞이면 구간의 고가·저가가 틀어진다(1분 점검이 보는 값).
+    assert max(c.high for c in got) < 9999
+    assert min(c.low for c in got) > 1
 
 
 def since_of(moment: datetime) -> datetime:
