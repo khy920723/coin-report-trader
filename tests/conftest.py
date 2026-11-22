@@ -46,10 +46,24 @@
   - 한계: `subprocess`를 거치지 않고 프로세스를 띄우는 것(`os.system`, `os.exec*`,
     `os.spawn*`, `os.posix_spawn`, `_posixsubprocess`, Qt의 `QProcess`), 다른 이름으로 바꾼
     사본, 원래 함수를 일부러 되돌리는 코드는 막지 못한다.
+- `winreg` 쓰기 막기 장치(M1 명세 3.16.4): `pytest_configure`에서 걸고 `pytest_unconfigure`에서
+  푼다. 시험은 실제 레지스트리를 쓰지 않는다.
+  - 막는 것: 진짜 `winreg` 모듈의 쓰기 함수 `SetValue`, `SetValueEx`, `DeleteValue`, `DeleteKey`,
+    `CreateKey`, `CreateKeyEx`. 원래 함수를 부르기 전에 막으므로 레지스트리에 닿지 않는다.
+  - 막지 않는 것: 읽기 함수(`OpenKey`, `QueryValueEx` 등), 시험이 `sys.modules`에 넣은 가짜
+    `winreg` 모듈(진짜 모듈이 아니므로 그 가짜를 쓴다).
+  - Windows가 아니면 `winreg`가 없어 할 일이 없다(건 함수가 없다).
+  - 막으면 `WinregBlocked`(AssertionError의 하위)를 낸다. 다른 장치처럼 막을 때마다 기록하고
+    세며(`winreg_guard.blocked_by_test`), 시험의 정리 단계에서 기록이 남아 있으면 그 시험을
+    실패로 만든다(예외가 삼켜졌어도). 일부러 부르는 시험은 `winreg_guard.expect_blocked()`로
+    감싼다.
+  - 한계: 장치를 걸기 전에 `from winreg import SetValueEx`처럼 함수를 따로 가져간 이름, `ctypes`로
+    부르는 Windows API, 자식 프로세스, 원래 함수를 일부러 되돌리는 코드는 막지 못한다.
 - 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12(M0)와 B22(M1 명세 6절)
   시험은 수집한 시험의 맨 끝으로 옮겨(`LAST_SCENARIOS`), 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
 
-시험은 `network_guard`, `keyring_guard`, `claude_guard` 픽스처로 세 장치를 받는다.
+시험은 `network_guard`, `keyring_guard`, `claude_guard`, `winreg_guard` 픽스처로 네 장치를
+받는다.
 `pythonpath = ["tests"]`(M1 명세 3.12)로 시험 파일이 `tests/` 아래 모듈을 import할 수는 있지만, 이
 파일은 pytest가 따로 읽어 들이는 설정 파일이므로 import하지 않고 픽스처로 받는다.
 """
@@ -91,6 +105,10 @@ class KeyringBlocked(AssertionError):
 
 class ClaudeBlocked(AssertionError):
     """시험이 이름이 `claude`인 실행 파일을 띄우려 했다(M2 명세 3.15)."""
+
+
+class WinregBlocked(AssertionError):
+    """시험이 진짜 `winreg`의 쓰기 함수를 불렀다(M1 명세 3.16.4)."""
 
 
 # --- 자료 폴더 -------------------------------------------------------------------------------
@@ -625,9 +643,113 @@ class ClaudeGuard:
         self._installed[(subprocess.Popen, "__init__")] = init
 
 
+# --- winreg 쓰기 막기 장치 -------------------------------------------------------------------
+
+WINREG_WRITE_FUNCTIONS = (
+    "SetValue",
+    "SetValueEx",
+    "DeleteValue",
+    "DeleteKey",
+    "CreateKey",
+    "CreateKeyEx",
+)
+
+
+class WinregGuard:
+    """진짜 `winreg`의 쓰기 함수를 막고 세는 장치(M1 명세 3.16.4).
+
+    시험은 `winreg_guard` 픽스처로 받는다. Windows가 아니면 `winreg`가 없어 건 함수가 없다.
+    """
+
+    Blocked = WinregBlocked
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._attempts: list[str] = []
+        self._installed: dict[tuple[object, str], object] = {}
+        self._ready = False
+        self.module: Any = None
+        """장치를 건 `winreg` 모듈. 없으면(Windows가 아니면) `None`."""
+        # 시험(nodeid)마다 정리 단계에서 본 막힌 호출 수.
+        self.blocked_by_test: dict[str, int] = {}
+
+    def take_attempts(self) -> list[str]:
+        with self._lock:
+            taken = list(self._attempts)
+            self._attempts.clear()
+        return taken
+
+    @contextmanager
+    def expect_blocked(self) -> Iterator[list[str]]:
+        """안에서 막힌 호출을 기대한 것으로 보고 기록에서 뺀다. 하나도 없으면 AssertionError."""
+        with self._lock:
+            start = len(self._attempts)
+        caught: list[str] = []
+        try:
+            yield caught
+        finally:
+            with self._lock:
+                caught.extend(self._attempts[start:])
+                del self._attempts[start:]
+        if not caught:
+            raise AssertionError("expect_blocked() 안에서 막힌 winreg 쓰기가 없었다")
+
+    @staticmethod
+    def report(attempts: list[str]) -> str:
+        lines = [f"- {item}" for item in attempts[:_REPORT_LIMIT]]
+        if len(attempts) > _REPORT_LIMIT:
+            lines.append(f"- 외 {len(attempts) - _REPORT_LIMIT}건")
+        return (
+            f"winreg 쓰기를 {len(attempts)}번 막았다(예외가 삼켜졌어도 실패로 본다. 시험은 가짜 "
+            "winreg 모듈이나 FakeAutostart를 쓴다. 일부러 부르는 시험은 "
+            "winreg_guard.expect_blocked()로 감싼다):\n" + "\n".join(lines)
+        )
+
+    def _blocker(self, name: str) -> Any:
+        guard = self
+
+        def blocked(*args: Any, **kwargs: Any) -> Any:
+            message = f"winreg.{name}을 막았다(실제 레지스트리를 쓰지 않는다)"
+            with guard._lock:
+                guard._attempts.append(message)
+            raise WinregBlocked(message)
+
+        blocked.__name__ = name
+        blocked.__qualname__ = f"winreg.{name}"
+        return blocked
+
+    def is_installed(self) -> bool:
+        return self._ready and all(
+            getattr(owner, name, None) is wrapper
+            for (owner, name), wrapper in self._installed.items()
+        )
+
+    def install(self, patch: pytest.MonkeyPatch, module: Any = None) -> None:
+        """장치를 건다. `patch.undo()`로 풀린다.
+
+        `module`을 주지 않으면 `winreg`를 import해 건다. import할 수 없으면(Windows가 아니면) 할
+        일이 없다. `module`은 장치의 시험이 다른 운영체제에서도 같은 동작을 보려고 넘긴다.
+        """
+        self._installed.clear()
+        self._ready = False
+        if module is None:
+            try:
+                import winreg as module  # Windows에만 있다
+            except ImportError:
+                module = None
+        self.module = module
+        if module is not None:
+            for name in WINREG_WRITE_FUNCTIONS:
+                wrapper = self._blocker(name)
+                patch.setattr(module, name, wrapper)
+                self._installed[(module, name)] = wrapper
+        self._ready = True
+
+
 GUARD = NetworkGuard()
 KEYRING_GUARD = KeyringGuard()
 CLAUDE_GUARD = ClaudeGuard()
+WINREG_GUARD = WinregGuard()
 _PATCH = pytest.StashKey[pytest.MonkeyPatch]()
 
 
@@ -649,12 +771,19 @@ def claude_guard() -> ClaudeGuard:
     return CLAUDE_GUARD
 
 
+@pytest.fixture
+def winreg_guard() -> WinregGuard:
+    """이 세션의 winreg 쓰기 막기 장치."""
+    return WINREG_GUARD
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", f"{SCENARIO_MARKER}(id): 명세의 수용 시나리오 번호")
     patch = pytest.MonkeyPatch()
     GUARD.install(patch)
     KEYRING_GUARD.install(patch)
     CLAUDE_GUARD.install(patch)
+    WINREG_GUARD.install(patch)
     config.stash[_PATCH] = patch
 
 
@@ -682,6 +811,9 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     claude_attempts = CLAUDE_GUARD.take_attempts()
     if claude_attempts:
         raise pytest.UsageError("수집 중 " + CLAUDE_GUARD.report(claude_attempts))
+    winreg_attempts = WINREG_GUARD.take_attempts()
+    if winreg_attempts:
+        raise pytest.UsageError("수집 중 " + WINREG_GUARD.report(winreg_attempts))
     items = session.items
     last = [item for name in LAST_SCENARIOS for item in items if _scenario(item) == name]
     if last:
@@ -705,6 +837,8 @@ def _guard_problem() -> str | None:
         return "keyring 장치가 풀려 있다(keyring 함수를 되돌린 코드가 있다)"
     if not CLAUDE_GUARD.is_installed():
         return "claude 실행 장치가 풀려 있다(subprocess.Popen.__init__을 되돌린 코드가 있다)"
+    if not WINREG_GUARD.is_installed():
+        return "winreg 쓰기 막기 장치가 풀려 있다(winreg 함수를 되돌린 코드가 있다)"
     problems = []
     attempts = GUARD.take_attempts()
     if attempts:
@@ -715,6 +849,9 @@ def _guard_problem() -> str | None:
     claude_attempts = CLAUDE_GUARD.take_attempts()
     if claude_attempts:
         problems.append(CLAUDE_GUARD.report(claude_attempts))
+    winreg_attempts = WINREG_GUARD.take_attempts()
+    if winreg_attempts:
+        problems.append(WINREG_GUARD.report(winreg_attempts))
     return "\n".join(problems) or None
 
 
@@ -735,18 +872,23 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
         installed = GUARD.is_installed()
         keyring_installed = KEYRING_GUARD.is_installed()
         claude_installed = CLAUDE_GUARD.is_installed()
+        winreg_installed = WINREG_GUARD.is_installed()
         attempts = GUARD.take_attempts()
         keyring_attempts = KEYRING_GUARD.take_attempts()
         claude_attempts = CLAUDE_GUARD.take_attempts()
+        winreg_attempts = WINREG_GUARD.take_attempts()
         GUARD.blocked_by_test[item.nodeid] = len(attempts)
         KEYRING_GUARD.blocked_by_test[item.nodeid] = len(keyring_attempts)
         CLAUDE_GUARD.blocked_by_test[item.nodeid] = len(claude_attempts)
+        WINREG_GUARD.blocked_by_test[item.nodeid] = len(winreg_attempts)
         if not installed:
             pytest.fail("실제 네트워크 차단이 풀려 있다", pytrace=False)
         if not keyring_installed:
             pytest.fail("keyring 장치가 풀려 있다", pytrace=False)
         if not claude_installed:
             pytest.fail("claude 실행 장치가 풀려 있다", pytrace=False)
+        if not winreg_installed:
+            pytest.fail("winreg 쓰기 막기 장치가 풀려 있다", pytrace=False)
         problems = []
         if attempts:
             problems.append(GUARD.report(attempts))
@@ -754,12 +896,14 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> 
             problems.append(KEYRING_GUARD.report(keyring_attempts))
         if claude_attempts:
             problems.append(CLAUDE_GUARD.report(claude_attempts))
+        if winreg_attempts:
+            problems.append(WINREG_GUARD.report(winreg_attempts))
         if problems:
             pytest.fail("\n".join(problems), pytrace=False)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    for guard in (GUARD, KEYRING_GUARD, CLAUDE_GUARD):
+    for guard in (GUARD, KEYRING_GUARD, CLAUDE_GUARD, WINREG_GUARD):
         attempts = guard.take_attempts()
         if attempts:
             sys.stderr.write(f"\n세션 끝: {guard.report(attempts)}\n")
