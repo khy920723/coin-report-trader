@@ -94,9 +94,12 @@ STATES = {
 def _scroll_to(widget: QWidget) -> None:
     parent = widget.parentWidget()
     while parent is not None:
-        if isinstance(parent, QScrollArea) and parent.widget() is not None:
-            if parent.widget().isAncestorOf(widget):
-                parent.ensureWidgetVisible(widget)
+        if (
+            isinstance(parent, QScrollArea)
+            and parent.widget() is not None
+            and parent.widget().isAncestorOf(widget)
+        ):
+            parent.ensureWidgetVisible(widget)
         parent = parent.parentWidget()
     QApplication.processEvents()
 
