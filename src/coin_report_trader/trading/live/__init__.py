@@ -26,6 +26,8 @@ from coin_report_trader.trading.live.reconcile import (
     direct_locked,
     direct_orders,
     find_external_changes,
+    program_deltas,
+    program_locked,
     queried_state,
     snapshot_rows,
 )
@@ -80,6 +82,8 @@ __all__ = [
     "live_realized_pnl",
     "live_settings_ok",
     "new_trades",
+    "program_deltas",
+    "program_locked",
     "queried_state",
     "select_exchange",
     "snapshot_rows",

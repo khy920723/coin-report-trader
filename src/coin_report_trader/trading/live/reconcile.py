@@ -13,20 +13,25 @@
 - 외부 변동(3.6.6, A-22): 코인마다(그리고 원화) (지금 − 앞) − 그 사이 프로그램의 체결로 바뀐 몫이
   0이 아니면 외부 변동이다. 수량은 소수 여덟째 자리(`QTY_PLACES`), 원화는 1원 단위로 맞춰 견준다
   (`ROUND_HALF_EVEN`). 앞의 값이 없는 코인(처음 읽음)은 견주지 않는다.
-- A-6: 직접 건 주문에 묶인 몫 = 묶인 수량 − 프로그램 주문에 묶인 수량(0보다 작으면 0). 그 몫이 0에서
-  0보다 크게 바뀔 때 한 번이다.
+- 프로그램 몫(`program_deltas`)은 그 사이의 실거래 체결(`FillRecord`)에서 여기서 셈한다. 코인은 매수
+  +수량, 매도 −수량이다. 원화는 매수 −(가격 × 수량 + 수수료), 매도 +(가격 × 수량 − 수수료)다.
+- A-6: 직접 건 주문에 묶인 몫 = 묶인 수량 − 프로그램 주문에 묶인 수량(0보다 작으면 0). 프로그램
+  주문에 묶인 수량은 지금의 체결 대기 목록에서 프로그램 매도 주문의 남은 수량(수량 − 체결 수량)의
+  합이다(`program_locked`). 그 몫이 0에서 0보다 크게 바뀔 때 한 번이다.
 - A-7: 앞의 목록에 있던 직접 건 주문이 다음 목록에서 사라졌고, 그 사이 그 코인의 프로그램 주문이
-  반대편으로 체결되었으면 그 주문이다. 그 밖에는 가려낼 수 없어 알리지 않는다.
+  반대편으로 체결되었으면(체결 목록의 코인과 방향) 그 주문이다. 그 밖에는 가려낼 수 없어 알리지
+  않는다.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final
 
+from coin_report_trader.core.alerts import Mode
 from coin_report_trader.core.exchange import ExchangeAccount, ExchangeHolding, OrderSnapshot
-from coin_report_trader.core.trade import QTY_PLACES, OrderRecord, OrderSide, OrderState
+from coin_report_trader.core.trade import QTY_PLACES, FillRecord, OrderRecord, OrderSide, OrderState
 from coin_report_trader.trading.orders.states import unconfirmed_expired
 
 KRW_MARKET: Final = "KRW"
@@ -87,13 +92,48 @@ def queried_state(
     return OrderState.UNCONFIRMED
 
 
+def program_locked(open_orders: Iterable[OrderSnapshot]) -> dict[str, Decimal]:
+    """코인마다 프로그램 주문에 묶인 수량(A-6): 지금의 체결 대기 목록에서 프로그램 매도 주문의
+    남은 수량(수량 − 체결 수량)의 합. 매수 주문은 코인을 묶지 않는다."""
+    locked: dict[str, Decimal] = {}
+    for order in open_orders:
+        if order.program and order.side is OrderSide.SELL:
+            rest = max(_ZERO, order.qty - order.executed_qty)
+            locked[order.market] = locked.get(order.market, _ZERO) + rest
+    return locked
+
+
+def program_deltas(fills: Iterable[FillRecord]) -> dict[str, Decimal]:
+    """그 사이 프로그램의 체결로 바뀐 몫(3.6.6): 코인은 수량, 원화(`KRW`)는 금액.
+
+    - 매수: 코인 +수량, 원화 −(가격 × 수량 + 수수료).
+    - 매도: 코인 −수량, 원화 +(가격 × 수량 − 수수료).
+    - 실거래의 체결만 받는다(모의매매의 체결이면 `ValueError`).
+    """
+    deltas: dict[str, Decimal] = {}
+    for fill in _live(fills):
+        amount = fill.price * fill.qty
+        if fill.side is OrderSide.BUY:
+            qty, krw = fill.qty, -(amount + fill.fee)
+        else:
+            qty, krw = -fill.qty, amount - fill.fee
+        deltas[fill.market] = deltas.get(fill.market, _ZERO) + qty
+        deltas[KRW_MARKET] = deltas.get(KRW_MARKET, _ZERO) + krw
+    return deltas
+
+
 def snapshot_rows(
     account: ExchangeAccount,
     markets: Iterable[str],
-    program_locked: Mapping[str, Decimal],
+    open_orders: Iterable[OrderSnapshot],
 ) -> tuple[LiveSnapshot, ...]:
-    """`live_snapshots`에 쓸 줄: 원화 한 줄과 고른 코인마다 한 줄(보유가 없으면 0)."""
+    """`live_snapshots`에 쓸 줄: 원화 한 줄과 고른 코인마다 한 줄(보유가 없으면 0).
+
+    - `open_orders`: 지금의 체결 대기 주문 목록(우리 것과 직접 건 것). 직접 건 주문에 묶인 몫은
+      묶인 수량에서 그 목록의 프로그램 매도 주문의 남은 수량을 뺀 것이다(A-6).
+    """
     holdings = {holding.market: holding for holding in account.holdings}
+    ours = program_locked(open_orders)
     rows = [
         LiveSnapshot(
             market=KRW_MARKET,
@@ -110,7 +150,7 @@ def snapshot_rows(
                 market=market,
                 balance=_ZERO if holding is None else holding.balance,
                 locked=_ZERO if holding is None else holding.locked,
-                direct_locked=direct_locked(holding, program_locked.get(market, _ZERO)),
+                direct_locked=direct_locked(holding, ours.get(market, _ZERO)),
                 read_utc=account.read_utc,
             )
         )
@@ -121,22 +161,23 @@ def find_external_changes(
     before: Iterable[LiveSnapshot],
     account: ExchangeAccount,
     markets: Iterable[str],
-    program_deltas: Mapping[str, Decimal],
+    fills: Iterable[FillRecord],
 ) -> tuple[ExternalChange, ...]:
     """외부 변동(3.6.6): 원화와 고른 코인마다 (지금 − 앞) − 프로그램 몫이 0이 아닌 것.
 
     - `before`: 마지막으로 읽은 실제 계정(`live_snapshots`).
-    - `program_deltas`: 그 사이 프로그램의 체결로 바뀐 몫(코인은 수량, 원화 `KRW`는 금액. 매수면
-      코인은 늘고 원화는 줄어든다). 없으면 0이다.
+    - `fills`: 앞의 읽기와 지금 읽기 사이에 쓴 프로그램의 실거래 체결. 프로그램 몫은 여기서
+      셈한다(`program_deltas`).
     - 수량은 보유 전체(`balance` + `locked`)로 견준다. 앞의 값이 없는 코인은 견주지 않는다.
     """
+    deltas = program_deltas(fills)
     previous = {row.market: row for row in before}
     holdings = {holding.market: holding for holding in account.holdings}
     changes: list[ExternalChange] = []
     krw_before = previous.get(KRW_MARKET)
     if krw_before is not None:
         delta = (account.krw + account.krw_locked) - (krw_before.balance + krw_before.locked)
-        delta -= program_deltas.get(KRW_MARKET, _ZERO)
+        delta -= deltas.get(KRW_MARKET, _ZERO)
         delta = delta.quantize(_WON_STEP, rounding=ROUND_HALF_EVEN)
         if delta != 0:
             changes.append(ExternalChange(market=KRW_MARKET, qty_delta=delta))
@@ -146,7 +187,7 @@ def find_external_changes(
             continue
         holding = holdings.get(market)
         now_qty = _ZERO if holding is None else holding.balance + holding.locked
-        delta = now_qty - (old.balance + old.locked) - program_deltas.get(market, _ZERO)
+        delta = now_qty - (old.balance + old.locked) - deltas.get(market, _ZERO)
         delta = delta.quantize(_QTY_STEP, rounding=ROUND_HALF_EVEN)
         if delta != 0:
             changes.append(ExternalChange(market=market, qty_delta=delta))
@@ -168,21 +209,30 @@ def direct_lock_started(before: Decimal, now: Decimal) -> bool:
 def canceled_direct_orders(
     before: Iterable[OrderSnapshot],
     now: Iterable[OrderSnapshot],
-    program_fills: Iterable[tuple[str, OrderSide]],
+    fills: Iterable[FillRecord],
 ) -> tuple[OrderSnapshot, ...]:
     """A-7: 앞의 목록의 직접 건 주문 가운데 지금 목록에서 사라졌고, 그 사이 그 코인의 프로그램
     주문이 반대편으로 체결된 것.
 
     - `before`, `now`: 앞과 지금의 직접 건 주문(`direct_orders`의 결과).
-    - `program_fills`: 그 사이 체결된 프로그램 주문의 (코인, 방향).
+    - `fills`: 앞의 목록과 지금 목록 사이에 쓴 프로그램의 실거래 체결. 그 코인과 방향을 본다
+      (모의매매의 체결이면 `ValueError`).
     """
     still = {order.uid for order in now}
-    filled = set(program_fills)
+    filled = {(fill.market, fill.side) for fill in _live(fills)}
     return tuple(
         order
         for order in before
         if order.uid not in still and (order.market, _opposite(order.side)) in filled
     )
+
+
+def _live(fills: Iterable[FillRecord]) -> tuple[FillRecord, ...]:
+    """실거래의 체결만 받는다. 모의매매의 체결이 섞이면 `ValueError`다."""
+    chosen = tuple(fills)
+    if any(fill.mode is not Mode.LIVE for fill in chosen):
+        raise ValueError("실거래의 체결이 아니다")
+    return chosen
 
 
 def _opposite(side: OrderSide) -> OrderSide:

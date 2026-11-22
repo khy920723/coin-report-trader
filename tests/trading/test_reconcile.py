@@ -11,6 +11,7 @@ import pytest
 from coin_report_trader.core.alerts import Mode
 from coin_report_trader.core.exchange import ExchangeAccount, ExchangeHolding, OrderSnapshot
 from coin_report_trader.core.trade import (
+    FillRecord,
     OrderKind,
     OrderReason,
     OrderRecord,
@@ -26,6 +27,8 @@ from coin_report_trader.trading.live import (
     direct_locked,
     direct_orders,
     find_external_changes,
+    program_deltas,
+    program_locked,
     queried_state,
     snapshot_rows,
 )
@@ -37,19 +40,49 @@ T0 = datetime(2026, 1, 5, 3, 0, tzinfo=UTC)
 T1 = T0 + timedelta(minutes=1)
 
 
-def snap(uid: str, *, market: str = A, side: OrderSide = OrderSide.BUY, state=OrderState.OPEN):
+def snap(
+    uid: str,
+    *,
+    market: str = A,
+    side: OrderSide = OrderSide.BUY,
+    state=OrderState.OPEN,
+    qty: str = "1",
+    executed: str = "0",
+    program: bool = False,
+):
     return OrderSnapshot(
         uid=uid,
         market=market,
         side=side,
         kind=OrderKind.LIMIT,
         price=D(990),
-        qty=D(1),
-        executed_qty=D(0),
+        qty=D(qty),
+        executed_qty=D(executed),
         state=state,
         trades=(),
-        program=False,
+        program=program,
     )
+
+
+def fill(
+    side: OrderSide, price: str, qty: str, fee: str, *, market: str = A, mode: Mode = Mode.LIVE
+) -> FillRecord:
+    return FillRecord(
+        fill_id=1,
+        order_id=1,
+        mode=mode,
+        market=market,
+        side=side,
+        price=D(price),
+        qty=D(qty),
+        fee=D(fee),
+        realized_pnl=None,
+        filled_utc=T0 + timedelta(seconds=30),
+    )
+
+
+BUY = OrderSide.BUY
+SELL = OrderSide.SELL
 
 
 def record(uid: str, state: OrderState = OrderState.OPEN) -> OrderRecord:
@@ -126,25 +159,51 @@ def test_a_snapshot_of_another_order_is_refused() -> None:
 
 def test_external_change_example_of_3_6_6() -> None:
     # 앞 3개, 프로그램 매수 체결 1개, 지금 6개면 2개가 외부 변동이다.
-    changes = find_external_changes([before(A, "3")], account("0", held(A, "6")), [A], {A: D(1)})
+    previous = [before(A, "3")]
+    changes = find_external_changes(
+        previous, account("0", held(A, "6")), [A], [fill(BUY, "1000", "1", "0.5")]
+    )
     assert changes == (ExternalChange(market=A, qty_delta=D(2)),)
 
 
+def test_program_deltas_from_buy_and_sell_fills_with_fees() -> None:
+    fills = [
+        fill(BUY, "1000", "3", "1.5"),  # 원화 −3,001.5, AAA +3
+        fill(SELL, "1100", "2", "1.1"),  # 원화 +2,198.9, AAA −2
+        fill(BUY, "200", "5", "0.5", market=B),  # 원화 −1,000.5, BBB +5
+    ]
+    assert program_deltas(fills) == {A: D(1), B: D(5), KRW_MARKET: D("-1803.1")}
+    assert program_deltas([]) == {}
+
+
 def test_no_change_when_only_the_program_moved_things() -> None:
+    # (가) 앞 원화 100,000·AAA 3개. 프로그램이 AAA 7개를 1,000원에 사고(수수료 3.5원), 2개를
+    # 1,100원에 팔고(수수료 1.1원), 남은 가운데 6개를 매도로 걸어 묶었다.
     previous = [before(KRW_MARKET, "100000"), before(A, "3")]
-    now = account("89995", held(A, "4", "6"), krw_locked="0")
-    # 프로그램이 7개를 사고(원화 −10,005원) 그 가운데 6개를 매도로 걸어 묶었다.
-    deltas = {A: D(7), KRW_MARKET: D(-10005)}
-    assert find_external_changes(previous, now, [A], deltas) == ()
+    fills = [fill(BUY, "1000", "7", "3.5"), fill(SELL, "1100", "2", "1.1")]
+    # 원화: 100,000 − 7,003.5 + 2,198.9 = 95,195.4. AAA: 3 + 7 − 2 = 8(주문 가능 2, 묶임 6).
+    now = account("95195.4", held(A, "2", "6"))
+    assert find_external_changes(previous, now, [A], fills) == ()
+
+
+def test_changes_beside_the_program_fills_are_external() -> None:
+    # (나) (가)와 같은 체결에, 바깥에서 원화 50,000원이 들어오고 AAA 1개가 나갔다.
+    previous = [before(KRW_MARKET, "100000"), before(A, "3")]
+    fills = [fill(BUY, "1000", "7", "3.5"), fill(SELL, "1100", "2", "1.1")]
+    now = account("145195.4", held(A, "1", "6"))
+    assert find_external_changes(previous, now, [A], fills) == (
+        ExternalChange(market=KRW_MARKET, qty_delta=D(50000)),
+        ExternalChange(market=A, qty_delta=D(-1)),
+    )
 
 
 def test_krw_counts_available_plus_locked_and_rounds_to_one_won() -> None:
     previous = [before(KRW_MARKET, "100000", "5000")]
     # 원화 주문 가능 90,000 + 묶임 15,000.4 = 105,000.4. 0.4원은 1원 단위로 맞추면 0이다.
     small = account("90000", krw_locked="15000.4")
-    assert find_external_changes(previous, small, [], {}) == ()
+    assert find_external_changes(previous, small, [], []) == ()
     big = account("90000", krw_locked="15002")
-    assert find_external_changes(previous, big, [], {}) == (
+    assert find_external_changes(previous, big, [], []) == (
         ExternalChange(market=KRW_MARKET, qty_delta=D(2)),
     )
 
@@ -152,9 +211,9 @@ def test_krw_counts_available_plus_locked_and_rounds_to_one_won() -> None:
 def test_qty_is_compared_to_eight_places() -> None:
     previous = [before(A, "1")]
     tiny = account("0", held(A, "1.000000004"))
-    assert find_external_changes(previous, tiny, [A], {}) == ()
+    assert find_external_changes(previous, tiny, [A], []) == ()
     one = account("0", held(A, "1.00000001"))
-    assert find_external_changes(previous, one, [A], {}) == (
+    assert find_external_changes(previous, one, [A], []) == (
         ExternalChange(market=A, qty_delta=D("0.00000001")),
     )
 
@@ -162,7 +221,7 @@ def test_qty_is_compared_to_eight_places() -> None:
 def test_a_coin_sold_off_outside_and_a_coin_without_a_baseline() -> None:
     previous = [before(A, "2", "1")]
     now = account("0", held(B, "5"))  # A는 모두 사라졌고, B는 앞의 값이 없다
-    assert find_external_changes(previous, now, [A, B], {}) == (
+    assert find_external_changes(previous, now, [A, B], []) == (
         ExternalChange(market=A, qty_delta=D(-3)),
     )
 
@@ -170,18 +229,43 @@ def test_a_coin_sold_off_outside_and_a_coin_without_a_baseline() -> None:
 def test_unchosen_coins_are_not_compared() -> None:
     previous = [before(A, "1"), before(B, "1")]
     now = account("0", held(A, "1"), held(B, "9"))
-    assert find_external_changes(previous, now, [A], {}) == ()
+    assert find_external_changes(previous, now, [A], []) == ()
+
+
+def test_paper_fills_are_refused() -> None:
+    paper = fill(BUY, "1000", "1", "0.5", mode=Mode.PAPER)
+    with pytest.raises(ValueError, match="실거래"):
+        program_deltas([paper])
+    with pytest.raises(ValueError, match="실거래"):
+        canceled_direct_orders((), (), [paper])
 
 
 # --- live_snapshots의 줄과 A-6 --------------------------------------------------------------
 
 
+def test_program_locked_is_the_rest_of_program_sell_orders() -> None:
+    listed = (
+        snap("ours-sell", side=SELL, qty="4", executed="1", program=True),  # 남은 3개
+        snap("ours-sell-2", side=SELL, qty="2", program=True),  # 남은 2개
+        snap("ours-buy", side=BUY, qty="9", program=True),  # 매수는 코인을 묶지 않음
+        snap("direct-sell", side=SELL, qty="7"),  # 직접 건 주문
+        snap("ours-b", market=B, side=SELL, qty="1", program=True),
+    )
+    assert program_locked(listed) == {A: D(5), B: D(1)}
+    assert program_locked(()) == {}
+
+
 def test_snapshot_rows_have_krw_and_every_chosen_coin() -> None:
+    # (다) AAA 묶임 5개 가운데 프로그램 매도 4개 걸고 1개 체결(남은 3개), 직접 2개.
     now = account("1000", held(A, "2", "5"), krw_locked="300")
-    rows = snapshot_rows(now, [A, B], {A: D(3)})
+    listed = (
+        snap("ours-sell", side=SELL, qty="4", executed="1", program=True),
+        snap("direct-sell", side=SELL, qty="2"),
+    )
+    rows = snapshot_rows(now, [A, B], listed)
     assert rows == (
         LiveSnapshot(KRW_MARKET, D(1000), D(300), D(0), T1),
-        LiveSnapshot(A, D(2), D(5), D(2), T1),  # 묶인 5개 가운데 프로그램 3개, 직접 2개
+        LiveSnapshot(A, D(2), D(5), D(2), T1),
         LiveSnapshot(B, D(0), D(0), D(0), T1),
     )
 
@@ -205,17 +289,23 @@ def test_a6_only_when_the_direct_lock_starts(old: str, new: str, alert: bool) ->
 
 
 def test_a7_needs_the_direct_order_gone_and_an_opposite_program_fill() -> None:
-    direct_buy = snap("direct-1", side=OrderSide.BUY)
-    direct_sell = snap("direct-2", side=OrderSide.SELL)
-    other_coin = snap("direct-3", market=B, side=OrderSide.BUY)
+    # (라) 직접 건 AAA 매수가 사라졌고, 체결 목록에 AAA의 프로그램 매도가 있다.
+    direct_buy = snap("direct-1", side=BUY)
+    direct_sell = snap("direct-2", side=SELL)
+    other_coin = snap("direct-3", market=B, side=BUY)
     previous = (direct_buy, direct_sell, other_coin)
-    gone = canceled_direct_orders(previous, (direct_sell,), [(A, OrderSide.SELL)])
-    # 직접 건 매수가 사라졌고 프로그램 매도가 체결되었다. B의 주문은 그 코인의 체결이 없다.
+    fills = [fill(SELL, "1000", "1", "0.5"), fill(BUY, "200", "1", "0.1", market=B)]
+    gone = canceled_direct_orders(previous, (direct_sell,), fills)
+    # B의 직접 건 매수는 사라졌지만 B의 프로그램 체결이 같은 편(매수)이라 알리지 않는다.
     assert gone == (direct_buy,)
 
 
 def test_no_a7_without_the_opposite_fill_or_when_still_listed() -> None:
-    direct_buy = snap("direct-1", side=OrderSide.BUY)
-    assert canceled_direct_orders((direct_buy,), (), [(A, OrderSide.BUY)]) == ()
+    direct_buy = snap("direct-1", side=BUY)
+    same_side = [fill(BUY, "1000", "1", "0.5")]
+    opposite = [fill(SELL, "1000", "1", "0.5")]
+    other_coin = [fill(SELL, "1000", "1", "0.5", market=B)]
+    assert canceled_direct_orders((direct_buy,), (), same_side) == ()
+    assert canceled_direct_orders((direct_buy,), (), other_coin) == ()
     assert canceled_direct_orders((direct_buy,), (), []) == ()
-    assert canceled_direct_orders((direct_buy,), (direct_buy,), [(A, OrderSide.SELL)]) == ()
+    assert canceled_direct_orders((direct_buy,), (direct_buy,), opposite) == ()
