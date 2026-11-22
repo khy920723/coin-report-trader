@@ -1,4 +1,5 @@
-"""가짜 공개 시세(M1 명세 3.13). `core.QuoteSource`(3.4)의 약속을 진짜와 같게 지킨다.
+"""가짜 공개 시세(M1 명세 3.13). `core.QuoteSource`(3.4)와 `core.PriceSource`(M2 명세 3.4, 3.6)의
+약속을 진짜와 같게 지킨다.
 
 - 봉 단위는 넷이다: 30분봉, 60분봉, 240분봉, 일봉(33번이 넓혔다).
 
@@ -7,13 +8,16 @@
     새것부터 `count`개 준다. `to`가 `None`이면 가장 최근 것부터 준다. 봉이 없으면 빈 튜플이다.
   - `count`가 1에서 200 밖이거나 `to`에 시간대가 없으면 진짜처럼 보내기 전에 `ValueError`다(기록하지
     않는다).
+- 현재가(M2 명세 3.6): `get_price(market)`는 시험이 코인마다 정한 값(`prices=`나 `set_prices`)을
+  준다. 정하지 않은 코인이면 시험의 실수라 `KeyError`다(기록하지 않는다). 정한 `QuoteError`는 아래
+  `script`로 낸다(종류 `PRICE`).
 - 봉 넣기: `set_candles(market, unit, candles)`는 그 마켓·단위의 봉을 통째로 바꾼다.
   `put_candles(*candles)`는 시작 시각이 같은 봉을 바꾸고 없는 봉을 더한다(새 봉이 생기고 마지막 봉의
   종가가 바뀌는 B9). `set_markets(markets)`는 코인 목록을 바꾼다. 받기 사이에 언제든 불러도 된다.
 - 결과 정하기(`script`): 요청 하나 단위로 정한다. 받기 하나가 도는 동안 시험이 끼어들 수 없으므로
   미리 줄을 세워 둔다.
   - `script(*outcomes, kind=None, market=None, unit=None)`이 결과의 줄 하나를 더한다.
-    `kind`(`MARKETS`이나 `CANDLES`), `market`, `unit` 가운데 준 것이 모두 맞는 요청만 그 줄을
+    `kind`(`MARKETS`, `CANDLES`, `PRICE`), `market`, `unit` 가운데 준 것이 모두 맞는 요청만 그 줄을
     쓴다(주지 않은 것은 가리지 않는다).
   - 요청이 오면 더한 차례대로 줄을 보고, 맞고 남은 결과가 있는 첫 줄에서 결과 하나를 꺼낸다.
     결과는 `QuoteError`(그 오류를 낸다)나 `OK`(정상으로 답한다)다. 맞는 줄이 없거나 다 썼으면
@@ -21,13 +25,15 @@
   - 예: B35(일봉 처음 받기의 둘째 요청에서만 실패)는
     `script(OK, QuoteError(ERROR_NETWORK), kind=CANDLES, market=m, unit=CandleUnit.DAY)`다.
     B12는 같은 줄에 `QuoteError`, `QuoteError`, `OK`, `QuoteError`를 둔다. B11·B34의 일시 차단은
-    `QuoteError(ERROR_BLOCKED, 120.0)`이다.
+    `QuoteError(ERROR_BLOCKED, 120.0)`이다. 한 코인의 현재가 실패는
+    `script(QuoteError(ERROR_NETWORK), kind=PRICE, market=m)`이다.
   - `clear_script()`는 남은 결과를 모두 버린다.
 - 기록(`requests`): 요청마다 `QuoteRequest` 하나를 받은 차례대로 남긴다(실패한 요청도 남긴다).
   종류, 마켓, 단위, `to`, `count`, 낸 결과의 오류 이름(정상이면 `None`)을 담는다.
   - 시계: 만들 때 `clock`(가짜 시계)을 주면 요청마다 그때의 `clock.monotonic()`과 `clock.now()`를
     `monotonic`, `now`에 적는다. 주지 않으면 둘 다 `None`이다. B10은 `monotonic`으로 본다.
-  - 거르는 도우미: `candle_requests(market=None, unit=None)`, `market_requests()`.
+  - 거르는 도우미: `candle_requests(market=None, unit=None)`, `market_requests()`,
+    `price_requests(market=None)`. 현재가 요청의 단위, `to`, `count`는 `None`이다.
 - 만든 숫자의 봉: `make_candles(market, unit, count, *, last_start)`가 `last_start`에서 끝나는
   이어진 봉 `count`개를 시작 시각 순으로 만든다(값은 차례에서 셈한 만든 숫자다).
 - 여러 스레드가 함께 써도 된다(잠금 하나).
@@ -35,7 +41,7 @@
 
 import threading
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -54,6 +60,8 @@ MARKETS: Final = "markets"
 """코인 목록 요청의 종류."""
 CANDLES: Final = "candles"
 """봉 요청의 종류."""
+PRICE: Final = "price"
+"""현재가 요청의 종류(M2 명세 3.6)."""
 MAX_COUNT: Final = 200
 
 UNIT_STEP: Final = CANDLE_UNIT_LENGTHS
@@ -77,7 +85,7 @@ class QuoteRequest:
     """받은 요청 하나의 기록."""
 
     kind: str
-    """`MARKETS`이나 `CANDLES`."""
+    """`MARKETS`, `CANDLES`, `PRICE`."""
     market: str | None
     unit: CandleUnit | None
     to: datetime | None
@@ -107,18 +115,20 @@ class _Script:
 
 
 class FakeQuoteSource:
-    """`QuoteSource`의 가짜(모듈 설명)."""
+    """`QuoteSource`와 `PriceSource`의 가짜(모듈 설명)."""
 
     def __init__(
         self,
         *,
         markets: Iterable[Market] = (),
         candles: Iterable[Candle] = (),
+        prices: Mapping[str, Decimal] | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._clock = clock
         self._markets: tuple[Market, ...] = tuple(markets)
+        self._prices: dict[str, Decimal] = dict(prices or {})
         self._candles: dict[tuple[str, CandleUnit], dict[datetime, Candle]] = {}
         self._scripts: list[_Script] = []
         self.requests: list[QuoteRequest] = []
@@ -130,6 +140,11 @@ class FakeQuoteSource:
     def set_markets(self, markets: Iterable[Market]) -> None:
         with self._lock:
             self._markets = tuple(markets)
+
+    def set_prices(self, prices: Mapping[str, Decimal]) -> None:
+        """코인마다의 현재가를 더하거나 바꾼다(준 코인만)."""
+        with self._lock:
+            self._prices.update(prices)
 
     def set_candles(self, market: str, unit: CandleUnit, candles: Iterable[Candle]) -> None:
         """그 마켓·단위의 봉을 통째로 바꾼다. 다른 마켓·단위의 봉이 섞이면 `ValueError`다."""
@@ -162,7 +177,7 @@ class FakeQuoteSource:
         unit: CandleUnit | None = None,
     ) -> None:
         """결과의 줄 하나를 더한다(모듈 설명)."""
-        if kind not in (None, MARKETS, CANDLES):
+        if kind not in (None, MARKETS, CANDLES, PRICE):
             raise ValueError(f"script: 모르는 종류다: {kind!r}")
         for outcome in outcomes:
             if not isinstance(outcome, QuoteError | _Ok):
@@ -194,12 +209,28 @@ class FakeQuoteSource:
         with self._lock:
             return [r for r in self.requests if r.kind == MARKETS]
 
+    def price_requests(self, market: str | None = None) -> list[QuoteRequest]:
+        with self._lock:
+            return [
+                r
+                for r in self.requests
+                if r.kind == PRICE and (market is None or r.market == market)
+            ]
+
     # --- QuoteSource ----------------------------------------------------------------------
 
     def list_markets(self) -> tuple[Market, ...]:
         with self._lock:
             self._answer(MARKETS, None, None, None, None)
             return tuple(m for m in self._markets if m.market.startswith("KRW-"))
+
+    def get_price(self, market: str) -> Decimal:
+        """`PriceSource`. 정한 현재가를 준다(모듈 설명)."""
+        with self._lock:
+            if market not in self._prices:
+                raise KeyError(f"get_price: 현재가를 정하지 않은 코인이다: {market}")
+            self._answer(PRICE, market, None, None, None)
+            return self._prices[market]
 
     def get_candles(
         self, market: str, unit: CandleUnit, *, to: datetime | None, count: int
