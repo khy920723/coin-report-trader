@@ -102,6 +102,15 @@ def test_diff_means_round_half_even() -> None:
     assert mean_diffs([result(Verdict.HIT, "0.0003"), result(Verdict.HIT, "0.0004")])[0] == D(
         "0.0004"
     )
+    # 크기 평균도 같다: |0.0001|과 |-0.0004|의 평균 0.00025 → 0.0002(ROUND_HALF_UP이면 0.0003)
+    assert mean_diffs([result(Verdict.HIT, "0.0001"), result(Verdict.MISS, "-0.0004")]) == (
+        D("-0.0002"),
+        D("0.0002"),
+    )
+    # 0.00035 → 0.0004
+    assert mean_diffs([result(Verdict.HIT, "-0.0003"), result(Verdict.MISS, "0.0004")])[1] == D(
+        "0.0004"
+    )
 
 
 # --- 평가 손익과 자산 변화 ----------------------------------------------------------------------

@@ -330,6 +330,7 @@ def test_apply_fill_refuses_wrong_input() -> None:
 def test_buy_after_zero_uses_only_new_buys_even_if_old_sums_were_left() -> None:
     # 보유가 0이 된 뒤의 매수만으로 평균 매수가를 셈한다. 저장된 줄에 옛 합이 남아 있어도 같다.
     stale = make_holding(M, D(0), D(0), D(1100), D(10))
+    assert stale.avg_price is None  # 보유가 0이면 합이 남아 있어도 평균 매수가가 없다(3.7.1)
     account = PaperAccount(krw=D(100_000), locked_krw=D(0), holdings=(stale,))
     account = buy_now(account, "10", "90", 1)
     holding = holding_of(account, M)
