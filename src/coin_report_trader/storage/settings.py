@@ -4,7 +4,8 @@
 `candle_unit`(`CandleUnit`의 값), `candle_count`(`"100"`, `"200"`, `"500"`),
 `first_setup_level`(1단계 보완 전에 마치면 `"1"`, 1단계 보완에서 마치면 `"2"`),
 `fetched_at:{마켓 코드}`(시각 글), `ai_model:{칸}`과 `ai_effort:{칸}`(`AiSlot` 값마다. 모델은
-`CLAUDE_MODELS`의 하나, 노력은 `Effort` 값. M2 명세 3.10).
+`CLAUDE_MODELS`의 하나, 노력은 `Effort` 값. M2 명세 3.10), `autostart`(`"on"`이나 `"off"`.
+없으면 꺼짐. M1 명세 3.16.3).
 """
 
 import json
@@ -33,6 +34,9 @@ KEY_FIRST_SETUP_LEVEL: Final = "first_setup_level"
 KEY_FETCHED_AT_PREFIX: Final = "fetched_at:"
 KEY_AI_MODEL_PREFIX: Final = "ai_model:"
 KEY_AI_EFFORT_PREFIX: Final = "ai_effort:"
+KEY_AUTOSTART: Final = "autostart"
+AUTOSTART_ON: Final = "on"
+AUTOSTART_OFF: Final = "off"
 _AI_KEYS: Final = tuple(
     key
     for slot in AiSlot
@@ -70,6 +74,7 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
         KEY_CANDLE_UNIT,
         KEY_CANDLE_COUNT,
         KEY_FIRST_SETUP_LEVEL,
+        KEY_AUTOSTART,
         *_AI_KEYS,
     )
     with translate_errors("설정 읽기"):
@@ -89,6 +94,7 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
         candle_unit=unit,
         candle_count=count,
         ai_choices=_decode_ai_choices(rows),
+        autostart=_decode_autostart(rows.get(KEY_AUTOSTART)),
     )
 
 
@@ -98,6 +104,7 @@ def write_settings(
     *,
     drop_other_unit_candles: bool = False,
     clear_fetched_at: bool = False,
+    autostart: bool | None = None,
 ) -> None:
     """`SettingsView`의 다섯 값을 한 트랜잭션으로 쓴다.
 
@@ -114,6 +121,9 @@ def write_settings(
     `ai_choices`가 빈 튜플이면 ai 키를 쓰지도 지우지도 않는다(M2 명세 3.10). 네 칸(`AiSlot` 넷이
     하나씩)이 아닌 묶음은 버리고 다른 값만 저장한다(`ValueError`를 내지 않는다). 네 칸이면 여덟
     키를 같은 트랜잭션에서 쓴다.
+
+    `autostart`가 `None`이 아니면 키 `autostart`를 같은 트랜잭션에서 쓴다(`"on"`이나 `"off"`).
+    `None`이면 저장된 값을 그대로 둔다(`settings.autostart`는 쓰지 않는다. M1 명세 3.16.3).
     """
     if settings.retention_days is not None and settings.retention_days not in RETENTION_CHOICES:
         raise ValueError(f"보관 기간은 {RETENTION_CHOICES} 가운데 하나여야 합니다")
@@ -143,6 +153,8 @@ def write_settings(
             conn.execute("DELETE FROM settings WHERE key = ?", (KEY_FIRST_SETUP_LEVEL,))
         for key, value in _encode_ai_choices(settings.ai_choices):
             _put(conn, key, value)
+        if autostart is not None:
+            _put(conn, KEY_AUTOSTART, AUTOSTART_ON if autostart else AUTOSTART_OFF)
         if drop_other_unit_candles and unit is not None:
             conn.execute("DELETE FROM candles WHERE unit <> ?", (unit.value,))
         if clear_fetched_at:
@@ -203,6 +215,11 @@ def _decode_ai_choices(rows: dict[str, str]) -> tuple[AiChoice, ...]:
             continue
         choices.append(AiChoice(slot, model, effort))
     return tuple(choices)
+
+
+def _decode_autostart(text: str | None) -> bool:
+    """`"on"`만 켜짐이다. 없거나 다른 글이면 꺼짐(처음 값)이다."""
+    return text == AUTOSTART_ON
 
 
 def _decode_coins(text: str | None) -> tuple[str, ...]:

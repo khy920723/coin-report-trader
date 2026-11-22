@@ -183,6 +183,8 @@ MARKETS_FAILED: Final = "코인 목록을 받지 못했습니다. 네트워크�
 SETTINGS_UNREADABLE: Final = "설정을 읽지 못했습니다. 60분마다 다시 읽습니다."
 SETTINGS_SAVED: Final = "저장했습니다."
 SETTINGS_SAVE_FAILED: Final = "저장하지 못했습니다."
+AUTOSTART_REGISTER_FAILED: Final = "시작 앱에 등록하지 못했습니다."
+AUTOSTART_REMOVE_FAILED: Final = "시작 앱에서 지우지 못했습니다."
 
 
 def kst_time_text(moment: datetime) -> str:

@@ -176,6 +176,7 @@ def _run_window(
             quote=None if services is None else services.quote,
             sink=bridge.post,
             send=sender,
+            autostart=None if services is None else services.autostart,
         )
         sender.attach(worker)
         actions = AppActions(worker, sender)

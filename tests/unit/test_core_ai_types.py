@@ -185,7 +185,7 @@ def test_the_new_views_have_the_fields_of_the_spec_in_order() -> None:
 
 
 def test_the_old_views_get_their_new_fields_last_with_defaults() -> None:
-    assert [f.name for f in dataclasses.fields(SettingsView)][-3:] == [
+    assert [f.name for f in dataclasses.fields(SettingsView)][-6:-3] == [
         "candle_unit",
         "candle_count",
         "ai_choices",
@@ -296,6 +296,7 @@ def test_the_actions_hand_the_new_calls_to_the_data_thread() -> None:
                 "candle_unit": None,
                 "candle_count": None,
                 "ai_choices": choices,
+                "autostart": None,
             },
         ),
         ("load_reports", ("KRW-AAA",), {}),
@@ -324,7 +325,7 @@ def test_the_data_thread_does_nothing_with_the_new_calls(tmp_path: Path) -> None
 
 def test_the_services_get_ai_last_and_none_by_default() -> None:
     assert [f.name for f in dataclasses.fields(Services)] == [
-        "quote", "webhook", "vault", "clock", "ai",
+        "quote", "webhook", "vault", "clock", "ai", "autostart",
     ]  # fmt: skip
     assert Services().ai is None
 

@@ -137,7 +137,7 @@ def test_the_old_stats_values_are_gone_from_coin_view() -> None:
 
 def test_settings_view_gets_unit_and_count_last_with_none_as_the_default() -> None:
     names = [field.name for field in dataclasses.fields(SettingsView)]
-    assert names[-3:] == ["candle_unit", "candle_count", "ai_choices"]  # 2단계가 맨 뒤에 더했다
+    assert names[-6:-3] == ["candle_unit", "candle_count", "ai_choices"]  # 2단계가 맨 뒤에 더했다
     view = SettingsView(("KRW-AAA",), 30, True)
     assert (view.candle_unit, view.candle_count) == (None, None)
     chosen = SettingsView(
@@ -150,13 +150,14 @@ def test_save_settings_of_the_port_takes_unit_and_count_with_none_as_the_default
     parameters = inspect.signature(UiActions.save_settings).parameters
     assert list(parameters) == [
         "self", "coins", "retention_days", "first_setup", "candle_unit", "candle_count",
-        "ai_choices",
+        "ai_choices", "autostart",
     ]  # fmt: skip
-    for name in ("first_setup", "candle_unit", "candle_count", "ai_choices"):
+    for name in ("first_setup", "candle_unit", "candle_count", "ai_choices", "autostart"):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["candle_unit"].default is None
     assert parameters["candle_count"].default is None
     assert parameters["ai_choices"].default is None
+    assert parameters["autostart"].default is None
     assert parameters["first_setup"].default is inspect.Parameter.empty
 
 
@@ -179,7 +180,13 @@ def test_the_actions_hand_unit_and_count_to_the_data_thread() -> None:
         (
             "save_settings",
             (("KRW-AAA",), 7),
-            {"first_setup": True, "candle_unit": None, "candle_count": None, "ai_choices": None},
+            {
+                "first_setup": True,
+                "candle_unit": None,
+                "candle_count": None,
+                "ai_choices": None,
+                "autostart": None,
+            },
         ),
         (
             "save_settings",
@@ -189,6 +196,7 @@ def test_the_actions_hand_unit_and_count_to_the_data_thread() -> None:
                 "candle_unit": CandleUnit.MINUTE_240,
                 "candle_count": 100,
                 "ai_choices": None,
+                "autostart": None,
             },
         ),
     ]
