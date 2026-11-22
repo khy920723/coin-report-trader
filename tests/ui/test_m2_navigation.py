@@ -9,7 +9,15 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QPushButton, QRadioButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QLabel,
+    QListWidget,
+    QPushButton,
+    QRadioButton,
+    QWidget,
+)
 
 from coin_report_trader.core import (
     AlertCategory,
@@ -17,8 +25,12 @@ from coin_report_trader.core import (
     AlertsView,
     AlertView,
     CandleUnit,
+    Direction,
     LoadState,
     Mode,
+    ReportListView,
+    ReportState,
+    RoundItem,
     ScreenId,
     SettingsView,
     UiContext,
@@ -161,6 +173,14 @@ def test_a_line_without_detail_goes_on_one_click_and_does_not_mark_or_delete(win
     assert "delete_alert" not in actions.calls
 
 
+def _list(market: str, *ids: int) -> ReportListView:
+    items = tuple(
+        RoundItem(report_id, 10 - index, CREATED, ReportState.OK, Direction.UP, None)
+        for index, report_id in enumerate(ids)
+    )
+    return ReportListView(market, items, LoadState.READY)
+
+
 def test_a_report_alert_with_a_coin_opens_that_coin_and_the_named_report(window, actions):
     alert = _alert(1, AlertCategory.REPORT, "A-26", "KRW-BBB", report_id=42)
     status = _show(window, alert, category=AlertCategory.REPORT)
@@ -168,6 +188,20 @@ def test_a_report_alert_with_a_coin_opens_that_coin_and_the_named_report(window,
     assert current_screen(window) is ScreenId.REPORTS
     assert _chosen_coin(window) == "KRW-BBB"
     assert actions.reports[-1] == "KRW-BBB"
+    window.apply(_list("KRW-BBB", 90, 42, 7))  # 42는 맨 위가 아니다
+    rounds = screen_widget(window, ScreenId.REPORTS).findChild(QListWidget, "reportRounds")
+    assert rounds.currentRow() == 1
+    assert actions.report[-1] == 42
+
+
+def test_a_report_alert_whose_report_is_not_in_the_list_opens_the_top_round(window, actions):
+    alert = _alert(1, AlertCategory.REPORT, "A-26", "KRW-BBB", report_id=42)
+    status = _show(window, alert, category=AlertCategory.REPORT)
+    _click_line(status, 1)
+    window.apply(_list("KRW-BBB", 90, 7))  # 42가 없다
+    rounds = screen_widget(window, ScreenId.REPORTS).findChild(QListWidget, "reportRounds")
+    assert rounds.currentRow() == 0
+    assert actions.report[-1] == 90
 
 
 def test_a_report_alert_without_a_coin_just_opens_the_reports_screen(window):
@@ -300,3 +334,51 @@ def test_the_count_radios_carry_the_tooltip_as_their_accessible_description(wind
     for radio in radios:
         assert radio.toolTip()
         assert radio.accessibleDescription() == radio.toolTip()
+
+
+# --- A-31, 현황 코인 칸의 키보드 ---
+
+
+def _a31(window) -> QWidget:
+    alert = _alert(1, AlertCategory.ERROR, "A-31", None, detail=_stage("켜기"))
+    window.apply(AlertsView((alert,), {}, LoadState.READY))
+    status = screen_widget(window, ScreenId.STATUS)
+    select_screen(window, ScreenId.STATUS)
+    status.findChild(QPushButton, "alertTab_error").click()
+    _click_line(status, 1)
+    return status
+
+
+def test_a31_goes_to_the_settings_screen_after_the_first_setup(window):
+    status = _a31(window)
+    select_screen(window, ScreenId.REPORTS)
+    status.findChild(QPushButton, "alertGo_1").click()
+    assert current_screen(window) is ScreenId.SETTINGS
+
+
+def test_a31_goes_to_the_first_setup_screen_before_the_first_setup(qapp):
+    made = create_main_window(UiContext("0.0.1", "X", Actions()))
+    made.show()
+    made.apply(SettingsView())
+    status = _a31(made)
+    select_screen(made, ScreenId.REPORTS)
+    status.findChild(QPushButton, "alertGo_1").click()
+    assert current_screen(made) is ScreenId.FIRST_SETUP
+    made.close()
+    made.deleteLater()
+
+
+def test_enter_and_space_on_a_status_coin_card_choose_that_coin_for_the_stats(window):
+    select_screen(window, ScreenId.STATUS)
+    status = screen_widget(window, ScreenId.STATUS)
+    card = status.findChild(QWidget, "statusCoin_KRW-BBB")
+    chooser = status.findChild(QComboBox, "statusStatsCoin")
+    assert card.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    assert chooser.currentIndex() == 0
+    for key in (Qt.Key.Key_Return, Qt.Key.Key_Space, Qt.Key.Key_Enter):
+        chooser.setCurrentIndex(0)
+        QTest.keyClick(card, key)
+        assert chooser.currentIndex() == 1, key
+    chooser.setCurrentIndex(0)
+    QTest.keyClick(card, Qt.Key.Key_A)  # 다른 키는 아무것도 하지 않는다
+    assert chooser.currentIndex() == 0
