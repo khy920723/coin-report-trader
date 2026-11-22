@@ -14,13 +14,15 @@
 - 주문의 종류: 판단의 주문은 지정가(`limit`, 가격과 수량), 손절과 긴급 매도는 시장가 매도(`market`,
   수량)다. 시장가 매수(`price`)와 최유리(`best`)는 받지 않는다. `smp_type`은 늘 `cancel_maker`다
   (제품 규칙 5.7절). 숫자는 `Decimal`을 지수 없이 쓴 글이다.
-- 응답은 필드 이름으로 읽는다. 없거나 꼴이 다른 필드는 "응답 형식 오류"다.
+- 응답은 필드 이름으로 읽는다. 없거나 꼴이 다른 필드는 "응답 형식 오류"다. 주문(`create_order`)의
+  2xx를 읽지 못하면 거래소가 주문을 받았을 수 있으므로 `unknown`이 참이다(지휘의 결정).
 - 한도와 다시 보내기(3.5.3):
   - 요청마다 `UpbitLimiter.acquire`를 거친다. 응답마다 `Remaining-Req`를 반영한다.
   - 429이면 그 그룹을 다음 초까지 멈춘 뒤 한 번 다시 보낸다(새 토큰). 두 번째도 429이면
     "요청 한도 초과"다. 주문(`create_order`)은 다시 보내지 않는다. 보냈는지 모르므로
     `unknown`이 참인 "요청 한도 초과"를 낸다(3.6.3의 조회로 간다).
   - 시간 초과와 연결 실패는 다시 보내지 않는다. 요청이 닿았을 수 있으면 `unknown`이 참이다.
+  - 주문의 5xx도 주문이 저장된 뒤에 올 수 있으므로 `unknown`이 참인 "서버 오류"다(지휘의 결정).
 - 실패는 모두 `UpbitError`다(`errors.py`의 표).
 """
 
@@ -47,7 +49,11 @@ from coin_report_trader.trading.upbit.errors import (
     error_for_response,
 )
 from coin_report_trader.trading.upbit.limits import GROUP_DEFAULT, GROUP_ORDER, UpbitLimiter
-from coin_report_trader.trading.upbit.transport import TransportError, UpbitTransport
+from coin_report_trader.trading.upbit.transport import (
+    TransportError,
+    TransportResponse,
+    UpbitTransport,
+)
 
 USER_AGENT: Final = f"coin-report-trader/{__version__}"
 SMP_TYPE: Final = "cancel_maker"
@@ -162,13 +168,13 @@ class UpbitClient:
     # --- 여섯 요청 -------------------------------------------------------------------------
 
     def accounts(self) -> tuple[UpbitBalance, ...]:
-        data = self._send("GET", ACCOUNTS_PATH, (), GROUP_DEFAULT)
-        return _parse(lambda d: tuple(_balance(item) for item in convert.items(d)), data)
+        response = self._send("GET", ACCOUNTS_PATH, (), GROUP_DEFAULT)
+        return _read(lambda d: tuple(_balance(item) for item in convert.items(d)), response)
 
     def order_chance(self, market: str) -> UpbitChance:
         market = _check_market(market)
-        data = self._send("GET", CHANCE_PATH, (("market", market),), GROUP_DEFAULT)
-        return _parse(lambda d: _chance(d, market), data)
+        response = self._send("GET", CHANCE_PATH, (("market", market),), GROUP_DEFAULT)
+        return _read(lambda d: _chance(d, market), response)
 
     def create_order(
         self,
@@ -202,23 +208,24 @@ class UpbitClient:
         else:
             raise ValueError(f"주문 종류는 limit이나 market이다: {ord_type!r}")
         fields += [("ord_type", ord_type), ("identifier", identifier), ("smp_type", SMP_TYPE)]
-        data = self._send("POST", ORDERS_PATH, tuple(fields), GROUP_ORDER, is_order=True)
-        return _parse(_order, data)
+        response = self._send("POST", ORDERS_PATH, tuple(fields), GROUP_ORDER, is_order=True)
+        # 2xx는 거래소가 주문을 받았다는 뜻이다. 읽지 못하면 결과를 모르는 것으로 낸다(지휘의 결정).
+        return _read(_order, response, unknown=True)
 
     def get_order(self, identifier: str) -> UpbitOrder:
         identifier = _check_identifier(identifier)
-        data = self._send("GET", ORDER_PATH, (("identifier", identifier),), GROUP_DEFAULT)
-        return _parse(_order, data)
+        response = self._send("GET", ORDER_PATH, (("identifier", identifier),), GROUP_DEFAULT)
+        return _read(_order, response)
 
     def open_orders(self, market: str) -> tuple[UpbitOrder, ...]:
         market = _check_market(market)
-        data = self._send("GET", OPEN_ORDERS_PATH, (("market", market),), GROUP_DEFAULT)
-        return _parse(lambda d: tuple(_order(item) for item in convert.items(d)), data)
+        response = self._send("GET", OPEN_ORDERS_PATH, (("market", market),), GROUP_DEFAULT)
+        return _read(lambda d: tuple(_order(item) for item in convert.items(d)), response)
 
     def cancel_order(self, identifier: str) -> UpbitOrder:
         identifier = _check_identifier(identifier)
-        data = self._send("DELETE", ORDER_PATH, (("identifier", identifier),), GROUP_DEFAULT)
-        return _parse(_order, data)
+        response = self._send("DELETE", ORDER_PATH, (("identifier", identifier),), GROUP_DEFAULT)
+        return _read(_order, response)
 
     # --- 보내기 ----------------------------------------------------------------------------
 
@@ -230,7 +237,8 @@ class UpbitClient:
         group: str,
         *,
         is_order: bool = False,
-    ) -> Any:
+    ) -> TransportResponse:
+        """요청을 보내 2xx 응답을 돌려준다. 그 밖은 `UpbitError`다(모듈 설명)."""
         text = query_text(fields)
         if method == "POST":
             query = ""
@@ -241,19 +249,10 @@ class UpbitClient:
         attempts = 1 if is_order else 2
         for attempt in range(attempts):
             self._limiter.acquire(group)
-            headers = self._headers(text, body is not None)
-            try:
-                response = self._transport.request(
-                    method, path, query=query, body=body, headers=headers
-                )
-            except TransportError as exc:
-                name = ERROR_TIMEOUT if exc.timeout else ERROR_NETWORK
-                raise UpbitError(name, unknown=exc.sent) from None
-            finally:
-                del headers  # 토큰이 든 머리글을 남기지 않는다
+            response = self._request(method, path, text, query, body)
             self._limiter.observe(group, response.header("Remaining-Req"))
             if 200 <= response.status < 300:
-                return _parse(convert.parse_json, response.text.encode("utf-8"))
+                return response
             if response.status == STATUS_RATE_LIMIT:
                 self._limiter.pause_until_next_second(group)
                 if is_order:
@@ -266,8 +265,35 @@ class UpbitClient:
                 response.header("Retry-After"),
                 now=self._clock.now(),
                 secrets=(self._keys.access, self._keys.secret),
+                # 주문의 5xx는 주문이 저장된 뒤에도 올 수 있다(지휘의 결정).
+                unknown=is_order and response.status >= 500,
             )
         raise AssertionError("닿지 않는 곳")  # pragma: no cover
+
+    def _request(
+        self, method: str, path: str, hashed: str, query: str, body: str | None
+    ) -> TransportResponse:
+        """운반에 요청 하나를 넘긴다. 응답이 없으면 except 밖에서 `UpbitError`를 낸다.
+
+        운반의 예외(와 그것이 잇는 예외의 요청 머리글, 곧 토큰)를 오류에 이어 남기지 않으려는
+        것이다(`__context__`가 비어 있다).
+        """
+        failure: tuple[bool, bool] | None = None
+        response: TransportResponse | None = None
+        try:
+            response = self._transport.request(
+                method,
+                path,
+                query=query,
+                body=body,
+                headers=self._headers(hashed, body is not None),
+            )
+        except TransportError as exc:
+            failure = (exc.timeout, exc.sent)
+        if failure is not None or response is None:
+            timeout, sent = failure if failure is not None else (False, True)
+            raise UpbitError(ERROR_TIMEOUT if timeout else ERROR_NETWORK, unknown=sent)
+        return response
 
     def _headers(self, hashed: str, has_body: bool) -> dict[str, str]:
         headers = {
@@ -285,16 +311,20 @@ class UpbitClient:
 _SHAPE_ERRORS = (convert.ShapeError, KeyError, TypeError, ValueError, ArithmeticError)
 
 
-def _parse[T](parse: Callable[[Any], T], data: Any) -> T:
-    """`parse(data)`. 꼴이 다르면 "응답 형식 오류"다. 응답 값이 든 예외를 잇지 않는다."""
+def _read[T](parse: Callable[[Any], T], response: TransportResponse, *, unknown: bool = False) -> T:
+    """2xx 응답의 본문을 JSON으로 읽어 `parse`한다.
+
+    꼴이 다르면 "응답 형식 오류"이고, 그 응답의 상태와 `unknown`을 담는다. 응답 값이 든 예외를
+    잇지 않는다(except 밖에서 낸다).
+    """
     failed = False
     result: Any = None
     try:
-        result = parse(data)
+        result = parse(convert.parse_json(response.text.encode("utf-8")))
     except _SHAPE_ERRORS:
         failed = True
     if failed:
-        raise UpbitError(ERROR_BAD_RESPONSE)
+        raise UpbitError(ERROR_BAD_RESPONSE, status=response.status, unknown=unknown)
     return result
 
 
@@ -323,12 +353,14 @@ def _time(value: Any) -> datetime | None:
 
 def _balance(value: Any) -> UpbitBalance:
     item = _mapping(value)
-    avg = convert.decimal_value(item["avg_buy_price"])
+    # 평균 매수가가 없거나(`null`, 키 없음) 0 이하면 `None`이다(3.5.4). 통화 하나 때문에 계정
+    # 전체를 읽지 못하게 하지 않는다.
+    avg = _optional_decimal(item.get("avg_buy_price"))
     return UpbitBalance(
         currency=_text(item["currency"]),
         balance=convert.decimal_value(item["balance"]),
         locked=convert.decimal_value(item["locked"]),
-        avg_buy_price=avg if avg > 0 else None,
+        avg_buy_price=avg if avg is not None and avg > 0 else None,
     )
 
 

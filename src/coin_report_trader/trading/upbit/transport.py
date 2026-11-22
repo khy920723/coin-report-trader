@@ -120,6 +120,10 @@ class HttpxUpbitTransport:
         headers: Mapping[str, str],
     ) -> TransportResponse:
         url = f"{self._base_url}{path}?{query}" if query else f"{self._base_url}{path}"
+        # 실패의 종류만 담고 except 밖에서 낸다. httpx의 예외는 요청(머리글의 토큰 포함)을 들고
+        # 있으므로 `TransportError`에 잇지 않는다(`__context__`가 비어 있다).
+        failure: tuple[bool, bool] | None = None
+        response: httpx.Response | None = None
         try:
             response = self._client.request(
                 method,
@@ -128,13 +132,16 @@ class HttpxUpbitTransport:
                 headers=dict(headers),
             )
         except (httpx.ConnectTimeout, httpx.PoolTimeout):
-            raise TransportError(timeout=True, sent=False) from None
+            failure = (True, False)
         except httpx.TimeoutException:
-            raise TransportError(timeout=True, sent=True) from None
+            failure = (True, True)
         except httpx.ConnectError:
-            raise TransportError(timeout=False, sent=False) from None
+            failure = (False, False)
         except httpx.RequestError:
-            raise TransportError(timeout=False, sent=True) from None
+            failure = (False, True)
+        if failure is not None or response is None:
+            timeout, sent = failure if failure is not None else (False, True)
+            raise TransportError(timeout=timeout, sent=sent)
         return TransportResponse(
             status=response.status_code,
             headers=dict(response.headers.items()),

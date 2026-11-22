@@ -8,8 +8,12 @@
   - 몸통의 `access_key`가 이 가짜의 Access Key이고, `nonce`가 앞에서 쓰지 않은 값이어야 한다.
   - 쿼리나 몸통이 있으면 `query_hash`가 보낸 글(GET·DELETE는 쿼리 글, POST는 JSON 몸통의 필드를
     받은 차례대로 `key=value&…`로 이은 글)의 SHA512이고 `query_hash_alg`가 "SHA512"여야 한다.
-  - 어기면 401과 오류 코드(`jwt_verification`, `invalid_access_key`, `nonce_used`,
-    `invalid_query_payload`)로 답한다. 검사한 뒤 토큰은 버린다.
+  - 어기면 401과 공식 문서의 오류 코드(`jwt_verification`, `nonce_used`, `invalid_query_payload`,
+    `no_authorization_token`)로 답한다. 다른 Access Key도 `jwt_verification`이다. 검사한 뒤 토큰은
+    버린다.
+  - 인증 검사는 정해 둔 결과(`script`)보다 먼저 한다. 서명이 틀린 요청은 정해 둔 응답을 받지 못한다.
+  - `Origin` 머리글이 있으면 400(만든 코드 `origin_not_allowed`)으로 거절한다(3.5.1). 모르는 경로는
+    404다.
 - 기록(`requests`): `FakeUpbitRequest(method, path, query, header_names, query_hash, body, auth)`.
   `header_names`는 받은 머리글 이름(소문자)이고, `auth`는 인증 검사의 결과(통과면 `None`, 아니면
   오류 코드)다. 토큰은 남기지 않는다.
@@ -24,18 +28,18 @@
   - `fill(identifier, volume, *, price=None)`: 시험이 체결을 만든다(부분 체결이면 여러 번 부른다).
     다 차면 `done`이다.
   - `add_direct_order(market, side, price, volume)`: 사용자가 직접 건 주문(식별값 없음)을 걸어 둔다.
-  - 취소하면 `cancel`이 되고 묶인 것이 풀린다. 이미 끝난 주문을 취소하면 400 `order_not_found`,
-    없는 식별값을 조회하거나 취소하면 404 `order_not_found`다.
+  - 취소하면 `cancel`이 되고 묶인 것이 풀린다. 이미 끝난 주문을 취소하거나, 없는 식별값을 조회하거나
+    취소하면 404 `order_not_found`다(공식 문서의 취소는 이 코드를 404로만 적는다).
 - 정하는 실패(`script`): 경로·메서드마다 줄을 세운다. 결과는 아래 넷 가운데 하나이고, 맞는 줄이
   없으면 정상으로 답한다.
-  - `Reply(status, code=None, headers=…)`: 그 상태와 오류 코드의 응답(예: 429, 418과
-    `Retry-After`, 키 오류 넷).
+  - `Reply(status, code=None, headers=…, message=…)`: 그 상태, 오류 코드, 오류 글의 응답(예: 429,
+    418과 `Retry-After`, 키 오류 넷).
   - `NoResponse(sent=…)`: 응답이 없다. `sent`가 참이면 요청을 처리한(주문이면 만든) 뒤 응답만
     잃고, 거짓이면 처리하지 않는다. 둘 다 `TransportError`를 낸다.
-  - `CANCEL_FAILS`: 취소를 400 `order_not_found`로 거절한다(주문은 그대로 걸려 있다).
+  - `CANCEL_FAILS`: 취소를 404 `order_not_found`로 거절한다(주문은 그대로 걸려 있다).
   - `OK`: 정상으로 답한다.
-- `Remaining-Req`: 응답마다 `group={그룹}; min=1800; sec={값}`을 붙인다. `set_remaining(group, sec)`
-  로 `sec`를 정한다(기본 29).
+- `Remaining-Req`: 응답마다 `group={그룹}; min=600; sec={값}`을 붙인다(만든 값).
+  `set_remaining(group, sec)`로 `sec`를 정한다(기본 13).
 - 여러 스레드가 함께 써도 된다(잠금 하나).
 """
 
@@ -65,6 +69,8 @@ DEFAULT_MIN_TOTAL: Final = Decimal(5000)
 FAKE_TIME: Final = datetime(2026, 1, 5, 3, 0, tzinfo=UTC)
 
 ORDER_GROUP_PATHS: Final = {("POST", "/v1/orders")}
+DEFAULT_SEC: Final = 13
+"""`Remaining-Req`의 `sec` 기본값(만든 값)."""
 
 
 @dataclass(frozen=True)
@@ -72,6 +78,8 @@ class Reply:
     status: int
     code: str | None = None
     headers: Mapping[str, str] = field(default_factory=dict)
+    message: str = "만든 오류 글"
+    """응답 본문의 오류 글(`error.message`)."""
 
 
 @dataclass(frozen=True)
@@ -156,7 +164,7 @@ class FakeUpbitTransport:
         self._clock = clock
         self._nonces: set[str] = set()
         self._scripts: list[_Script] = []
-        self._remaining = {"order": 29, "default": 29}
+        self._remaining = {"order": DEFAULT_SEC, "default": DEFAULT_SEC}
         self._krw = Decimal(0)
         self._krw_locked = Decimal(0)
         self._coins: dict[str, list[Decimal]] = {}  # 통화 → [수량, 묶인 수량, 평균 매수가]
@@ -283,17 +291,21 @@ class FakeUpbitTransport:
                 )
             )
             group = "order" if (method, path) in ORDER_GROUP_PATHS else "default"
+            if any(name.lower() == "origin" for name in headers):
+                return self._reply(400, "origin_not_allowed", group)
+            if auth is not None:
+                return self._reply(401, auth, group)
             outcome = self._next_outcome(method, path)
             if isinstance(outcome, NoResponse):
-                if outcome.sent and auth is None:
+                if outcome.sent:
                     self._handle(method, path, fields)
                 raise TransportError(timeout=True, sent=outcome.sent)
             if isinstance(outcome, Reply):
-                return self._reply(outcome.status, outcome.code, group, outcome.headers)
-            if auth is not None:
-                return self._reply(401, auth, group)
+                return self._reply(
+                    outcome.status, outcome.code, group, outcome.headers, outcome.message
+                )
             if outcome is CANCEL_FAILS:
-                return self._reply(400, "order_not_found", group)
+                return self._reply(404, "order_not_found", group)
             status, data = self._handle(method, path, fields)
             if status != 200:
                 return self._reply(status, str(data), group)
@@ -341,7 +353,7 @@ class FakeUpbitTransport:
         if not hmac.compare_digest(expected, signature):
             return "jwt_verification", claimed
         if payload.get("access_key") != self._access:
-            return "invalid_access_key", claimed
+            return "jwt_verification", claimed
         nonce = payload.get("nonce")
         if not isinstance(nonce, str) or not nonce or nonce in self._nonces:
             return "nonce_used", claimed
@@ -370,19 +382,18 @@ class FakeUpbitTransport:
         code: str | None,
         group: str,
         headers: Mapping[str, str] | None = None,
+        message: str = "만든 오류 글",
     ) -> TransportResponse:
         all_headers = {"Remaining-Req": self._remaining_header(group), **(headers or {})}
         text = (
             ""
             if code is None
-            else json.dumps(
-                {"error": {"name": code, "message": "만든 오류 글"}}, ensure_ascii=False
-            )
+            else json.dumps({"error": {"name": code, "message": message}}, ensure_ascii=False)
         )
         return TransportResponse(status=status, headers=all_headers, text=text)
 
     def _remaining_header(self, group: str) -> str:
-        return f"group={group}; min=1800; sec={self._remaining.get(group, 29)}"
+        return f"group={group}; min=600; sec={self._remaining.get(group, DEFAULT_SEC)}"
 
     def _new_uuid(self) -> str:
         return f"fake-order-{next(self._uuid_counter):04d}"
@@ -497,7 +508,7 @@ class FakeUpbitTransport:
         if order is None:
             return 404, "order_not_found"
         if order.state != "wait":
-            return 400, "order_not_found"
+            return 404, "order_not_found"
         order.state = "cancel"
         self._release(order)
         return 200, self._order_json(order, with_trades=False)

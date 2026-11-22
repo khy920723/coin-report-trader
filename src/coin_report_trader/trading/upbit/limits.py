@@ -7,8 +7,10 @@
   `sec`가 0이면 그 그룹은 다음 초가 시작될 때까지 내지 않는다(지휘가 정한 것). 머리글의 그룹이
   위 둘이 아니면 그 요청의 그룹으로 본다.
 - 429를 받은 그룹도 다음 초가 시작될 때까지 내지 않는다(다시 보내는지는 `UpbitClient`가 정한다).
-- "다음 초"는 벽시계(`clock.now()`)의 다음 정수 초다. 거래소는 초마다 센다. 기다림은
-  `clock.monotonic()`과 `clock.sleep()`만으로 한다(시험이 가짜 시계로 돈다).
+- "다음 초"는 PC 시계를 믿지 않고(`CLAUDE.md`, 공개 시세의 장치와 같다) 단조 시각으로 잰다: 멈춘
+  때부터 1초에 `MARGIN`을 더한 뒤다. PC 시계가 거래소와 1초 안에서 어긋나도 거래소의 같은 초에
+  다시 내지 않는다. 기다림은 `clock.monotonic()`과 `clock.sleep()`만으로 한다(시험이 가짜 시계로
+  돈다).
 """
 
 import math
@@ -79,12 +81,10 @@ class UpbitLimiter:
         self.pause_until_next_second(header_group if header_group in GROUPS else group)
 
     def pause_until_next_second(self, group: str) -> None:
-        """그 그룹을 벽시계의 다음 정수 초까지 멈춘다(429, `sec` 0)."""
+        """그 그룹을 다음 초까지(단조 시각으로 1초 + `MARGIN` 뒤까지) 멈춘다(429, `sec` 0)."""
         bucket = self._bucket(group)
         with self._lock:
-            wall = self._clock.now().timestamp()
-            wait = math.floor(wall) + 1 - wall
-            resume = self._clock.monotonic() + wait
+            resume = self._clock.monotonic() + WINDOW + MARGIN
             bucket.paused_until = max(bucket.paused_until, resume)
 
     def paused_until(self, group: str) -> float:

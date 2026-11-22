@@ -24,6 +24,7 @@ from coin_report_trader.trading.upbit import (
     UpbitError,
     UpbitKeys,
     UpbitTransport,
+    make_token,
 )
 
 KEYS = UpbitKeys(TEST_ACCESS_KEY, TEST_SECRET_KEY)
@@ -37,6 +38,11 @@ def setup(krw: Decimal = Decimal(100_000)) -> tuple[UpbitClient, FakeUpbitTransp
     fake.set_chance(M, bid_fee=Decimal("0.001"), ask_fee=Decimal("0.001"))
     fake.set_market_price(M, Decimal(1000))
     return UpbitClient(KEYS, fake, clock), fake
+
+
+def signed(hashed: str) -> dict[str, str]:
+    """서명이 맞는 머리글(가짜를 바로 부르는 시험이 쓴다)."""
+    return {"Authorization": "Bearer " + make_token(KEYS, hashed)}
 
 
 def test_is_an_upbit_transport() -> None:
@@ -104,7 +110,7 @@ def test_cancel_of_a_finished_or_unknown_order_is_refused() -> None:
     client.create_order(M, "ask", "market", Decimal(5), None, "uid-6")
     with pytest.raises(UpbitError) as finished:
         client.cancel_order("uid-6")
-    assert finished.value.status == 400
+    assert (finished.value.status, finished.value.code) == (404, "order_not_found")
     with pytest.raises(UpbitError) as unknown:
         client.cancel_order("uid-none")
     assert unknown.value.status == 404
@@ -144,7 +150,7 @@ def test_no_response_raises_a_transport_error_at_the_transport() -> None:
     fake = FakeUpbitTransport()
     fake.script(NoResponse(sent=False))
     with pytest.raises(TransportError) as caught:
-        fake.request("GET", "/v1/accounts", query="", body=None, headers={})
+        fake.request("GET", "/v1/accounts", query="", body=None, headers=signed(""))
     assert caught.value.sent is False
 
 
@@ -173,8 +179,8 @@ def test_remaining_req_header_carries_the_set_sec() -> None:
     client = UpbitClient(KEYS, fake, FakeClock())
     fake.set_account(krw=Decimal(1))
     client.accounts()
-    response = fake.request("GET", "/v1/accounts", query="", body=None, headers={})
-    assert response.header("Remaining-Req") == "group=default; min=1800; sec=7"
+    response = fake.request("GET", "/v1/accounts", query="", body=None, headers=signed(""))
+    assert response.header("Remaining-Req") == "group=default; min=600; sec=7"
 
 
 def test_requests_keep_no_token() -> None:
@@ -202,3 +208,36 @@ def test_open_orders_are_only_waiting_orders_of_that_market() -> None:
     client.create_order(M, "ask", "market", Decimal(5), None, "uid-12")  # 바로 끝난다
     fake.add_direct_order("KRW-BBB", "bid", Decimal(100), Decimal(100))
     assert [o.identifier for o in client.open_orders(M)] == ["uid-11"]
+
+
+def test_signature_is_checked_before_a_scripted_reply() -> None:
+    fake = FakeUpbitTransport()
+    fake.script(Reply(429))
+    bad = {"Authorization": "Bearer " + make_token(UpbitKeys(TEST_ACCESS_KEY, "WRONG"), "")}
+    response = fake.request("GET", "/v1/accounts", query="", body=None, headers=bad)
+    assert (response.status, fake.requests[0].auth) == (401, "jwt_verification")
+    # 정해 둔 429는 쓰이지 않고 남아, 서명이 맞는 다음 요청이 받는다.
+    response = fake.request("GET", "/v1/accounts", query="", body=None, headers=signed(""))
+    assert response.status == 429
+
+
+def test_origin_header_is_refused() -> None:
+    fake = FakeUpbitTransport()
+    headers = {**signed(""), "Origin": "https://somewhere.test"}
+    response = fake.request("GET", "/v1/accounts", query="", body=None, headers=headers)
+    assert response.status == 400
+    assert "origin_not_allowed" in response.text
+
+
+def test_unknown_path_with_a_good_signature_is_refused() -> None:
+    fake = FakeUpbitTransport()
+    response = fake.request("GET", "/v1/unknown", query="", body=None, headers=signed(""))
+    assert response.status == 404
+    assert fake.requests[0].auth is None
+
+
+def test_reply_carries_the_message() -> None:
+    fake = FakeUpbitTransport()
+    fake.script(Reply(400, "made_up", message="글 하나"))
+    response = fake.request("GET", "/v1/accounts", query="", body=None, headers=signed(""))
+    assert "글 하나" in response.text

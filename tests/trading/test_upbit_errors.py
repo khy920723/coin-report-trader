@@ -49,13 +49,15 @@ def body(code: str | None, message: str = "만든 글") -> str:
         (401, "expired_access_key", ERROR_KEY_EXPIRED, ErrorBranch.BLOCKING),
         (401, "out_of_scope", ERROR_KEY_SCOPE, ErrorBranch.BLOCKING),
         (401, "jwt_verification", ERROR_KEY_INVALID, ErrorBranch.BLOCKING),
-        (401, "invalid_access_key", ERROR_KEY_INVALID, ErrorBranch.BLOCKING),
         (401, "invalid_query_payload", ERROR_KEY_INVALID, ErrorBranch.BLOCKING),
         (401, "no_authorization_token", ERROR_KEY_INVALID, ErrorBranch.BLOCKING),
         (418, None, ERROR_BLOCKED, ErrorBranch.BLOCKING),
         (418, "insufficient_funds_bid", ERROR_BLOCKED, ErrorBranch.BLOCKING),  # 상태가 먼저
         (429, None, ERROR_RATE_LIMIT, ErrorBranch.TRANSIENT),
-        (503, None, ERROR_MAINTENANCE, ErrorBranch.TRANSIENT),
+        (503, None, ERROR_SERVER, ErrorBranch.TRANSIENT),  # 503은 문서에 없다
+        (403, "market_offline", ERROR_MAINTENANCE, ErrorBranch.TRANSIENT),
+        (400, "over_krw_funds_bid", ERROR_ORDER_REJECTED, ErrorBranch.TRANSIENT),
+        (500, "market_offline", ERROR_SERVER, ErrorBranch.TRANSIENT),  # 상태가 먼저
         (500, None, ERROR_SERVER, ErrorBranch.TRANSIENT),
         (502, "insufficient_funds_bid", ERROR_SERVER, ErrorBranch.TRANSIENT),  # 상태가 먼저
         (400, "insufficient_funds_bid", ERROR_INSUFFICIENT_FUNDS, ErrorBranch.TRANSIENT),
@@ -131,14 +133,21 @@ def test_response_text_is_never_the_error_name_and_detail_is_redacted() -> None:
 def test_four_key_errors_through_the_client_are_blocking(code: str) -> None:
     clock = FakeClock(NOW)
     fake = FakeUpbitTransport(clock=clock)
-    fake.script(Reply(401, code))
+    message = f"access {TEST_ACCESS_KEY} secret {TEST_SECRET_KEY} refused"
+    fake.script(Reply(401, code, message=message))
     client = UpbitClient(KEYS, fake, clock)
     with pytest.raises(UpbitError) as caught:
         client.accounts()
-    assert caught.value.branch is ErrorBranch.BLOCKING
-    assert caught.value.code == code
+    error = caught.value
+    assert error.branch is ErrorBranch.BLOCKING
+    assert error.code == code
     assert len(fake.requests) == 1
-    assert TEST_SECRET_KEY not in (caught.value.detail or "")
+    # 클라이언트가 두 키를 가린다(가리지 않으면 응답의 글에 든 키가 그대로 남는다).
+    for text in (error.detail or "", str(error), repr(error), repr(error.args)):
+        assert TEST_ACCESS_KEY not in text
+        assert TEST_SECRET_KEY not in text
+    assert (error.detail or "").count("가려서 보임") == 2
+    assert "refused" in (error.detail or "")
 
 
 def test_order_rejections_through_the_client() -> None:

@@ -336,6 +336,60 @@ def test_order_without_optional_fields_is_read() -> None:
     assert order.created_at == datetime(2026, 1, 5, 3, 0, tzinfo=UTC)
 
 
+def test_avg_buy_price_null_or_missing_is_none_and_others_are_kept() -> None:
+    client, _ = canned(
+        '[{"currency": "KRW", "balance": "10", "locked": "0", "avg_buy_price": "0"},'
+        ' {"currency": "AAA", "balance": "1", "locked": "0", "avg_buy_price": null},'
+        ' {"currency": "BBB", "balance": "2", "locked": "1"},'
+        ' {"currency": "CCC", "balance": "3", "locked": "0", "avg_buy_price": "990"}]'
+    )
+    balances = client.accounts()
+    assert [(b.currency, b.avg_buy_price) for b in balances] == [
+        ("KRW", None),
+        ("AAA", None),
+        ("BBB", None),
+        ("CCC", Decimal(990)),
+    ]
+
+
+@pytest.mark.parametrize("text", ["not json", '{"uuid": "u"}'])
+def test_unreadable_2xx_of_an_order_is_unknown(text: str) -> None:
+    # 주문의 2xx는 거래소가 주문을 받았다는 뜻이다. 읽지 못하면 결과를 모르는 것으로 낸다.
+    client, transport = canned(text, status=201)
+    with pytest.raises(UpbitError) as caught:
+        client.create_order(M, "bid", "limit", Decimal(10), Decimal(1000), "uid-201")
+    assert caught.value.error_name == ERROR_BAD_RESPONSE
+    assert (caught.value.status, caught.value.unknown) == (201, True)
+    assert len(transport.calls) == 1
+
+
+def test_unreadable_2xx_of_a_lookup_is_not_unknown() -> None:
+    client, _ = canned('{"uuid": "u"}', status=200)
+    with pytest.raises(UpbitError) as caught:
+        client.get_order("uid")
+    assert (caught.value.status, caught.value.unknown) == (200, False)
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_5xx_of_an_order_is_unknown_and_not_sent_again(status: int) -> None:
+    client, fake, _ = setup()
+    fake.script(Reply(status), path="/v1/orders")
+    with pytest.raises(UpbitError) as caught:
+        client.create_order(M, "bid", "limit", Decimal(10), Decimal(1000), "uid-5xx")
+    assert caught.value.error_name == "서버 오류"
+    assert caught.value.unknown is True
+    assert len(fake.requests) == 1
+
+
+def test_5xx_of_a_lookup_is_not_unknown() -> None:
+    client, fake, _ = setup()
+    fake.script(Reply(502), path="/v1/accounts", method="GET")
+    fake.script(Reply(502), path="/v1/accounts", method="GET")
+    with pytest.raises(UpbitError) as caught:
+        client.accounts()
+    assert caught.value.unknown is False
+
+
 # --- 응답이 없을 때 -------------------------------------------------------------------------
 
 
@@ -382,6 +436,9 @@ def test_transport_errors_become_names(error: TransportError, name: str, unknown
         client.accounts()
     assert (caught.value.error_name, caught.value.unknown) == (name, unknown)
     assert transport.calls == 1
+    # 운반의 예외를 잇지도 남기지도 않는다(그 뒤에 토큰이 든 요청이 있을 수 있다).
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
 
 
 def test_scripted_error_reply_reaches_the_client() -> None:
@@ -401,7 +458,7 @@ def test_httpx_transport_sends_the_query_as_given() -> None:
     def respond(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(
-            200, text="[]", headers={"Remaining-Req": "group=default; min=1800; sec=29"}
+            200, text="[]", headers={"Remaining-Req": "group=default; min=600; sec=13"}
         )
 
     transport = HttpxUpbitTransport(
@@ -415,7 +472,7 @@ def test_httpx_transport_sends_the_query_as_given() -> None:
         headers={"Authorization": "Bearer t"},
     )
     assert response.status == 200
-    assert response.header("remaining-req") == "group=default; min=1800; sec=29"
+    assert response.header("remaining-req") == "group=default; min=600; sec=13"
     request = seen[0]
     assert request.url.raw_path == b"/v1/orders/open?market=KRW-AAA&states[]=wait"
     assert "origin" not in request.headers
@@ -459,11 +516,46 @@ def test_httpx_exceptions_become_transport_errors(
         transport=httpx.MockTransport(respond), base_url="https://up.test"
     )
     with pytest.raises(TransportError) as caught:
-        transport.request("GET", "/v1/accounts", query="", body=None, headers={})
+        transport.request(
+            "GET", "/v1/accounts", query="", body=None, headers={"Authorization": "Bearer t"}
+        )
     assert (caught.value.timeout, caught.value.sent) == (timeout, sent)
-    # httpx의 예외를 잇지 않는다(그 글에 요청의 주소가 든다).
+    # httpx의 예외(토큰이 든 요청을 들고 있다)를 잇지도, 남기지도 않는다.
     assert caught.value.__cause__ is None
-    assert caught.value.__suppress_context__
+    assert caught.value.__context__ is None
+
+
+def test_httpx_transport_timeouts_are_connect_5_and_read_10() -> None:
+    transport = HttpxUpbitTransport(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    timeout = transport._client.timeout
+    assert (timeout.connect, timeout.read) == (5.0, 10.0)
+
+
+def test_httpx_transport_does_not_follow_redirects() -> None:
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(302, headers={"Location": "https://elsewhere.test/v1/accounts"})
+
+    transport = HttpxUpbitTransport(
+        transport=httpx.MockTransport(respond), base_url="https://up.test"
+    )
+    response = transport.request(
+        "GET", "/v1/accounts", query="", body=None, headers={"Authorization": "Bearer t"}
+    )
+    assert response.status == 302
+    assert [r.url.host for r in seen] == ["up.test"]  # 다른 곳으로 키를 싣고 가지 않는다
+    assert transport._client.follow_redirects is False
+
+
+def test_httpx_transport_does_not_read_proxy_settings_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:1")
+    transport = HttpxUpbitTransport(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    assert transport._client.trust_env is False
+    assert transport.request("GET", "/v1/accounts", query="", body=None, headers={}).status == 200
 
 
 def test_httpx_transport_uses_the_app_tls_context(monkeypatch: pytest.MonkeyPatch) -> None:

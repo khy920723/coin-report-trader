@@ -23,7 +23,8 @@ from coin_report_trader.trading.upbit import (
 KEYS = UpbitKeys(TEST_ACCESS_KEY, TEST_SECRET_KEY)
 M = "KRW-AAA"
 START = datetime(2026, 1, 5, 3, 0, 0, 250_000, tzinfo=UTC)
-"""벽시계의 초 아래가 0.25인 때. 다음 초까지 0.75초다."""
+"""벽시계의 초 아래가 0.25인 때. 기다림은 PC 시계의 초 아래와 상관없이 1초 + 여유(0.01초)다."""
+PAUSE = 1.01
 
 
 def setup() -> tuple[UpbitClient, FakeUpbitTransport, FakeClock]:
@@ -37,10 +38,10 @@ def setup() -> tuple[UpbitClient, FakeUpbitTransport, FakeClock]:
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("group=default; min=1800; sec=29", ("default", 29)),
+        ("group=default; min=600; sec=13", ("default", 13)),
         ("group=order;sec=0", ("order", 0)),
         ("GROUP=order; SEC=3", ("order", 3)),
-        ("group=default; min=1800", ("default", None)),
+        ("group=default; min=600", ("default", None)),
         ("group=default; sec=x", ("default", None)),
         ("group=default; sec=9999999", ("default", None)),
         ("", (None, None)),
@@ -85,15 +86,51 @@ def test_twelve_requests_never_more_than_five_in_a_second() -> None:
 
 
 def test_sec_zero_pauses_that_group_until_the_next_second() -> None:
-    client, fake, clock = setup()
+    client, fake, _ = setup()
     fake.set_remaining("default", 0)
     client.accounts()
     first = fake.requests[0].monotonic
-    fake.set_remaining("default", 29)
+    fake.set_remaining("default", 13)
     client.accounts()
     second = fake.requests[1].monotonic
-    assert second - first == pytest.approx(0.75)
-    assert clock.now().microsecond == 0  # 벽시계의 다음 정수 초에 냈다
+    assert second - first == pytest.approx(PAUSE)
+
+
+@pytest.mark.parametrize(
+    "wall", [START, START.replace(microsecond=0), START.replace(microsecond=999_000)]
+)
+def test_the_pause_does_not_depend_on_the_pc_clock(wall: datetime) -> None:
+    # PC 시계의 초 아래 자리가 무엇이든 기다림은 같다(PC 시계를 믿지 않는다).
+    clock = FakeClock(START)
+    clock.set_now(wall)
+    limiter = UpbitLimiter(clock)
+    limiter.pause_until_next_second("default")
+    assert limiter.paused_until("default") == pytest.approx(clock.monotonic() + PAUSE)
+
+
+def test_sec_zero_of_another_group_in_the_header_pauses_that_group() -> None:
+    clock = FakeClock(START)
+    limiter = UpbitLimiter(clock)
+    limiter.observe("default", "group=order; min=600; sec=0")
+    assert limiter.paused_until("order") == pytest.approx(clock.monotonic() + PAUSE)
+    assert limiter.paused_until("default") == float("-inf")
+
+
+def test_sec_zero_of_an_unknown_group_pauses_the_request_group() -> None:
+    clock = FakeClock(START)
+    limiter = UpbitLimiter(clock)
+    limiter.observe("order", "group=made-up; min=600; sec=0")
+    assert limiter.paused_until("order") == pytest.approx(clock.monotonic() + PAUSE)
+    assert limiter.paused_until("default") == float("-inf")
+
+
+@pytest.mark.parametrize("value", ["group=default; min=600; sec=1", "group=default", None])
+def test_sec_above_zero_or_missing_does_not_pause(value: str | None) -> None:
+    clock = FakeClock(START)
+    limiter = UpbitLimiter(clock)
+    limiter.observe("default", value)
+    assert limiter.paused_until("default") == float("-inf")
+    assert limiter.paused_until("order") == float("-inf")
 
 
 def test_sec_zero_of_the_order_group_does_not_stop_the_other_group() -> None:
@@ -110,8 +147,8 @@ def test_429_waits_until_the_next_second_then_sends_once_more() -> None:
     fake.script(Reply(429), path="/v1/accounts")
     assert client.accounts()[0].currency == "KRW"
     assert len(fake.requests) == 2
-    assert fake.requests[1].monotonic - fake.requests[0].monotonic == pytest.approx(0.75)
-    assert clock.now() == START + timedelta(seconds=0.75)
+    assert fake.requests[1].monotonic - fake.requests[0].monotonic == pytest.approx(PAUSE)
+    assert clock.now() == START + timedelta(seconds=PAUSE)
     # 다시 보낸 요청은 새 토큰(새 nonce)이라 인증을 통과한다.
     assert [r.auth for r in fake.requests] == [None, None]
 
@@ -135,7 +172,7 @@ def test_429_on_an_order_is_not_sent_again() -> None:
     assert caught.value.unknown is True  # 보냈는지 모르므로 조회로 간다(3.6.3)
     assert len(fake.requests) == 1
     # 그 그룹은 다음 초까지 멈춘다.
-    assert client.limiter.paused_until("order") == pytest.approx(clock.monotonic() + 0.75)
+    assert client.limiter.paused_until("order") == pytest.approx(clock.monotonic() + PAUSE)
 
 
 # --- 418: 일시 차단 ------------------------------------------------------------------------

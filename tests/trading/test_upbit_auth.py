@@ -153,7 +153,7 @@ def test_the_fake_rejects_another_access_key() -> None:
     with pytest.raises(UpbitError) as caught:
         other.accounts()
     assert caught.value.error_name == "키가 맞지 않음"
-    assert fake.requests[0].auth == "invalid_access_key"
+    assert fake.requests[0].auth == "jwt_verification"
 
 
 def test_the_fake_rejects_a_hash_that_does_not_match_the_query() -> None:
@@ -203,7 +203,9 @@ def test_empty_or_non_text_keys_are_refused(access: object, secret: object) -> N
 
 def test_client_repr_and_errors_do_not_hold_keys_or_tokens() -> None:
     client, fake = setup()
-    fake.script(Reply(401, "jwt_verification"))
+    fake.script(
+        Reply(401, "jwt_verification", message=f"{TEST_ACCESS_KEY}:{TEST_SECRET_KEY} is wrong")
+    )
     with pytest.raises(UpbitError) as caught:
         client.accounts()
     error = caught.value
@@ -212,5 +214,6 @@ def test_client_repr_and_errors_do_not_hold_keys_or_tokens() -> None:
         assert TEST_ACCESS_KEY not in text
         assert TEST_SECRET_KEY not in text
         assert "Bearer" not in text
+    assert "가려서 보임" in str(error.detail)
     assert error.__context__ is None
     assert error.__cause__ is None

@@ -9,25 +9,33 @@
 | | | `no_authorization_token` |
 | | 일시 차단 | HTTP 418(코드와 상관없이) |
 | 잠깐의 문제이거나 주문 한 건의 문제 | 요청 한도 초과 | HTTP 429 |
-| | 거래소 점검 | HTTP 503(공개 시세와 같은 가정. M1 9번) |
-| | 서버 오류 | 그 밖의 HTTP 5xx |
+| | 거래소 점검 | `market_offline`(공식 문서: 주문의 403, 시스템 점검) |
+| | 서버 오류 | HTTP 5xx(코드와 상관없이) |
 | | 시간 초과 | 응답 기다리기의 시간 초과 |
 | | 네트워크 끊김 | 연결 실패, 연결이 끊김 |
 | | 응답 형식 오류 | 2xx인데 읽을 수 없는 응답(필드가 없거나 수가 아님) |
 | | 잔고 부족 | `insufficient_funds_bid`, `insufficient_funds_ask` |
-| | 금액·호가 단위 거절 | `under_min_total_bid`, `under_min_total_ask` |
+| | 금액·호가 단위 거절 | `under_min_total_bid`, `under_min_total_ask`, `over_krw_funds_bid` |
 | 목록에 없는 오류 | 알 수 없는 거래소 오류({HTTP 상태}. {오류 코드}) | 그 밖의 모든 오류 |
 
 오류 코드가 없는 목록에 없는 오류는 `core`의 "알 수 없는 거래소 오류({HTTP 상태})"다.
 
-- 상태 코드 418, 429, 503, 5xx를 먼저 보고, 그다음 오류 코드를 본다(5xx를 코드로 주문 거절로 읽으면
+- 상태 코드 418, 429, 5xx를 먼저 보고, 그다음 오류 코드를 본다(5xx를 코드로 주문 거절로 읽으면
   "주문이 만들어지지 않았다"고 잘못 볼 수 있다).
+- 거래소 점검: 공식 문서의 점검은 500과 403 `market_offline`이다. 500은 다른 서버 오류와 가르지
+  못하므로 "서버 오류"(같은 잠깐의 문제 갈래)이고, `market_offline`만 "거래소 점검"이다. 503은
+  문서에 없으므로 그 밖의 5xx와 같이 "서버 오류"다.
+- 금액·호가 단위 거절: 최소 주문 금액 미달(`under_min_total_*`)과 최대 주문 금액 넘음
+  (`over_krw_funds_bid`)이다. 호가 단위가 틀린 주문은 공식 문서에 오류 코드가 없다(그런 가격으로는
+  주문할 수 없다고만 적는다). 그런 거절은 목록에 없는 오류로 간다.
 - "키가 맞지 않음"은 모든 요청이 실패해 거래를 계속 막으므로 첫 갈래다(3.5.5. 11절의 첫 갈래의
   목록에 없던 이름이다).
 - 응답의 오류 글(`message`)은 오류 이름으로 옮기지 않는다. 비밀 값과 경로를 `core.redact`로 지운
   글만 `UpbitError.detail`에 담는다. 응답 원문은 담지 않는다.
-- `retry_after`/`blocked_until`: 418의 `Retry-After` 머리글이 양의 정수 초이면 차단이 풀리는 때
-  (`clock.now()` + 그 초)를 `blocked_until`에 담는다. 없으면 `None`이다.
+- `blocked_until`: 418의 `Retry-After` 머리글이 양의 정수 초이면 차단이 풀리는 때(`clock.now()` + 그
+  초)를 담는다. 없으면 `None`이다. 이것은 가정이다: 공식 문서는 "응답에 든 차단 시간 정보를 확인한
+  뒤 안내된 시간 뒤에 다시 하라", "차단 시간은 점점 늘어난다"고만 적고 그 정보가 어느 머리글이나
+  필드인지 적지 않는다. `Retry-After`는 문서에 없다.
 """
 
 import json
@@ -94,12 +102,13 @@ CODE_NAMES: Final = {
     "insufficient_funds_ask": ERROR_INSUFFICIENT_FUNDS,
     "under_min_total_bid": ERROR_ORDER_REJECTED,
     "under_min_total_ask": ERROR_ORDER_REJECTED,
+    "over_krw_funds_bid": ERROR_ORDER_REJECTED,
+    "market_offline": ERROR_MAINTENANCE,
 }
 """업비트의 오류 코드 → 오류 이름. 여기 없는 코드는 목록에 없는 오류다."""
 
 STATUS_BLOCKED = 418
 STATUS_RATE_LIMIT = 429
-STATUS_MAINTENANCE = 503
 
 
 def error_unknown(status: int, code: str | None) -> str:
@@ -188,8 +197,6 @@ def error_for_response(
             blocked_until = now + timedelta(seconds=seconds)
     elif status == STATUS_RATE_LIMIT:
         name = ERROR_RATE_LIMIT
-    elif status == STATUS_MAINTENANCE:
-        name = ERROR_MAINTENANCE
     elif 500 <= status < 600:
         name = ERROR_SERVER
     elif code is not None and code in CODE_NAMES:
