@@ -2,13 +2,15 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QMainWindow,
+    QScrollArea,
     QStackedWidget,
     QWidget,
 )
@@ -74,6 +76,37 @@ ConfirmHandler = Callable[[str, str], bool]
 """확인 창을 대신하는 함수. `(제목, 본문)`을 받아 "확인"이면 참, "취소"면 거짓을 돌려준다."""
 
 
+SCROLL_PREFIX = "screenScroll_"
+INITIAL_SIZE = (1280, 800)
+"""창의 처음 크기(M2 명세 3.12.5). 쓸 수 있는 영역이 더 작으면 그 영역의 90%다."""
+SMALL_SCREEN_RATIO = 0.9
+
+
+def initial_size(
+    available_width: int, available_height: int, frame_width: int = 0, frame_height: int = 0
+) -> tuple[int, int]:
+    """쓸 수 있는 영역의 크기로 창 안쪽(틀을 뺀)의 처음 크기를 정한다.
+
+    틀(제목 줄과 테두리)의 크기를 넣은 창이 영역에 들어갈 때만 1280 × 800이고, 아니면 영역의 90%다.
+    어느 쪽이든 틀을 넣은 창이 영역 안에 든다.
+    """
+    width, height = INITIAL_SIZE
+    if available_width < width + frame_width or available_height < height + frame_height:
+        width = min(int(available_width * SMALL_SCREEN_RATIO), available_width - frame_width)
+        height = min(int(available_height * SMALL_SCREEN_RATIO), available_height - frame_height)
+    return max(width, 1), max(height, 1)
+
+
+def _scroll_page(screen_id: ScreenId, screen: QWidget) -> QScrollArea:
+    """화면 하나를 세로로 스크롤되는 자리에 담는다. 내용은 제 높이보다 작게 눌리지 않는다."""
+    page = QScrollArea()
+    page.setObjectName(SCROLL_PREFIX + screen_id.value)
+    page.setFrameShape(QScrollArea.Shape.NoFrame)
+    page.setWidgetResizable(True)
+    page.setWidget(screen)
+    return page
+
+
 def status_line_text(context: UiContext) -> str:
     return f"판 v{context.version} · 매매 기능 없음 · 자료 폴더 {context.data_dir_display}"
 
@@ -120,13 +153,13 @@ class MainWindow(QMainWindow):
         for screen_id in ScreenId:
             nav.addItem(SCREEN_TITLES[screen_id])
             if screen_id is ScreenId.FIRST_SETUP:
-                stack.addWidget(self._first_setup)
+                stack.addWidget(_scroll_page(screen_id, self._first_setup))
             elif screen_id is ScreenId.SETTINGS:
-                stack.addWidget(self._settings)
+                stack.addWidget(_scroll_page(screen_id, self._settings))
             elif screen_id is ScreenId.STATUS:
-                stack.addWidget(self._status)
+                stack.addWidget(_scroll_page(screen_id, self._status))
             else:
-                stack.addWidget(build_screen(screen_id))
+                stack.addWidget(_scroll_page(screen_id, build_screen(screen_id)))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
         nav.itemClicked.connect(self._on_nav_clicked)
         nav.setCurrentRow(0)
@@ -144,6 +177,10 @@ class MainWindow(QMainWindow):
         status.setObjectName(STATUS_LINE_NAME)
         status.setTextFormat(Qt.TextFormat.PlainText)
         self.statusBar().addWidget(status, 1)
+
+        self._auto_size = QSize()
+        self._fit_to_screen()
+        self._frame_fitted = False
 
         self._saved_timer = QTimer(self)
         self._saved_timer.setSingleShot(True)
@@ -167,6 +204,35 @@ class MainWindow(QMainWindow):
         stack.currentChanged.connect(self._on_screen_changed)
 
         self._update()
+
+    def _fit_to_screen(self, frame: QSize | None = None) -> None:
+        """처음 크기와 자리를 화면의 쓸 수 있는 영역 안에 둔다(M2 명세 3.12.5의 처음 크기).
+
+        `frame`은 제목 줄과 테두리가 더하는 크기다. 창이 보이기 전에는 모르므로 비워 두고, 처음 보일
+        때 다시 맞춘다. 자리(`move`)는 틀을 넣은 창의 왼쪽 위다.
+        """
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        frame = frame if frame is not None else QSize(0, 0)
+        area = screen.availableGeometry()
+        width, height = initial_size(area.width(), area.height(), frame.width(), frame.height())
+        self.resize(width, height)
+        self._auto_size = QSize(width, height)
+        self.move(
+            area.x() + (area.width() - width - frame.width()) // 2,
+            area.y() + (area.height() - height - frame.height()) // 2,
+        )
+
+    def showEvent(self, event) -> None:
+        """처음 보일 때 틀의 크기를 읽어 처음 크기를 다시 맞춘다(사용자가 바꾼 크기는 두고)."""
+        super().showEvent(event)
+        if self._frame_fitted:
+            return
+        self._frame_fitted = True
+        frame = self.frameGeometry().size() - self.geometry().size()
+        if (frame.width() > 0 or frame.height() > 0) and self.size() == self._auto_size:
+            self._fit_to_screen(frame)
 
     # --- 바깥에서 쓰는 것 ---
 
@@ -624,8 +690,18 @@ def screen_order(window: QMainWindow) -> tuple[ScreenId, ...]:
     stack = _stack(window)
     prefix = screen_object_name(ScreenId.FIRST_SETUP).removesuffix(ScreenId.FIRST_SETUP.value)
     return tuple(
-        ScreenId(stack.widget(i).objectName().removeprefix(prefix)) for i in range(stack.count())
+        ScreenId(_screen_of(stack.widget(i)).objectName().removeprefix(prefix))
+        for i in range(stack.count())
     )
+
+
+def _screen_of(page: QWidget) -> QWidget:
+    """스크롤 자리 안의 화면(스크롤 자리가 아니면 그 위젯)."""
+    if isinstance(page, QScrollArea):
+        inner = page.widget()
+        if inner is not None:
+            return inner
+    return page
 
 
 def screen_widget(window: QMainWindow, screen_id: ScreenId) -> QWidget:
