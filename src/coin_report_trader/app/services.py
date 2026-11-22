@@ -6,10 +6,12 @@
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from coin_report_trader.core import (
     AiRunner,
     AutostartStore,
+    BookSource,
     Clock,
     QuoteSource,
     SecretStore,
@@ -28,6 +30,11 @@ class Services:
     """2단계: 없으면 진짜 `ClaudeCodeRunner`다. 15번까지 쓰지 않는다(M2 명세 3.4)."""
     autostart: AutostartStore | None = None
     """없으면 진짜 `WindowsAutostart`다(M1 명세 3.16.3)."""
+    book: BookSource | None = None
+    """3단계: `None`이면 `services.quote`가 `BookSource`도 갖출 때(진짜 `HttpQuoteSource`) 그것을
+    쓴다(M3 명세 3.4)."""
+    min_order: Decimal | None = None
+    """3단계: 시험만 넣는 최소 주문 금액. `None`이면 `MIN_ORDER_FALLBACK`(5,000원)이다."""
 
 
 def resolve_clock(services: Services | None) -> Clock:

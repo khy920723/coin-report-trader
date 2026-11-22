@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol, runtime_checkable
 
@@ -16,6 +16,8 @@ from coin_report_trader.core.ai import (
 )
 from coin_report_trader.core.alerts import AlertCategory
 from coin_report_trader.core.market import Candle, CandleUnit, Market
+from coin_report_trader.core.trade import TradeSettings
+from coin_report_trader.core.views import HistoryTab
 
 
 @runtime_checkable
@@ -180,6 +182,8 @@ class UiActions(Protocol):
         candle_count: int | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
         autostart: bool | None = None,
+        trade: TradeSettings | None = None,
+        accept_below_stop: tuple[str, ...] = (),
     ) -> None: ...
 
     def load_reports(self, market: str) -> None: ...
@@ -199,3 +203,15 @@ class UiActions(Protocol):
     def delete_webhook(self, category: AlertCategory) -> None: ...
 
     def send_test(self, category: AlertCategory) -> None: ...
+
+    def pause(self) -> None: ...
+
+    def pause_and_sell_all(self) -> None: ...
+
+    def resume_user(self) -> None: ...
+
+    def resume_error(self) -> None: ...
+
+    def load_history(self, tab: HistoryTab, market: str | None, day: date) -> None: ...
+
+    def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None: ...
