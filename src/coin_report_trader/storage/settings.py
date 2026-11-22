@@ -3,7 +3,8 @@
 키: `coins`(마켓 코드의 JSON 배열), `retention_days`(`"7"`, `"30"`, `"90"`),
 `candle_unit`(`CandleUnit`의 값), `candle_count`(`"100"`, `"200"`, `"500"`),
 `first_setup_level`(1단계 보완 전에 마치면 `"1"`, 1단계 보완에서 마치면 `"2"`),
-`fetched_at:{마켓 코드}`(시각 글).
+`fetched_at:{마켓 코드}`(시각 글), `ai_model:{칸}`과 `ai_effort:{칸}`(`AiSlot` 값마다. 모델은
+`CLAUDE_MODELS`의 하나, 노력은 `Effort` 값. M2 명세 3.10).
 """
 
 import json
@@ -11,7 +12,16 @@ import sqlite3
 from datetime import datetime
 from typing import Final
 
-from coin_report_trader.core import CANDLE_COUNTS, CandleUnit, SettingsView, StorageError
+from coin_report_trader.core import (
+    CANDLE_COUNTS,
+    CLAUDE_MODELS,
+    AiChoice,
+    AiSlot,
+    CandleUnit,
+    Effort,
+    SettingsView,
+    StorageError,
+)
 from coin_report_trader.storage.database import transaction, translate_errors
 from coin_report_trader.storage.times import format_utc, parse_utc
 
@@ -21,6 +31,13 @@ KEY_CANDLE_UNIT: Final = "candle_unit"
 KEY_CANDLE_COUNT: Final = "candle_count"
 KEY_FIRST_SETUP_LEVEL: Final = "first_setup_level"
 KEY_FETCHED_AT_PREFIX: Final = "fetched_at:"
+KEY_AI_MODEL_PREFIX: Final = "ai_model:"
+KEY_AI_EFFORT_PREFIX: Final = "ai_effort:"
+_AI_KEYS: Final = tuple(
+    key
+    for slot in AiSlot
+    for key in (KEY_AI_MODEL_PREFIX + slot.value, KEY_AI_EFFORT_PREFIX + slot.value)
+)
 
 RETENTION_CHOICES: Final = (7, 30, 90)
 FIRST_SETUP_LEVEL_M1: Final = "1"
@@ -42,19 +59,24 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
     값이 없는 키는 기본값(코인 없음, 보관 기간·봉 단위·봉 개수 `None`, 처음 설정 안 마침)이다.
     `first_setup_done`은 `first_setup_level`이 있고 `candle_unit`과 `candle_count`가 모두 저장되어
     있을 때만 참이다(3.7. 1단계 보완 전에 마친 기록은 `"1"`만 있어 거짓이다).
-    저장된 글이 맞지 않으면 `StorageError`다.
+    저장된 글이 맞지 않으면 `StorageError`다. 다만 AI의 칸(`ai_model:{칸}`, `ai_effort:{칸}`)은
+    틀린 값(목록에 없는 모델이나 노력 값)이 든 칸만 저장되지 않은 것으로 보고 버린다. 모델과
+    노력이 둘 다 맞는 칸만 `AiSlot`의 차례로 `ai_choices`에 담고, AI 키 때문에 `StorageError`를
+    내지 않는다.
     """
+    keys = (
+        KEY_COINS,
+        KEY_RETENTION_DAYS,
+        KEY_CANDLE_UNIT,
+        KEY_CANDLE_COUNT,
+        KEY_FIRST_SETUP_LEVEL,
+        *_AI_KEYS,
+    )
     with translate_errors("설정 읽기"):
         rows = dict(
             conn.execute(
-                "SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?)",
-                (
-                    KEY_COINS,
-                    KEY_RETENTION_DAYS,
-                    KEY_CANDLE_UNIT,
-                    KEY_CANDLE_COUNT,
-                    KEY_FIRST_SETUP_LEVEL,
-                ),
+                f"SELECT key, value FROM settings WHERE key IN ({', '.join('?' * len(keys))})",
+                keys,
             ).fetchall()
         )
     unit = _decode_unit(rows.get(KEY_CANDLE_UNIT))
@@ -66,6 +88,7 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
         first_setup_done=level_present and unit is not None and count is not None,
         candle_unit=unit,
         candle_count=count,
+        ai_choices=_decode_ai_choices(rows),
     )
 
 
@@ -87,6 +110,10 @@ def write_settings(
     지운다(봉 단위가 바뀔 때. 3.5.4). `clear_fetched_at`이 참이면 모든 코인의 `fetched_at`도
     같은 트랜잭션에서 지운다. 둘 다 봉 단위가 있을 때만 뜻이 있고, 단위가 `None`이면 봉을 지우지
     않는다.
+
+    `ai_choices`가 빈 튜플이면 ai 키를 쓰지도 지우지도 않는다(M2 명세 3.10). 네 칸(`AiSlot` 넷이
+    하나씩)이 아닌 묶음은 버리고 다른 값만 저장한다(`ValueError`를 내지 않는다). 네 칸이면 여덟
+    키를 같은 트랜잭션에서 쓴다.
     """
     if settings.retention_days is not None and settings.retention_days not in RETENTION_CHOICES:
         raise ValueError(f"보관 기간은 {RETENTION_CHOICES} 가운데 하나여야 합니다")
@@ -114,6 +141,8 @@ def write_settings(
             _put(conn, KEY_FIRST_SETUP_LEVEL, level)
         else:
             conn.execute("DELETE FROM settings WHERE key = ?", (KEY_FIRST_SETUP_LEVEL,))
+        for key, value in _encode_ai_choices(settings.ai_choices):
+            _put(conn, key, value)
         if drop_other_unit_candles and unit is not None:
             conn.execute("DELETE FROM candles WHERE unit <> ?", (unit.value,))
         if clear_fetched_at:
@@ -146,6 +175,34 @@ def delete_all_fetched_at(conn: sqlite3.Connection) -> int:
             "DELETE FROM settings WHERE substr(key, 1, ?) = ?",
             (len(KEY_FETCHED_AT_PREFIX), KEY_FETCHED_AT_PREFIX),
         ).rowcount
+
+
+def _encode_ai_choices(choices: tuple[AiChoice, ...]) -> tuple[tuple[str, str], ...]:
+    """네 칸이 하나씩 있는 묶음만 (키, 값) 여덟 쌍으로 바꾼다. 아니면 쌍이 없다."""
+    if len(choices) != len(AiSlot) or {choice.slot for choice in choices} != set(AiSlot):
+        return ()
+    pairs: list[tuple[str, str]] = []
+    for choice in choices:
+        slot = AiSlot(choice.slot)
+        pairs.append((KEY_AI_MODEL_PREFIX + slot.value, str(choice.model)))
+        pairs.append((KEY_AI_EFFORT_PREFIX + slot.value, Effort(choice.effort).value))
+    return tuple(pairs)
+
+
+def _decode_ai_choices(rows: dict[str, str]) -> tuple[AiChoice, ...]:
+    """모델과 노력이 둘 다 맞는 칸만 `AiSlot`의 차례로 담는다. 틀린 칸은 버린다."""
+    choices: list[AiChoice] = []
+    for slot in AiSlot:
+        model = rows.get(KEY_AI_MODEL_PREFIX + slot.value)
+        effort_text = rows.get(KEY_AI_EFFORT_PREFIX + slot.value)
+        if model not in CLAUDE_MODELS or effort_text is None:
+            continue
+        try:
+            effort = Effort(effort_text)
+        except ValueError:
+            continue
+        choices.append(AiChoice(slot, model, effort))
+    return tuple(choices)
 
 
 def _decode_coins(text: str | None) -> tuple[str, ...]:
