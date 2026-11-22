@@ -37,7 +37,12 @@ from coin_report_trader.core import (
     make_tls_context,
     redact,
 )
-from coin_report_trader.storage.database import migrate, open_database, schema_version
+from coin_report_trader.storage.database import (
+    SCHEMA_VERSION,
+    migrate,
+    open_database,
+    schema_version,
+)
 
 from .services import Services
 
@@ -169,9 +174,9 @@ def check_sqlite() -> str:
             conn.close()
     if str(mode).lower() != "wal" or synchronous != 2:
         raise CheckFailed(f"DB 설정이 맞지 않습니다: journal={mode}, synchronous={synchronous}")
-    if version != 1:
-        raise CheckFailed(f"스키마 번호가 {version}입니다(기대 1)")
-    if tables != {"settings", "candles", "alerts"}:
+    if version != SCHEMA_VERSION:
+        raise CheckFailed(f"스키마 번호가 {version}입니다(기대 {SCHEMA_VERSION})")
+    if tables != {"settings", "candles", "alerts", "rounds", "reports", "report_rows"}:
         raise CheckFailed(f"표가 맞지 않습니다: {sorted(tables)}")
     return (
         f"SQLite {sqlite3.sqlite_version}, wal, synchronous 2, 스키마 번호 {version}, "

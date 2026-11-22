@@ -87,11 +87,13 @@ def _alert(connection: sqlite3.Connection, **overrides: object) -> int:
 def test_migrate_creates_three_strict_tables(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "app.db")
     try:
-        assert SCHEMA_VERSION == 1
+        assert SCHEMA_VERSION == 2
         assert _tables(connection) == set()
-        assert migrate(connection) == 1
-        assert _pragmas(connection) == ("wal", 2, 1)
-        assert _tables(connection) == {"settings", "candles", "alerts"}
+        assert migrate(connection) == 2
+        assert _pragmas(connection) == ("wal", 2, 2)
+        assert _tables(connection) == {
+            "settings", "candles", "alerts", "rounds", "reports", "report_rows",
+        }  # fmt: skip
         columns = {
             table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
             for table in ("settings", "candles", "alerts")
@@ -102,10 +104,11 @@ def test_migrate_creates_three_strict_tables(tmp_path: Path) -> None:
         ]  # fmt: skip
         assert columns["alerts"] == [
             "id", "created_utc", "mode", "category", "code", "coin", "text", "stage",
-            "error_name", "content", "after", "seen", "discord_state",
+            "error_name", "content", "after", "seen", "discord_state", "report_id",
         ]  # fmt: skip
         strict = {row[1]: row[5] for row in connection.execute("PRAGMA table_list")}
-        assert strict["settings"] == strict["candles"] == strict["alerts"] == 1
+        for table in ("settings", "candles", "alerts", "rounds", "reports", "report_rows"):
+            assert strict[table] == 1, table
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute("INSERT INTO settings VALUES ('k', x'00')")
     finally:
@@ -145,7 +148,7 @@ def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_pa
             migrate(_FailsOnVersionWrite(late))  # type: ignore[arg-type]
         assert _internal_tables(late) == set()
         assert _tables(late) == set()
-        assert migrate(good) == 1
+        assert migrate(good) == 2
         assert _internal_tables(good) == {"sqlite_sequence"}
     finally:
         broken.close()
@@ -156,8 +159,8 @@ def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_pa
 def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> None:
     done = SettingsView(("KRW-AAA",), 30, True, candle_unit=CandleUnit.DAY, candle_count=100)
     settings.write_settings(conn, done)
-    assert migrate(conn) == 1
-    assert migrate(conn) == 1
+    assert migrate(conn) == 2
+    assert migrate(conn) == 2
     assert settings.read_settings(conn) == done
     assert not conn.in_transaction
 
@@ -165,10 +168,10 @@ def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> Non
 def test_migrate_refuses_a_newer_number(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "app.db")
     try:
-        connection.execute("PRAGMA user_version=2")
+        connection.execute("PRAGMA user_version=3")
         with pytest.raises(StorageError):
             migrate(connection)
-        assert schema_version(connection) == 2
+        assert schema_version(connection) == 3
         assert _tables(connection) == set()
     finally:
         connection.close()
@@ -211,7 +214,7 @@ def test_migrate_failure_at_the_number_write_rolls_the_tables_back(tmp_path: Pat
             migrate(_FailsOnVersionWrite(connection))  # type: ignore[arg-type]
         assert _tables(connection) == set()
         assert _pragmas(connection) == ("wal", 2, 0)
-        assert migrate(connection) == 1
+        assert migrate(connection) == 2
     finally:
         connection.close()
 
@@ -376,10 +379,10 @@ def test_alert_columns_null_seen_and_discord_state(conn: sqlite3.Connection) -> 
     first = conn.execute("SELECT * FROM alerts WHERE id = ?", (plain,)).fetchone()
     assert first == (
         plain, "2026-01-02T00:00:00Z", "paper", "limit", "A-1", None, "글",
-        None, None, None, None, 0, "not_sent",
+        None, None, None, None, 0, "not_sent", None,
     )  # fmt: skip
     second = conn.execute("SELECT * FROM alerts WHERE id = ?", (detailed,)).fetchone()
-    assert second[7:] == ("봉 받기", "시간 초과", "내용", "다시 받습니다.", 1, "local_only")
+    assert second[7:] == ("봉 받기", "시간 초과", "내용", "다시 받습니다.", 1, "local_only", None)
     shown = {a.id: a for a in alerts.list_alerts(conn)}
     assert shown[plain].detail is None
     assert shown[plain].coin is None
