@@ -137,7 +137,7 @@ def test_the_old_stats_values_are_gone_from_coin_view() -> None:
 
 def test_settings_view_gets_unit_and_count_last_with_none_as_the_default() -> None:
     names = [field.name for field in dataclasses.fields(SettingsView)]
-    assert names[-6:-3] == ["candle_unit", "candle_count", "ai_choices"]  # 2단계가 맨 뒤에 더했다
+    assert names[-7:-4] == ["candle_unit", "candle_count", "ai_choices"]  # 2단계가 맨 뒤에 더했다
     view = SettingsView(("KRW-AAA",), 30, True)
     assert (view.candle_unit, view.candle_count) == (None, None)
     chosen = SettingsView(
