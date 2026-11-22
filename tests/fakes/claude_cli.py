@@ -74,6 +74,8 @@ def _sleep(config: dict) -> None:
 
 
 def main(argv: list[str]) -> int:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):  # Windows의 기본 글자표(cp1252 등)를 피한다
+        stream.reconfigure(encoding="utf-8")
     config: dict = {}
     args = argv
     if argv[:1] == ["--fake-config"]:
