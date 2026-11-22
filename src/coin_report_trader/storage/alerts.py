@@ -21,7 +21,7 @@ from coin_report_trader.storage.times import format_utc, parse_utc
 
 _COLUMNS = (
     "id, created_utc, mode, category, code, coin, text, stage, error_name, content, "
-    '"after", seen, discord_state'
+    '"after", seen, discord_state, report_id'
 )
 _SETTLED_STATES = (DiscordState.FAILED, DiscordState.NO_ADDRESS)
 
@@ -38,8 +38,11 @@ def insert_alert(
     detail: AlertDetail | None = None,
     seen: bool = False,
     discord_state: DiscordState = DiscordState.NOT_SENT,
+    report_id: int | None = None,
 ) -> int:
     """알림 한 줄을 모든 열을 채워 쓰고 새 `id`를 돌려준다.
+
+    `report_id`는 A-26이 가리키는 보고서의 `reports.id`다(M2 명세 3.10). 다른 알림은 `None`이다.
 
     `detail`이 있으면 `stage`, `error_name`, `content`, `after`에 담고(없으면 넷 다 NULL),
     `detail.coin`은 `coin`과 같아야 한다(표에는 `coin` 열 하나뿐이다). 창을 띄우기 전의 오류를
@@ -65,11 +68,13 @@ def insert_alert(
         after,
         1 if seen else 0,
         DiscordState(discord_state).value,
+        report_id,
     )
     with translate_errors("알림 저장"), transaction(conn):
         cursor = conn.execute(
             "INSERT INTO alerts (created_utc, mode, category, code, coin, text, stage, error_name,"
-            ' content, "after", seen, discord_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            ' content, "after", seen, discord_state, report_id)'
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             row,
         )
         alert_id = cursor.lastrowid
@@ -163,7 +168,7 @@ def _category(text: str) -> AlertCategory:
 
 def _to_view(row: tuple[object, ...]) -> AlertView:
     (alert_id, created, mode, category, code, coin, text, stage, error_name, content, after, seen,
-     state) = row  # fmt: skip
+     state, report_id) = row  # fmt: skip
     try:
         discord_state = DiscordState(state)
         parts = (stage, error_name, content, after)
@@ -184,6 +189,7 @@ def _to_view(row: tuple[object, ...]) -> AlertView:
             detail=detail,
             seen=seen == 1,
             discord_failed=discord_state is DiscordState.FAILED,
+            report_id=None if report_id is None else int(report_id),  # type: ignore[call-overload]
         )
     except ValueError as exc:
         raise StorageError("저장된 알림의 값이 맞지 않습니다") from exc

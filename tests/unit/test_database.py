@@ -28,7 +28,7 @@ def test_open_creates_the_file_with_wal_and_full_sync_every_time(tmp_path: Path)
 
 
 def test_schema_version_starts_at_zero_and_reads_user_version(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 2
     conn = open_database(tmp_path / "app.db")
     try:
         conn.execute("PRAGMA user_version=3")

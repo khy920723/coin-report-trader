@@ -89,6 +89,15 @@ class Belief(StrEnum):
     LOW = "낮음"
 
 
+class RowKind(StrEnum):
+    """줄 표(`report_rows`)의 `kind`. 값은 CSV와 표의 글이다(3.8.1, 3.10)."""
+
+    EVIDENCE = "근거"
+    SOURCE = "출처"
+    COMPARED = "견준 결과"
+    CHECKLIST = "검증 목록"
+
+
 class FailureKind(StrEnum):
     """8절의 실패 다섯."""
 
