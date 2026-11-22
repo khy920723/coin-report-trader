@@ -444,7 +444,7 @@ def test_markets_ready_lists_the_markets_in_order_and_marks_caution(picker_scree
     window, screen, prefix = picker_screen
     window.apply(MarketsView(LoadState.READY, ALL))
     assert _list_shown(screen, prefix)
-    boxes = [b.text() for b in screen.findChildren(QCheckBox)]
+    boxes = [b.text() for b in _coin_boxes(screen)]
     assert boxes == ["AAA 가짜에이", "BBB 가짜비", "CCC 가짜씨", "DDD 가짜디"]
     caution = _find(screen, QLabel, f"{prefix}CoinCaution_KRW-BBB")
     assert caution.text() == "유의·주의"
@@ -453,6 +453,12 @@ def test_markets_ready_lists_the_markets_in_order_and_marks_caution(picker_scree
     # 유의·주의 코인도 고를 수 있다.
     _choose(screen, prefix, "KRW-BBB")
     assert "KRW-BBB" in _picks_of(screen, prefix)
+
+
+def _coin_boxes(screen: QWidget) -> list[QCheckBox]:
+    """코인 고르기의 체크 상자(설정 화면의 자동 시작 확인란은 코인이 아니라서 뺀다)."""
+    boxes = screen.findChildren(QCheckBox)
+    return [box for box in boxes if box.objectName() != "settingsAutostart"]
 
 
 def _picks_of(screen: QWidget, prefix: str) -> list[str]:
@@ -468,7 +474,7 @@ def test_markets_ready_with_no_markets_is_an_empty_list_and_no_saving(picker_scr
     window, screen, prefix = picker_screen
     window.apply(MarketsView(LoadState.READY, ()))
     assert _list_shown(screen, prefix)
-    assert screen.findChildren(QCheckBox) == []
+    assert _coin_boxes(screen) == []
     if prefix == "firstSetup":
         _choose_days(screen, prefix, 30)
         assert not _button(screen, "firstSetupStart").isEnabled()

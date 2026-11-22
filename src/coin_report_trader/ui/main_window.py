@@ -286,6 +286,7 @@ class MainWindow(QMainWindow):
             view.first_setup_done,
             view.candle_unit,
             view.candle_count,
+            view.autostart,
         )
         old_key = (
             None
@@ -296,13 +297,19 @@ class MainWindow(QMainWindow):
                 old.first_setup_done,
                 old.candle_unit,
                 old.candle_count,
+                old.autostart,
             )
         )
         if key != old_key:
             self._first_setup.load_saved(view.coins, view.retention_days)
             self._settings.load_saved(
-                view.coins, view.retention_days, view.candle_unit, view.candle_count
+                view.coins,
+                view.retention_days,
+                view.candle_unit,
+                view.candle_count,
+                view.autostart,
             )
+        self._settings.set_autostart_state(view.autostart_supported, view.autostart_error)
         # 고른 코인에 없는 코인의 마지막 `CoinView`는 버린다(다시 고르면 새 값이 올 때까지
         # "불러오는 중").
         self._coin_views = {m: v for m, v in self._coin_views.items() if m in view.coins}
@@ -374,7 +381,12 @@ class MainWindow(QMainWindow):
         self._submit(ScreenId.FIRST_SETUP, coins, days, unit, count)
 
     def _on_save(
-        self, coins: tuple[str, ...], days: int, unit: CandleUnit | None, count: int | None
+        self,
+        coins: tuple[str, ...],
+        days: int,
+        unit: CandleUnit | None,
+        count: int | None,
+        autostart: bool | None = None,
     ) -> None:
         saved_days = self._saved.retention_days if self._saved is not None else None
         # 저장된 값이 없을 때(처음 고를 때)와 같거나 길게 바꿀 때는 확인 창이 없다.
@@ -383,7 +395,7 @@ class MainWindow(QMainWindow):
             RETENTION_SHRINK_TITLE, retention_shrink_body(saved_days, days)
         ):
             return
-        self._submit(ScreenId.SETTINGS, coins, days, unit, count)
+        self._submit(ScreenId.SETTINGS, coins, days, unit, count, autostart)
 
     def _submit(
         self,
@@ -392,6 +404,7 @@ class MainWindow(QMainWindow):
         days: int,
         unit: CandleUnit | None,
         count: int | None,
+        autostart: bool | None = None,
     ) -> None:
         first_setup = origin is ScreenId.FIRST_SETUP
         if (
@@ -405,8 +418,9 @@ class MainWindow(QMainWindow):
             self._saved_timer.stop()
             self._saved_message = None
         self._pending_saves.append(origin)
+        extra = {} if autostart is None else {"autostart": autostart}  # 쓸 수 없으면 넘기지 않는다
         self._actions.save_settings(
-            coins, days, first_setup=first_setup, candle_unit=unit, candle_count=count
+            coins, days, first_setup=first_setup, candle_unit=unit, candle_count=count, **extra
         )
         self._update()
 
@@ -642,6 +656,11 @@ def create_main_window(context: UiContext) -> MainWindow:
     설정 자리(`screen_settings`)의 `objectName`:
 
     - 글 라벨: `settingsMessage`(1 자리), 단추: `settingsSave`("저장"), 묶음: `settingsForm`.
+    - 자동 시작(M1 명세 3.16.1. "그 밖의 값" 카드의 알림 보관 기간 아래): 확인란 `settingsAutostart`
+      ("PC를 켜면 자동으로 시작"), 그 옆 'ⓘ' `settingsAutostartInfo`(툴팁이 글 하나. 이 실행에서
+      쓸 수 없으면 둘째 줄이 더해져 두 줄이 "• "로 시작), 결과 글 `settingsAutostartMessage`
+      (`SettingsView.autostart_error`가 있을 때만 보이고 `tone`이 "warning"). 쓸 수 없으면
+      (`autostart_supported`가 거짓) 확인란은 흐리고 "저장"이 `autostart`를 넘기지 않는다.
     - 코인 고르기(찾기 칸 `settingsCoinSearch`), 봉 단위(`settingsUnit_<봉 단위 값>`)와 봉 개수
       (`settingsCount_<수>`), 보관 기간의 안쪽 이름은 앞이 `settings`다.
 

@@ -151,6 +151,7 @@ def test_each_line_is_the_symbol_and_the_korean_name(screen):
     texts = {
         box.objectName().removeprefix(f"{prefix}Coin_KRW-"): box.text()
         for box in found.findChildren(QCheckBox)
+        if box.objectName() != "settingsAutostart"  # 코인 줄이 아니다
     }
     assert texts == {
         "bnb": "bnb 비엔비",

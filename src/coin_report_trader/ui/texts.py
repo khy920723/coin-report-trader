@@ -31,6 +31,16 @@ COINS_LABEL_REQUIRED: Final = "코인*"
 COINS_LABEL: Final = "코인"
 RETENTION_LABEL_REQUIRED: Final = "알림 보관 기간*"
 RETENTION_LABEL: Final = "알림 보관 기간"
+
+# --- 설정의 자동 시작 칸(M1 명세 3.16.1) ---
+AUTOSTART_LABEL: Final = "PC를 켜면 자동으로 시작"
+AUTOSTART_INFO: Final = (
+    "켜 두면 Windows에 로그인할 때 이 프로그램이 저절로 켜집니다. "
+    "작업 관리자의 '시작 앱'에서 끈 것은 이 칸이 되살리지 않습니다."
+)
+AUTOSTART_UNSUPPORTED: Final = (
+    "이 실행 방식에서는 고를 수 없습니다. 내려받은 exe로 켤 때만 고를 수 있습니다."
+)
 UNIT_LABEL: Final = "봉 단위*"
 COUNT_LABEL: Final = "봉 개수*"
 CANDLE_CHOICE_NOTE: Final = "봉 통계를 셈할 봉의 단위와 개수입니다."
