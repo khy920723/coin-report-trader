@@ -25,6 +25,7 @@ ITEMS = [
     "상표",
     "웹후크 주소",
     "Claude 자격 정보",
+    "거래 코드 위치",
 ]
 _GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
 
@@ -107,7 +108,7 @@ def test_a11_untouched_copy_passes(make_copy: Callable[[str], Path]) -> None:
     code, output = _run_all(make_copy("clean"))
     assert code == 0, output
     assert _status(output) == dict.fromkeys(ITEMS, "통과")
-    assert output.splitlines()[-1] == "결과: 통과 (7/7)"
+    assert output.splitlines()[-1] == "결과: 통과 (8/8)"
 
 
 @pytest.mark.scenario("A11")
