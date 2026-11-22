@@ -46,7 +46,10 @@ AAA = "KRW-AAA"
 T0 = parse_utc("2026-01-05T03:00:00Z")
 T1 = parse_utc("2026-01-05T04:00:00Z")
 T2 = parse_utc("2026-01-05T05:00:00Z")
-SIX = ("settings", "candles", "alerts", "rounds", "reports", "report_rows")
+SIX = (
+    "settings", "candles", "alerts", "rounds", "reports", "report_rows", "paper_accounts",
+    "paper_holdings", "orders", "fills", "pauses", "setting_events",
+)  # fmt: skip  # 스키마 3의 표 열둘
 
 
 @pytest.fixture
@@ -102,8 +105,8 @@ def test_a_v1_database_with_rows_is_raised_and_keeps_every_row(tmp_path: Path) -
                 ' content, "after", seen, discord_state FROM alerts'
             ).fetchall(),
         }
-        assert migrate(connection) == 2
-        assert database.schema_version(connection) == 2
+        assert migrate(connection) == 3
+        assert database.schema_version(connection) == 3
         assert (
             before["settings"]
             == connection.execute("SELECT * FROM settings ORDER BY key").fetchall()
@@ -128,8 +131,8 @@ def test_the_six_tables_are_the_same_from_zero_and_from_one(tmp_path: Path) -> N
     zero = open_database(tmp_path / "zero.db")
     one = make_v1(tmp_path / "one.db")
     try:
-        assert migrate(zero) == 2
-        assert migrate(one) == 2
+        assert migrate(zero) == 3
+        assert migrate(one) == 3
         assert table_info(zero) == table_info(one)
         assert [row[1] for row in zero.execute("PRAGMA table_info(alerts)")][-1] == "report_id"
     finally:
@@ -149,7 +152,7 @@ def test_the_six_tables_are_strict_and_two_changes_nothing(conn: sqlite3.Connect
     }
     assert names == set(SIX)
     before = table_info(conn)
-    assert migrate(conn) == 2  # 이미 2면 아무것도 하지 않는다
+    assert migrate(conn) == 3  # 이미 3이면 아무것도 하지 않는다
     assert table_info(conn) == before
     assert not conn.in_transaction
 
@@ -230,8 +233,8 @@ def test_the_number_is_written_last_and_once(tmp_path: Path) -> None:
     finally:
         real.close()
     writes = [s for s in statements if s.startswith("PRAGMA user_version=")]
-    assert writes == ["PRAGMA user_version=2"]
-    assert statements[-1] == "PRAGMA user_version=2"
+    assert writes == ["PRAGMA user_version=3"]
+    assert statements[-1] == "PRAGMA user_version=3"
     assert not any("IF NOT EXISTS" in s.upper() for s in statements)
 
 
