@@ -41,6 +41,7 @@ from coin_report_trader.ui import (
     screen_widget,
     select_screen,
 )
+from coin_report_trader.ui.info_icon import InfoIcon
 
 CREATED = datetime(2026, 1, 2, 1, 30, tzinfo=UTC)  # 한국 시간 2026-01-02 10:30
 TITLES = {
@@ -192,6 +193,16 @@ def _find(parent: QWidget, kind: type, name: str):
     found = parent.findChild(kind, name)
     assert found is not None, name
     return found
+
+
+def _assert_not_set_info(screen: QWidget) -> None:
+    """주소가 없을 때의 글은 늘 보이는 글이 아니라 칸 이름 옆 'ⓘ'(`alertWebhookInfo`)의 툴팁이다."""
+    assert _text(screen, "alertWebhookMessage") is None
+    info = _find(screen, InfoIcon, "alertWebhookInfo")
+    assert not info.isHidden()
+    assert info.toolTip() == NOT_SET
+    assert info.accessibleDescription() == NOT_SET
+    assert info.accessibleName() == f"{_text(screen, 'alertWebhookTitle')} 설명"
 
 
 def _text(screen: QWidget, name: str) -> str | None:
@@ -792,7 +803,7 @@ def test_empty_and_blank_addresses_do_nothing_and_show_no_warning(make_window, a
         edit.setText(text)
         save.click()
         assert actions.count("save_webhook") == 0
-        assert _text(screen, "alertWebhookMessage") == NOT_SET  # 경고 글이 아닌 평소 글이다.
+        _assert_not_set_info(screen)  # 경고 글이 아닌 평소 글이고, 칸 이름 옆 'ⓘ'의 툴팁이다.
         assert _tone(screen, "alertWebhookMessage") == "normal"
 
 
@@ -812,7 +823,7 @@ def test_a_wrongly_shaped_address_is_not_sent_and_shows_the_warning(make_window,
     # 글을 고치기 시작하면 경고는 사라진다.
     edit.setText("")
     QTest.keyClicks(edit, "x")
-    assert _text(screen, "alertWebhookMessage") == NOT_SET
+    _assert_not_set_info(screen)
 
 
 def test_a_good_address_calls_save_webhook_with_the_trimmed_text_and_clears_the_box(
@@ -1000,15 +1011,15 @@ def test_the_two_lines_under_the_box_do_not_overwrite_each_other(make_window):
     assert _text(screen, "alertWebhookTestMessage") == SENDING
     _tab(screen, AlertCategory.ERROR).click()
     assert _text(screen, "alertWebhookTestMessage") == SENT
-    assert _text(screen, "alertWebhookMessage") == NOT_SET
+    _assert_not_set_info(screen)
 
 
 def test_not_saved_without_a_message_shows_the_not_set_line(make_window):
     window = make_window(FakeActions())
     screen = _webhook_screen(window, WebhookView(AlertCategory.TRADE, saved=False))
-    assert _text(screen, "alertWebhookMessage") == NOT_SET
+    _assert_not_set_info(screen)
     window.apply(WebhookView(AlertCategory.TRADE, saved=False, save_message=NOT_SET))
-    assert _text(screen, "alertWebhookMessage") == NOT_SET
+    _assert_not_set_info(screen)
     window.apply(WebhookView(AlertCategory.TRADE, saved=True))
     assert _text(screen, "alertWebhookMessage") is None
 
@@ -1038,12 +1049,20 @@ def test_the_retention_notices_are_next_to_the_retention_choice_of_both_screens(
         (ScreenId.SETTINGS, "settings"),
     ):
         screen = screen_widget(window, screen_id)
-        assert _text(screen, f"{prefix}RetentionNoticeKeep") == (
-            "생긴 때부터 고른 기간이 지난 알림은 영구히 지워집니다."
+        info = _find(screen, InfoIcon, f"{prefix}RetentionInfo")
+        assert info.toolTip() == (
+            "• 생긴 때부터 고른 기간이 지난 알림은 영구히 지워집니다.\n"
+            "• 기간을 줄이면 새 기간이 지난 알림도 지워집니다."
         )
-        assert _text(screen, f"{prefix}RetentionNoticeShorten") == (
-            "기간을 줄이면 새 기간이 지난 알림도 지워집니다."
-        )
+        assert info.accessibleDescription() == info.toolTip()
+        # 보관 기간의 제목 바로 뒤에 있다.
+        row = _find(screen, QWidget, f"{prefix}Retention").layout().itemAt(0).layout()
+        assert [row.itemAt(i).widget().objectName() for i in range(2)] == [
+            f"{prefix}RetentionTitle",
+            f"{prefix}RetentionInfo",
+        ]
+        for old in ("RetentionNoticeKeep", "RetentionNoticeShorten"):
+            assert screen.findChild(QLabel, f"{prefix}{old}") is None
 
 
 def test_no_forbidden_text_in_the_alert_center(make_window):

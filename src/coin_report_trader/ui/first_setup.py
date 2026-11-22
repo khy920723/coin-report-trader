@@ -1,14 +1,16 @@
 """처음 설정 화면(설계서 3, M1 명세 2의 6~8)."""
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from coin_report_trader.core import SCREEN_TITLES, CandleUnit, Market, ScreenId
+from coin_report_trader.ui import theme
 from coin_report_trader.ui.candle_choice import CandleChoice
+from coin_report_trader.ui.cards import Card, CardGrid, title_row
 from coin_report_trader.ui.coin_picker import CoinPicker
+from coin_report_trader.ui.info_icon import InfoIcon, info_text
 from coin_report_trader.ui.retention import RetentionChoice
 from coin_report_trader.ui.screens import (
-    NOTICE_NAME,
     TITLE_NAME,
     screen_object_name,
     title_label,
@@ -21,19 +23,20 @@ from coin_report_trader.ui.texts import (
     LEGACY_NOTICE,
     NOTICE_DISCORD_NO_ADDRESS,
     NOTICE_DISCORD_OFFLINE,
+    NOTICES_TITLE,
     RETENTION_LABEL_REQUIRED,
     START_TEXT,
     TO_SETTINGS_TEXT,
 )
-from coin_report_trader.ui.widgets import make_label, show_message
+from coin_report_trader.ui.widgets import make_label, set_role, show_message
 
 PREFIX = "firstSetup"
 MESSAGE_NAME = "firstSetupMessage"
 FORM_NAME = "firstSetupForm"
 NOTICES_NAME = "firstSetupNotices"
+NOTICES_TITLE_NAME = "firstSetupNoticesTitle"
+NOTICES_INFO_NAME = "firstSetupNoticesInfo"
 LEGACY_NOTICE_NAME = "firstSetupLegacyNotice"
-NOTICE_OFFLINE_NAME = "noticeDiscordOffline"
-NOTICE_NO_ADDRESS_NAME = "noticeDiscordNoAddress"
 DONE_PANEL_NAME = "firstSetupDonePanel"
 DONE_NAME = "firstSetupDone"
 TO_SETTINGS_NAME = "firstSetupToSettings"
@@ -51,6 +54,11 @@ class FirstSetupScreen(QWidget):
 
     예전 기록(1단계 보완 전에 처음 설정을 마침. M1 명세 3.14.4)이면 코인 고르기와 알림 보관 기간
     칸이 잠기고 저장된 값이 채워지며, 그 위에 `firstSetupLegacyNotice`가 보인다.
+
+    카드(M1 명세 3.14.7): 코인, 봉 단위·봉 개수, 알림 보관 기간, 꼭 읽을 글. 꼭 읽을 글 카드의 제목
+    `firstSetupNoticesTitle` 옆 'ⓘ' `firstSetupNoticesInfo`의 툴팁이 세 글(투자 자문이 아님,
+    디스코드 끊김, 디스코드 주소 없음)을 "• "로 시작하는 줄로 잇는다.
+    옛 글 라벨은 없다(M1 명세 3.14.6).
     """
 
     start_requested = Signal(object, int, object, int)
@@ -66,6 +74,8 @@ class FirstSetupScreen(QWidget):
         self._legacy = False
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
+        layout.setSpacing(theme.CARD_GAP)
         layout.addWidget(title_label(SCREEN_TITLES[ScreenId.FIRST_SETUP], TITLE_NAME))
         self._message = make_label("", MESSAGE_NAME)
         self._message.hide()
@@ -82,36 +92,46 @@ class FirstSetupScreen(QWidget):
         self._picker = CoinPicker(PREFIX, COINS_LABEL_REQUIRED)
         self._candle = CandleChoice(PREFIX)
         self._retention = RetentionChoice(PREFIX, RETENTION_LABEL_REQUIRED)
-        form_layout.addWidget(self._picker)
-        form_layout.addWidget(self._candle)
-        form_layout.addWidget(self._retention)
+        cards = []
+        for part in (self._picker, self._candle, self._retention):
+            card = Card()
+            card.body.addWidget(part)
+            cards.append(card)
+        grid = CardGrid(split_first=True, max_columns=2)
+        grid.set_cards(cards)
+        form_layout.addWidget(grid)
         layout.addWidget(self._form)
 
-        notices = QWidget()
-        notices.setObjectName(NOTICES_NAME)
-        notices_layout = QVBoxLayout(notices)
-        notices_layout.setContentsMargins(0, 0, 0, 0)
-        # 10 자리: 가, 마, 바 순서(설계서 10.2).
-        notices_layout.addWidget(make_label(ADVICE_NOTICE, NOTICE_NAME))
-        notices_layout.addWidget(make_label(NOTICE_DISCORD_OFFLINE, NOTICE_OFFLINE_NAME))
-        notices_layout.addWidget(make_label(NOTICE_DISCORD_NO_ADDRESS, NOTICE_NO_ADDRESS_NAME))
+        notices = Card(NOTICES_NAME)
+        # 10 자리: 가, 마, 바 순서(설계서 10.2). 세 글은 제목 옆 'ⓘ'의 툴팁이다.
+        notices_info = InfoIcon(
+            NOTICES_TITLE,
+            info_text(ADVICE_NOTICE, NOTICE_DISCORD_OFFLINE, NOTICE_DISCORD_NO_ADDRESS),
+            NOTICES_INFO_NAME,
+        )
+        notices.body.addLayout(title_row(NOTICES_TITLE, NOTICES_TITLE_NAME, notices_info))
         layout.addWidget(notices)
 
         self._done_panel = QWidget()
         self._done_panel.setObjectName(DONE_PANEL_NAME)
         done_layout = QVBoxLayout(self._done_panel)
         done_layout.setContentsMargins(0, 0, 0, 0)
+        done_layout.setSpacing(theme.FIELD_GAP)
         done_layout.addWidget(make_label(FIRST_SETUP_DONE, DONE_NAME))
         to_settings = QPushButton(TO_SETTINGS_TEXT)
         to_settings.setObjectName(TO_SETTINGS_NAME)
         to_settings.clicked.connect(self.open_settings_requested)
-        done_layout.addWidget(to_settings)
+        done_layout.addWidget(to_settings, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self._done_panel)
 
         self._start = QPushButton(START_TEXT)
         self._start.setObjectName(START_NAME)
+        set_role(self._start, theme.ROLE_PRIMARY)
         self._start.clicked.connect(self._on_start)
-        layout.addWidget(self._start)
+        start_row = QHBoxLayout()
+        start_row.addStretch(1)
+        start_row.addWidget(self._start)
+        layout.addLayout(start_row)
         layout.addStretch(1)
 
         self._picker.changed.connect(self._on_edit)

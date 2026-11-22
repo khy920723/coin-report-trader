@@ -9,12 +9,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from coin_report_trader.ui import theme
+from coin_report_trader.ui.cards import title_row
+from coin_report_trader.ui.info_icon import InfoIcon, info_text
 from coin_report_trader.ui.texts import (
     RETENTION_NOTICE_KEEP,
     RETENTION_NOTICE_SHORTEN,
     RETENTION_OPTIONS,
 )
-from coin_report_trader.ui.widgets import make_label
 
 
 class RetentionChoice(QWidget):
@@ -22,7 +24,8 @@ class RetentionChoice(QWidget):
 
     `objectName`(앞의 `prefix`는 `firstSetup`이나 `settings`): `<prefix>RetentionTitle`,
     `<prefix>Retention7`, `<prefix>Retention30`, `<prefix>Retention90`(라디오 버튼),
-    `<prefix>RetentionNoticeKeep`, `<prefix>RetentionNoticeShorten`.
+    `<prefix>RetentionInfo`(제목 옆 'ⓘ'. 툴팁은 두 글을 "• "로 시작하는 줄로 잇는다. 옛 글 라벨
+    `RetentionNoticeKeep`, `RetentionNoticeShorten`은 없다. M1 명세 3.14.6).
     """
 
     changed = Signal()
@@ -32,7 +35,13 @@ class RetentionChoice(QWidget):
         self.setObjectName(f"{prefix}Retention")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(make_label(title, f"{prefix}RetentionTitle"))
+        layout.setSpacing(theme.FIELD_GAP)
+        info = InfoIcon(
+            title,
+            info_text(RETENTION_NOTICE_KEEP, RETENTION_NOTICE_SHORTEN),
+            f"{prefix}RetentionInfo",
+        )
+        layout.addLayout(title_row(title, f"{prefix}RetentionTitle", info))
         row = QHBoxLayout()
         self._group = QButtonGroup(self)
         self._buttons: dict[int, QRadioButton] = {}
@@ -45,8 +54,6 @@ class RetentionChoice(QWidget):
             row.addWidget(button)
         row.addStretch(1)
         layout.addLayout(row)
-        layout.addWidget(make_label(RETENTION_NOTICE_KEEP, f"{prefix}RetentionNoticeKeep"))
-        layout.addWidget(make_label(RETENTION_NOTICE_SHORTEN, f"{prefix}RetentionNoticeShorten"))
 
     def value(self) -> int | None:
         for days, button in self._buttons.items():

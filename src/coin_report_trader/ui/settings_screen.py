@@ -1,7 +1,7 @@
 """설정 화면(설계서 6, M1 명세 4절 15번)."""
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from coin_report_trader.core import (
     DEFAULT_CANDLE_COUNT,
@@ -10,13 +10,16 @@ from coin_report_trader.core import (
     Market,
     ScreenId,
 )
+from coin_report_trader.core.texts import SETTINGS_SAVED
+from coin_report_trader.ui import theme
 from coin_report_trader.ui.candle_choice import CandleChoice
+from coin_report_trader.ui.cards import Card, CardGrid
 from coin_report_trader.ui.coin_picker import CoinPicker
 from coin_report_trader.ui.retention import RetentionChoice
 from coin_report_trader.ui.screens import TITLE_NAME, screen_object_name, title_label
-from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode
+from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
 from coin_report_trader.ui.texts import COINS_LABEL, RETENTION_LABEL, SAVE_TEXT
-from coin_report_trader.ui.widgets import make_label, show_message
+from coin_report_trader.ui.widgets import make_label, set_role, show_message
 
 PREFIX = "settings"
 MESSAGE_NAME = "settingsMessage"
@@ -49,6 +52,8 @@ class SettingsScreen(QWidget):
         self._saved_count: int | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
+        layout.setSpacing(theme.CARD_GAP)
         layout.addWidget(title_label(SCREEN_TITLES[ScreenId.SETTINGS], TITLE_NAME))
         self._message = make_label("", MESSAGE_NAME)
         self._message.hide()
@@ -61,15 +66,24 @@ class SettingsScreen(QWidget):
         self._picker = CoinPicker(PREFIX, COINS_LABEL)
         self._candle = CandleChoice(PREFIX)
         self._retention = RetentionChoice(PREFIX, RETENTION_LABEL)
-        form_layout.addWidget(self._picker)
-        form_layout.addWidget(self._candle)
-        form_layout.addWidget(self._retention)
+        cards = []
+        for part in (self._picker, self._candle, self._retention):
+            card = Card()
+            card.body.addWidget(part)
+            cards.append(card)
+        grid = CardGrid(split_first=True, max_columns=2)
+        grid.set_cards(cards)
+        form_layout.addWidget(grid)
         layout.addWidget(self._form)
 
         self._save = QPushButton(SAVE_TEXT)
         self._save.setObjectName(SAVE_NAME)
+        set_role(self._save, theme.ROLE_PRIMARY)
         self._save.clicked.connect(self._on_save)
-        layout.addWidget(self._save)
+        save_row = QHBoxLayout()
+        save_row.addStretch(1)
+        save_row.addWidget(self._save)
+        layout.addLayout(save_row)
         layout.addStretch(1)
 
         self._picker.changed.connect(self._update_save)
@@ -122,6 +136,12 @@ class SettingsScreen(QWidget):
         self._form.setEnabled(active)
         self._picker.show_mode(picker)
         show_message(self._message, message)
+        saved = (
+            message is not None and message.text == SETTINGS_SAVED and message.tone is Tone.NORMAL
+        )
+        self._message.setProperty(theme.OK_PROPERTY, saved)  # "저장했습니다."는 '성공' 색
+        self._message.style().unpolish(self._message)
+        self._message.style().polish(self._message)
         self._update_save()
 
     # --- 안쪽 ---

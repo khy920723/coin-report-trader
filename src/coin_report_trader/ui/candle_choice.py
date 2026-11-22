@@ -9,6 +9,9 @@ from coin_report_trader.core import (
     DEFAULT_CANDLE_COUNT,
     CandleUnit,
 )
+from coin_report_trader.ui import theme
+from coin_report_trader.ui.cards import title_row
+from coin_report_trader.ui.info_icon import InfoIcon
 from coin_report_trader.ui.texts import (
     CANDLE_CHOICE_NOTE,
     COUNT_LABEL,
@@ -16,7 +19,6 @@ from coin_report_trader.ui.texts import (
     UNIT_LABEL,
     candle_count_tooltip,
 )
-from coin_report_trader.ui.widgets import make_label
 
 
 class CandleChoice(QWidget):
@@ -28,7 +30,9 @@ class CandleChoice(QWidget):
 
     `objectName`(앞의 `prefix`는 `firstSetup`이나 `settings`): `<prefix>Unit_<봉 단위 값>`(예:
     `firstSetupUnit_minute60`), `<prefix>Count_<수>`(예: `settingsCount_200`)(둘 다 라디오 버튼),
-    `<prefix>UnitTitle`, `<prefix>CountTitle`(칸 이름), `<prefix>CandleNote`(두 칸 아래 글).
+    `<prefix>UnitTitle`, `<prefix>CountTitle`(칸 이름),
+    `<prefix>CandleNote`('봉 단위*' 옆 'ⓘ'. 툴팁이 "봉 통계를 셈할 봉의 단위와 개수입니다."다.
+    옛 글 라벨은 없다. M1 명세 3.14.6).
     """
 
     changed = Signal()
@@ -38,8 +42,10 @@ class CandleChoice(QWidget):
         self.setObjectName(f"{prefix}Candle")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.FIELD_GAP)
 
-        layout.addWidget(make_label(UNIT_LABEL, f"{prefix}UnitTitle"))
+        note = InfoIcon(UNIT_LABEL, CANDLE_CHOICE_NOTE, f"{prefix}CandleNote")
+        layout.addLayout(title_row(UNIT_LABEL, f"{prefix}UnitTitle", note))
         unit_row = QHBoxLayout()
         self._unit_group = QButtonGroup(self)
         self._unit_buttons: dict[CandleUnit, QRadioButton] = {}
@@ -53,7 +59,7 @@ class CandleChoice(QWidget):
         unit_row.addStretch(1)
         layout.addLayout(unit_row)
 
-        layout.addWidget(make_label(COUNT_LABEL, f"{prefix}CountTitle"))
+        layout.addLayout(title_row(COUNT_LABEL, f"{prefix}CountTitle"))
         count_row = QHBoxLayout()
         self._count_group = QButtonGroup(self)
         self._count_buttons: dict[int, QRadioButton] = {}
@@ -67,7 +73,6 @@ class CandleChoice(QWidget):
         count_row.addStretch(1)
         layout.addLayout(count_row)
 
-        layout.addWidget(make_label(CANDLE_CHOICE_NOTE, f"{prefix}CandleNote"))
         self._count_buttons[DEFAULT_CANDLE_COUNT].setChecked(True)
         self._refresh_tooltips()
 
