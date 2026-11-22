@@ -39,7 +39,13 @@ from decimal import Decimal
 from coin_report_trader.core.clock import Clock
 from coin_report_trader.core.errors import QuoteError
 from coin_report_trader.core.market import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, Market
-from coin_report_trader.core.ports import BookSource, MinuteCandle, PriceSource, QuoteSource
+from coin_report_trader.core.ports import (
+    BookSource,
+    MinuteCandle,
+    MultiPriceSource,
+    PriceSource,
+    QuoteSource,
+)
 from coin_report_trader.core.texts import ERROR_BAD_RESPONSE
 from coin_report_trader.trading.quote.ratelimit import RequestLimiter
 
@@ -103,6 +109,20 @@ class QuoteClient:
             raise TypeError("소스가 PriceSource가 아니어서 현재가를 읽을 수 없다")
         self._limiter.acquire()
         return self._source.get_price(market)
+
+    def read_prices(self, markets: tuple[str, ...]) -> Mapping[str, Decimal]:
+        """여러 마켓의 현재가(M5 명세 3.15.2). 요청 한 번이고 봉 받기와 같은 요청 한도 장치를 쓴다.
+
+        물을 마켓이 없으면 요청하지 않고 빈 묶음이다. 소스가 `MultiPriceSource`가 아니면 요청을
+        내지 않고 `TypeError`다.
+        """
+        if not isinstance(self._source, MultiPriceSource):
+            raise TypeError("소스가 MultiPriceSource가 아니어서 여러 현재가를 읽을 수 없다")
+        markets = tuple(markets)
+        if not markets:
+            return {}
+        self._limiter.acquire()
+        return self._source.get_prices(markets)
 
     def read_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
         """(최우선 매도 호가, 최우선 매수 호가)(M3 명세 3.6). 요청 한 번이다."""

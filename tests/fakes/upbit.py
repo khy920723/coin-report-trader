@@ -19,6 +19,8 @@
   오류 코드)다. 토큰은 남기지 않는다.
 - 계정과 시장: `set_account(krw=…, coins={"AAA": (수량, 평균 매수가)})`, `set_chance(market, …)`,
   `set_market_price(market, price)`(시장가 매도가 체결되는 값).
+  `set_coin_details(currency, unit_currency=…, avg_buy_price_modified=…)`가 계좌 응답의
+  `unit_currency`(처음 `KRW`)와 `avg_buy_price_modified`(처음 거짓)를 정한다.
 - 주문:
   - 지정가는 `wait`로 걸리고, 매수는 원화(가격 × 수량 × (1 + 수수료율))를, 매도는 수량을 묶는다.
   - 시장가 매도는 `set_market_price`의 값에 바로 다 체결된다(`done`).
@@ -168,6 +170,8 @@ class FakeUpbitTransport:
         self._krw = Decimal(0)
         self._krw_locked = Decimal(0)
         self._coins: dict[str, list[Decimal]] = {}  # 통화 → [수량, 묶인 수량, 평균 매수가]
+        self._unit_currencies: dict[str, str] = {}  # 통화 → 평균 매수가의 기준 화폐(없으면 KRW)
+        self._avg_modified: dict[str, bool] = {}  # 통화 → 평균 매수가 고침 여부(없으면 거짓)
         self._chances: dict[str, dict[str, Decimal | None]] = {}
         self._market_prices: dict[str, Decimal] = {}
         self._orders: dict[str, _Order] = {}  # uuid → 주문
@@ -188,6 +192,14 @@ class FakeUpbitTransport:
                 currency: [Decimal(qty), Decimal(0), Decimal(avg)]
                 for currency, (qty, avg) in (coins or {}).items()
             }
+
+    def set_coin_details(
+        self, currency: str, *, unit_currency: str = "KRW", avg_buy_price_modified: bool = False
+    ) -> None:
+        """그 통화의 평균 매수가 기준 화폐와 고침 여부(계좌 응답의 두 필드. M5 명세 3.15.2)."""
+        with self._lock:
+            self._unit_currencies[currency] = unit_currency
+            self._avg_modified[currency] = avg_buy_price_modified
 
     def set_chance(
         self,
@@ -441,8 +453,8 @@ class FakeUpbitTransport:
                     "balance": _num(qty),
                     "locked": _num(locked),
                     "avg_buy_price": _num(avg),
-                    "avg_buy_price_modified": False,
-                    "unit_currency": "KRW",
+                    "avg_buy_price_modified": self._avg_modified.get(currency, False),
+                    "unit_currency": self._unit_currencies.get(currency, "KRW"),
                 }
             )
         return rows
