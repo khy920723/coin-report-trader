@@ -164,6 +164,25 @@ def test_only_held_coins_are_rows_and_locked_counts_as_held() -> None:
     ]
 
 
+def test_buy_amount_and_value_count_the_locked_qty_too() -> None:
+    # 주문 가능 8개, 묶임 2개, 평균 1,000, 현재가 1,100: 보유 10개로 셈한다.
+    view = build_account_view([bal("AAA", "8", "1000", locked="2")], {A: D(1100)}, {A}, {A}, T)
+    (row,) = view.rows
+    assert (row.qty, row.locked) == (D(10), D(2))
+    assert (row.buy_amount, row.value, row.pnl, row.pnl_rate) == (
+        D(10_000),
+        D(11_000),
+        D(1000),
+        D("0.1"),
+    )
+    assert (view.holdings_value, view.total_buy, view.total_pnl) == (
+        D(11_000),
+        D(10_000),
+        D(1000),
+    )
+    assert view.total_pnl_rate == D("0.1")
+
+
 def test_rows_are_ordered_by_value_then_unvalued_then_abc() -> None:
     accounts = [
         bal("EEE", "1", "1"),  # 평가하지 못함(원화 마켓 없음)
