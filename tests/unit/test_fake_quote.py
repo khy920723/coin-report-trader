@@ -35,6 +35,7 @@ from coin_report_trader.core import (
     QuoteError,
     QuoteSource,
 )
+from coin_report_trader.core.ports import MultiPriceSource
 from coin_report_trader.core.texts import ERROR_BLOCKED, ERROR_NETWORK, ERROR_TIMEOUT
 
 M = "KRW-AAA"
@@ -491,3 +492,39 @@ def test_a_script_for_candles_does_not_hit_book_requests() -> None:
     source.script(QuoteError(ERROR_TIMEOUT), unit=CandleUnit.MINUTE_60)
     assert source.get_tick_size(M) == Decimal(1)
     assert source.get_best_prices(M) == (Decimal(1000), Decimal(1000))
+
+
+# --- 여러 마켓의 현재가(M5 명세 3.15.2. MultiPriceSource) ---------------------------------------
+
+
+def test_fake_is_a_multi_price_source() -> None:
+    assert isinstance(FakeQuoteSource(), MultiPriceSource)
+
+
+def test_get_prices_answers_every_asked_market_in_one_request() -> None:
+    other = "KRW-BBB"
+    source = FakeQuoteSource(prices={M: Decimal(1000), other: Decimal(50)})
+    assert source.get_prices((M, other)) == {M: Decimal(1000), other: Decimal(50)}
+    (request,) = source.prices_requests()
+    assert (request.kind, request.market, request.error_name) == ("prices", f"{M},{other}", None)
+    assert source.price_requests() == []  # 한 마켓의 현재가 요청과 따로 센다
+
+
+def test_get_prices_refuses_unset_empty_and_repeated_markets() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(1000)})
+    with pytest.raises(KeyError, match="정하지 않은"):
+        source.get_prices((M, "KRW-BBB"))
+    with pytest.raises(ValueError, match="마켓"):
+        source.get_prices(())
+    with pytest.raises(ValueError, match="마켓"):
+        source.get_prices((M, M))
+    assert source.requests == []
+
+
+def test_get_prices_scripted_error_is_recorded() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(1000)})
+    source.script(QuoteError(ERROR_NETWORK), kind="prices")
+    with pytest.raises(QuoteError):
+        source.get_prices((M,))
+    assert source.prices_requests()[0].error_name == ERROR_NETWORK
+    assert source.get_prices((M,)) == {M: Decimal(1000)}

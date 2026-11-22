@@ -5,6 +5,8 @@
   줄의 (매도 호가, 매수 호가), `get_tick_size(market)`은 `/v1/orderbook/instruments`(마켓 하나)의
   `tick_size`, `get_minute_candles(market, *, to, count)`는 `/v1/candles/minutes/1`이다. 봉 받기와
   같은 변환과 오류 이름이고, 값이 0보다 크지 않거나 다른 마켓의 것이면 "응답 형식 오류"다.
+- `MultiPriceSource`도 갖춘다(M5 명세 3.15.2): `get_prices(markets)`는 `/v1/ticker`에 마켓 코드를
+  쉼표로 이어 요청 한 번으로 묻는다. 물은 마켓마다 항목이 꼭 하나씩이어야 한다.
 - `PriceSource`도 갖춘다: `get_price(market)`는 `/v1/ticker`(마켓 코드 하나)의 최근 체결가다(M2 명세
   3.6). 응답 변환과 오류 이름은 다른 요청과 같다(읽지 못하면 "응답 형식 오류").
 
@@ -162,6 +164,20 @@ class HttpQuoteSource:
         _check_market(market)
         data = self._get(PRICE_PATH, {"markets": market})
         return _parse(lambda value: convert.to_price(value, market), data)
+
+    def get_prices(self, markets: tuple[str, ...]) -> dict[str, Decimal]:
+        """`MultiPriceSource`(M5 명세 3.4, 3.15.2). 여러 마켓의 현재가를 요청 한 번으로 읽는다.
+
+        `/v1/ticker`에 마켓 코드를 쉼표로 이어 묻는다. 마켓마다 최근 체결가(`trade_price`)다.
+        """
+        if not markets:
+            raise ValueError("물을 마켓이 하나 이상 있어야 한다")
+        if len(set(markets)) != len(markets):
+            raise ValueError("같은 마켓을 두 번 묻지 않는다")
+        for market in markets:
+            _check_market(market)
+        data = self._get(PRICE_PATH, {"markets": ",".join(markets)})
+        return _parse(lambda value: convert.to_prices(value, markets), data)
 
     def get_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
         """`BookSource`(M3 명세 3.4, 3.6). (최우선 매도 호가, 최우선 매수 호가). 요청 한 번이다."""

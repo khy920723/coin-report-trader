@@ -81,6 +81,10 @@ class UpbitBalance:
     locked: Decimal
     """주문에 묶인 수량."""
     avg_buy_price: Decimal | None
+    unit_currency: str | None = "KRW"
+    """평균 매수가의 기준 화폐(M5 명세 3.15.2). 응답에 없거나 글이 아니면 `None`이다."""
+    avg_buy_price_modified: bool = False
+    """업비트가 평균 매수가를 고쳤는지. 응답에 없거나 참·거짓이 아니면 거짓이다."""
 
 
 @dataclass(frozen=True)
@@ -356,11 +360,17 @@ def _balance(value: Any) -> UpbitBalance:
     # 평균 매수가가 없거나(`null`, 키 없음) 0 이하면 `None`이다(3.5.4). 통화 하나 때문에 계정
     # 전체를 읽지 못하게 하지 않는다.
     avg = _optional_decimal(item.get("avg_buy_price"))
+    # 기준 화폐와 고침 여부는 계정 화면의 셈에만 쓴다(3.15.2). 읽지 못해도 계정 전체를 실패로
+    # 두지 않고, 기준 화폐를 모르면 그 줄은 "평균 매수가 없음"으로 보인다.
+    unit = item.get("unit_currency")
+    modified = item.get("avg_buy_price_modified")
     return UpbitBalance(
         currency=_text(item["currency"]),
         balance=convert.decimal_value(item["balance"]),
         locked=convert.decimal_value(item["locked"]),
         avg_buy_price=avg if avg is not None and avg > 0 else None,
+        unit_currency=unit if isinstance(unit, str) else None,
+        avg_buy_price_modified=modified is True,
     )
 
 

@@ -200,6 +200,25 @@ def to_price(data: Any, market: str) -> Decimal:
     return price
 
 
+def to_prices(data: Any, markets: tuple[str, ...]) -> dict[str, Decimal]:
+    """여러 마켓의 현재가 응답(`/v1/ticker`, 마켓 여럿. M5 명세 3.15.2).
+
+    물은 마켓마다 항목이 꼭 하나씩 있어야 한다(빠지거나, 겹치거나, 묻지 않은 마켓이면
+    `ShapeError`). 값은 그 마켓의 최근 체결가(`trade_price`)이고 0보다 큰 유한한 `Decimal`이다.
+    """
+    wanted = set(markets)
+    prices: dict[str, Decimal] = {}
+    for value in items(data):
+        item = _mapping(value)
+        market = market_code(_field(item, "market"))
+        if market in prices:
+            raise ShapeError("겹친 마켓의 현재가다")
+        prices[market] = _positive(_field(item, "trade_price"))
+    if set(prices) != wanted:
+        raise ShapeError("물은 마켓과 받은 마켓이 다르다")
+    return prices
+
+
 def to_candle(value: Any, unit: CandleUnit) -> Candle:
     """봉 응답의 항목 하나."""
     item = _mapping(value)

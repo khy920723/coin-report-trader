@@ -1,5 +1,5 @@
-"""가짜 공개 시세(M1 명세 3.13). `core.QuoteSource`(3.4)와 `core.PriceSource`(M2 명세 3.4, 3.6)의
-약속을 진짜와 같게 지킨다.
+"""가짜 공개 시세(M1 명세 3.13). `core.QuoteSource`(3.4), `core.PriceSource`(M2 명세 3.4, 3.6),
+`core.BookSource`(M3 명세 3.6), `core.MultiPriceSource`(M5 명세 3.4)의 약속을 진짜와 같게 지킨다.
 
 - 봉 단위는 넷이다: 30분봉, 60분봉, 240분봉, 일봉(33번이 넓혔다).
 
@@ -11,6 +11,9 @@
 - 현재가(M2 명세 3.6): `get_price(market)`는 시험이 코인마다 정한 값(`prices=`나 `set_prices`)을
   준다. 정하지 않은 코인이면 시험의 실수라 `KeyError`다(기록하지 않는다). 정한 `QuoteError`는 아래
   `script`로 낸다(종류 `PRICE`).
+- 여러 마켓의 현재가(M5 명세 3.15.2. `MultiPriceSource`): `get_prices(markets)`는 물은 마켓마다 같은
+  값을 요청 한 번으로 준다(종류 `PRICES`. 기록의 `market`은 마켓 코드를 쉼표로 이은 글). 정하지 않은
+  코인이 있으면 `KeyError`다(기록하지 않는다). 거르는 도우미는 `prices_requests()`다.
 - 호가, 호가 단위, 1분봉(M3 명세 3.6, 3.19. `BookSource`):
   - `get_best_prices(market)`은 `set_book(market, ask, bid)`로 정한 (매도 호가, 매수 호가),
     `get_tick_size(market)`은 `set_tick_size(market, tick)`로 정한 값이다.
@@ -26,8 +29,8 @@
 - 결과 정하기(`script`): 요청 하나 단위로 정한다. 받기 하나가 도는 동안 시험이 끼어들 수 없으므로
   미리 줄을 세워 둔다.
   - `script(*outcomes, kind=None, market=None, unit=None)`이 결과의 줄 하나를 더한다.
-    `kind`(`MARKETS`, `CANDLES`, `PRICE`, `BOOK`, `TICK`, `MINUTES`), `market`, `unit` 가운데 준
-    것이 모두 맞는 요청만 그 줄을 쓴다(주지 않은 것은 가리지 않는다).
+    `kind`(`MARKETS`, `CANDLES`, `PRICE`, `PRICES`, `BOOK`, `TICK`, `MINUTES`), `market`, `unit`
+    가운데 준 것이 모두 맞는 요청만 그 줄을 쓴다(주지 않은 것은 가리지 않는다).
   - 요청이 오면 더한 차례대로 줄을 보고, 맞고 남은 결과가 있는 첫 줄에서 결과 하나를 꺼낸다.
     결과는 `QuoteError`(그 오류를 낸다)나 `OK`(정상으로 답한다)다. 맞는 줄이 없거나 다 썼으면
     정상으로 답한다.
@@ -73,6 +76,8 @@ CANDLES: Final = "candles"
 """봉 요청의 종류."""
 PRICE: Final = "price"
 """현재가 요청의 종류(M2 명세 3.6)."""
+PRICES: Final = "prices"
+"""여러 마켓의 현재가를 한 번에 묻는 요청의 종류(M5 명세 3.15.2)."""
 BOOK: Final = "book"
 """최우선 호가 요청의 종류(M3 명세 3.6)."""
 TICK: Final = "tick"
@@ -215,7 +220,7 @@ class FakeQuoteSource:
         unit: CandleUnit | None = None,
     ) -> None:
         """결과의 줄 하나를 더한다(모듈 설명)."""
-        if kind not in (None, MARKETS, CANDLES, PRICE, *BOOK_KINDS):
+        if kind not in (None, MARKETS, CANDLES, PRICE, PRICES, *BOOK_KINDS):
             raise ValueError(f"script: 모르는 종류다: {kind!r}")
         for outcome in outcomes:
             if not isinstance(outcome, QuoteError | _Ok):
@@ -246,6 +251,11 @@ class FakeQuoteSource:
     def market_requests(self) -> list[QuoteRequest]:
         with self._lock:
             return [r for r in self.requests if r.kind == MARKETS]
+
+    def prices_requests(self) -> list[QuoteRequest]:
+        """여러 마켓의 현재가 요청. 기록의 `market`은 물은 마켓 코드를 쉼표로 이은 글이다."""
+        with self._lock:
+            return [r for r in self.requests if r.kind == PRICES]
 
     def price_requests(self, market: str | None = None) -> list[QuoteRequest]:
         with self._lock:
@@ -319,6 +329,18 @@ class FakeQuoteSource:
                 raise KeyError(f"get_price: 현재가를 정하지 않은 코인이다: {market}")
             self._answer(PRICE, market, None, None, None)
             return self._prices[market]
+
+    def get_prices(self, markets: tuple[str, ...]) -> dict[str, Decimal]:
+        """`MultiPriceSource`. 물은 마켓마다 정한 현재가를 요청 한 번으로 준다(모듈 설명)."""
+        markets = tuple(markets)
+        if not markets or len(set(markets)) != len(markets):
+            raise ValueError("물을 마켓이 하나 이상이고 겹치지 않아야 한다")
+        with self._lock:
+            missing = [m for m in markets if m not in self._prices]
+            if missing:
+                raise KeyError(f"get_prices: 현재가를 정하지 않은 코인이다: {missing}")
+            self._answer(PRICES, ",".join(markets), None, None, None)
+            return {market: self._prices[market] for market in markets}
 
     def get_candles(
         self, market: str, unit: CandleUnit, *, to: datetime | None, count: int
