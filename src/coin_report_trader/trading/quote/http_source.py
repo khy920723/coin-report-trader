@@ -1,6 +1,10 @@
 """진짜 `QuoteSource`(M1 명세 3.4): 거래소의 공개 시세를 `httpx`로 부른다.
 
 - 봉 단위는 넷이다: 30분봉, 60분봉, 240분봉, 일봉(요청 경로는 3.5.3).
+- `BookSource`도 갖춘다(M3 명세 3.6): `get_best_prices(market)`은 `/v1/orderbook`(마켓 하나)의 첫
+  줄의 (매도 호가, 매수 호가), `get_tick_size(market)`은 `/v1/orderbook/instruments`(마켓 하나)의
+  `tick_size`, `get_minute_candles(market, *, to, count)`는 `/v1/candles/minutes/1`이다. 봉 받기와
+  같은 변환과 오류 이름이고, 값이 0보다 크지 않거나 다른 마켓의 것이면 "응답 형식 오류"다.
 - `PriceSource`도 갖춘다: `get_price(market)`는 `/v1/ticker`(마켓 코드 하나)의 최근 체결가다(M2 명세
   3.6). 응답 변환과 오류 이름은 다른 요청과 같다(읽지 못하면 "응답 형식 오류").
 
@@ -28,6 +32,7 @@ import httpx
 
 from coin_report_trader import __version__
 from coin_report_trader.core.market import Candle, CandleUnit, Market
+from coin_report_trader.core.ports import MinuteCandle
 from coin_report_trader.core.tls import make_tls_context
 from coin_report_trader.trading.quote import convert
 from coin_report_trader.trading.quote.errors import (
@@ -46,6 +51,12 @@ MAX_COUNT = 200
 MARKETS_PATH = "/v1/market/all"
 PRICE_PATH = "/v1/ticker"
 """현재가(최근 체결가)의 요청 경로(M2 명세 3.6). 마켓 코드 하나로 부른다."""
+BOOK_PATH = "/v1/orderbook"
+"""호가(M3 명세 3.6). 마켓 코드 하나로 부르고 첫 줄을 쓴다."""
+TICK_PATH = "/v1/orderbook/instruments"
+"""호가 정책(호가 단위 `tick_size`. M3 명세 3.6). 마켓 코드 하나로 부른다."""
+MINUTE_PATH = "/v1/candles/minutes/1"
+"""1분봉(M3 명세 3.6)."""
 CANDLE_PATHS: MappingProxyType[CandleUnit, str] = MappingProxyType(
     {
         CandleUnit.MINUTE_30: "/v1/candles/minutes/30",
@@ -77,6 +88,11 @@ def format_to(moment: datetime) -> str:
 
 def _no_cookies() -> CookieJar:
     return CookieJar(policy=DefaultCookiePolicy(allowed_domains=()))
+
+
+def _check_market(market: str) -> None:
+    if not isinstance(market, str) or convert.MARKET_CODE.fullmatch(market) is None:
+        raise ValueError(f"마켓 코드의 꼴이 아니다: {market!r}")
 
 
 def check_request(market: str, unit: CandleUnit, to: datetime | None, count: int) -> CandleUnit:
@@ -143,10 +159,41 @@ class HttpQuoteSource:
 
     def get_price(self, market: str) -> Decimal:
         """`PriceSource`(M2 명세 3.4, 3.6). 그 마켓의 현재가(최근 체결가)다. 요청 한 번이다."""
-        if not isinstance(market, str) or convert.MARKET_CODE.fullmatch(market) is None:
-            raise ValueError(f"마켓 코드의 꼴이 아니다: {market!r}")
+        _check_market(market)
         data = self._get(PRICE_PATH, {"markets": market})
         return _parse(lambda value: convert.to_price(value, market), data)
+
+    def get_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
+        """`BookSource`(M3 명세 3.4, 3.6). (최우선 매도 호가, 최우선 매수 호가). 요청 한 번이다."""
+        _check_market(market)
+        data = self._get(BOOK_PATH, {"markets": market})
+        return _parse(lambda value: convert.to_best_prices(value, market), data)
+
+    def get_tick_size(self, market: str) -> Decimal:
+        """`BookSource`. 그 마켓의 호가 단위다. 요청 한 번이다."""
+        _check_market(market)
+        data = self._get(TICK_PATH, {"markets": market})
+        return _parse(lambda value: convert.to_tick_size(value, market), data)
+
+    def get_minute_candles(
+        self, market: str, *, to: datetime | None, count: int
+    ) -> tuple[MinuteCandle, ...]:
+        """`BookSource`. `to` 앞에 시작한 1분봉을 새것부터 `count`(200 이하)개까지 준다."""
+        check_request(market, CandleUnit.MINUTE_60, to, count)  # 마켓, to, count의 검사
+        params = {"market": market}
+        if to is not None:
+            params["to"] = format_to(to)
+        params["count"] = str(count)
+        data = self._get(MINUTE_PATH, params)
+        candles = _parse(convert.to_minute_candles, data)
+        if any(candle.market != market for candle in candles):
+            raise bad_response()
+        by_start: dict[datetime, MinuteCandle] = {}
+        for candle in candles:
+            if to is None or candle.start < to:
+                by_start.setdefault(candle.start, candle)
+        ordered = sorted(by_start.values(), key=lambda candle: candle.start, reverse=True)
+        return tuple(ordered[:count])
 
     def get_candles(
         self, market: str, unit: CandleUnit, *, to: datetime | None, count: int
