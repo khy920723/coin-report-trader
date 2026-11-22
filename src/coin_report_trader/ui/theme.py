@@ -1,28 +1,28 @@
 """화면의 보기 기준을 한곳에 둔다(M1 명세 3.14.7. 화면 설계서 5-0 판 2의 20장, 21장).
 
 색 토큰, 글꼴 단계, 간격을 여기에만 적고, 다른 모듈은 이 이름으로 읽는다(색 값을 글로 박지 않는다).
-앱 전체의 스타일시트(`app_stylesheet`)도 이 값으로 만든다. 어두운 테마 하나다.
+앱 전체의 스타일시트(`app_stylesheet`)도 이 값으로 만든다. 어두운 초록 계열의 테마 하나다(판 3).
 """
 
 from typing import Final
 
 # --- 색 토큰 열여섯(21장) ---
-BG: Final = "#0B1220"
-SURFACE: Final = "#131C2E"
-SELECTED: Final = "#1C2840"
-DIVIDER: Final = "#1F2A3D"
-BORDER: Final = "#66758F"
-TEXT: Final = "#F1F4F9"
-TEXT_SUB: Final = "#8B95A7"
-TEXT_DISABLED: Final = "#5C6779"
-ACCENT: Final = "#2B6BE6"
-ACCENT_TEXT: Final = "#5C93F2"
-FOCUS: Final = "#7AA7FF"
-RISE: Final = "#F0585D"
-FALL: Final = "#4B8DF8"
-OK: Final = "#3CCB7F"
-CAUTION: Final = "#F5B544"
-ERROR: Final = "#FF8A65"
+BG: Final = "#0A1A14"
+SURFACE: Final = "#11241C"
+SELECTED: Final = "#1A3529"
+DIVIDER: Final = "#1F3B2F"
+BORDER: Final = "#5E8574"
+TEXT: Final = "#EEF5F1"
+TEXT_SUB: Final = "#8FAA9D"
+TEXT_DISABLED: Final = "#56695F"
+ACCENT: Final = "#1D7A4F"
+ACCENT_TEXT: Final = "#4CC98B"
+FOCUS: Final = "#8EE6BA"
+RISE: Final = "#FF6468"
+FALL: Final = "#5C9DFF"
+OK: Final = "#7EE08A"
+CAUTION: Final = "#EDD05A"
+ERROR: Final = "#FF9548"
 
 COLORS: Final = {
     "bg": BG,

@@ -1,11 +1,12 @@
 """'ⓘ' 아이콘과 툴팁(M1 명세 3.14.7, 화면 설계서 5-0 판 2의 11장)."""
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QHelpEvent, QPixmap
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QToolTip, QWidget
+from PySide6.QtWidgets import QWidget
 
+from coin_report_trader.ui import info_icon as info_icon_module
 from coin_report_trader.ui import theme
 from coin_report_trader.ui.info_icon import BULLET, InfoIcon, info_text, tooltip_html
 
@@ -17,7 +18,6 @@ def host(qapp):
     widget = QWidget()
     widget.resize(200, 80)
     yield widget
-    QToolTip.hideText()
     widget.close()
     widget.deleteLater()
 
@@ -53,31 +53,63 @@ def test_two_or_more_texts_are_lines_that_start_with_a_bullet():
     assert BULLET == "• "
 
 
+class FakeToolTip:
+    """진짜 `QToolTip` 대신 보이기와 숨기기 부름을 적는다(숨김 타이머에 기대지 않는다)."""
+
+    def __init__(self) -> None:
+        self.shown: list[tuple[str, QWidget]] = []
+        self.hidden = 0
+
+    def showText(self, _pos, text, widget=None):
+        self.shown.append((text, widget))
+
+    def hideText(self):
+        self.hidden += 1
+
+
+@pytest.fixture
+def tip(monkeypatch) -> FakeToolTip:
+    fake = FakeToolTip()
+    monkeypatch.setattr(info_icon_module, "QToolTip", fake)
+    return fake
+
+
 @pytest.mark.parametrize("key", [Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter])
-def test_space_and_enter_open_the_tooltip_and_escape_closes_it(host, key):
+def test_space_and_enter_open_the_tooltip_and_escape_closes_it(host, tip, key):
     icon = _icon(host)
-    QToolTip.hideText()
-    assert not QToolTip.isVisible()
     QTest.keyClick(icon, key)
-    assert QToolTip.isVisible()
-    assert QToolTip.text() == tooltip_html(TIP)
+    assert tip.shown == [(tooltip_html(TIP), icon)]
+    assert tip.hidden == 0
     QTest.keyClick(icon, Qt.Key.Key_Escape)
-    assert not QToolTip.isVisible()
+    assert tip.hidden == 1
+    assert len(tip.shown) == 1
 
 
-def test_clicking_opens_the_same_tooltip(host):
+def test_clicking_opens_the_same_tooltip(host, tip):
     icon = _icon(host)
-    QToolTip.hideText()
     QTest.mouseClick(icon, Qt.MouseButton.LeftButton, pos=QPoint(8, 8))
-    assert QToolTip.isVisible()
-    assert QToolTip.text() == tooltip_html(TIP)
+    assert tip.shown == [(tooltip_html(TIP), icon)]
 
 
-def test_other_keys_do_not_open_the_tooltip(host):
+def test_other_keys_do_not_open_the_tooltip(host, tip):
     icon = _icon(host)
-    QToolTip.hideText()
     QTest.keyClick(icon, Qt.Key.Key_A)
-    assert not QToolTip.isVisible()
+    assert tip.shown == []
+    assert tip.hidden == 0
+
+
+def test_losing_the_focus_closes_the_tooltip(host, tip):
+    icon = _icon(host)
+    QTest.keyClick(icon, Qt.Key.Key_Space)
+    icon.clearFocus()
+    assert tip.hidden >= 1
+
+
+def test_the_hover_tooltip_event_shows_the_wrapped_text(host, tip):
+    icon = _icon(host)
+    event = QHelpEvent(QEvent.Type.ToolTip, QPoint(5, 5), icon.mapToGlobal(QPoint(5, 5)))
+    assert icon.event(event) is True
+    assert tip.shown == [(tooltip_html(TIP), icon)]
 
 
 def test_the_tooltip_is_at_most_320px_wide_and_never_cut(qapp):

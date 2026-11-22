@@ -1,4 +1,4 @@
-"""색 토큰, 글꼴 단계, 간격과 앱 전체의 스타일시트(M1 명세 3.14.7, 화면 설계서 5-0 판 2의 20·21장)."""
+"""색 토큰, 글꼴 단계, 간격과 앱 전체의 스타일시트(M1 명세 3.14.7, 화면 설계서 5-0의 20·21장)."""
 
 import re
 from pathlib import Path
@@ -14,22 +14,22 @@ from coin_report_trader.ui.widgets import WARNING_COLOR, make_label
 UI_DIR = Path(theme.__file__).parent
 
 TOKENS = {
-    "bg": "#0B1220",
-    "surface": "#131C2E",
-    "selected": "#1C2840",
-    "divider": "#1F2A3D",
-    "border": "#66758F",
-    "text": "#F1F4F9",
-    "text-sub": "#8B95A7",
-    "text-disabled": "#5C6779",
-    "accent": "#2B6BE6",
-    "accent-text": "#5C93F2",
-    "focus": "#7AA7FF",
-    "rise": "#F0585D",
-    "fall": "#4B8DF8",
-    "ok": "#3CCB7F",
-    "caution": "#F5B544",
-    "error": "#FF8A65",
+    "bg": "#0A1A14",
+    "surface": "#11241C",
+    "selected": "#1A3529",
+    "divider": "#1F3B2F",
+    "border": "#5E8574",
+    "text": "#EEF5F1",
+    "text-sub": "#8FAA9D",
+    "text-disabled": "#56695F",
+    "accent": "#1D7A4F",
+    "accent-text": "#4CC98B",
+    "focus": "#8EE6BA",
+    "rise": "#FF6468",
+    "fall": "#5C9DFF",
+    "ok": "#7EE08A",
+    "caution": "#EDD05A",
+    "error": "#FF9548",
 }
 
 
@@ -93,7 +93,7 @@ def test_no_other_ui_module_writes_a_color_value():
 
 
 def test_the_warning_color_is_the_error_token_and_the_tone_property_is_unchanged(qapp):
-    assert WARNING_COLOR == "#FF8A65" == theme.ERROR
+    assert WARNING_COLOR == "#FF9548" == theme.ERROR
     label = make_label("글", "x", Tone.WARNING)
     assert label.property("tone") == "warning"
     assert theme.ERROR in label.styleSheet()
