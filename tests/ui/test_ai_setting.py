@@ -4,6 +4,7 @@
 """
 
 import pytest
+from acceptance.m3_support import fill_trade_fields
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -33,8 +34,8 @@ from coin_report_trader.ui.info_icon import InfoIcon
 
 MARKETS = tuple(Market(f"KRW-C{i}", f"가짜{i}", caution=False) for i in range(4))
 USAGE = "앱의 AI 사용은 이 PC 사용자의 Claude 구독 사용 한도에서 빠집니다."
-REASON = "코인, 봉 단위, 알림 보관 기간과 여덟 칸의 모델·노력 값을 고르면 누를 수 있습니다."
-INTRO = '아래 값을 고른 뒤 "저장하고 시작"을 누르세요. 별표(*)가 붙은 칸은 꼭 골라야 합니다.'
+REASON = "꼭 넣는 칸을 모두 채우고 '꼭 읽을 글을 읽었습니다'를 고르면 누를 수 있습니다."
+INTRO = '아래 값을 고른 뒤 "모의매매 시작"을 누르세요. 별표(*)가 붙은 칸은 꼭 골라야 합니다.'
 SAVED = tuple(AiChoice(slot, "sonnet", Effort.HIGH) for slot in AiSlot)
 
 
@@ -225,6 +226,9 @@ def test_start_needs_all_eight_values_and_the_reason_is_shown_until_then(window,
         if index < len(AiSlot) - 1:
             _combo(first, "firstSetup", "Effort", slot).setCurrentIndex(1)
     _combo(first, "firstSetup", "Effort", AiSlot.SESSION).setCurrentIndex(2)
+    assert not start.isEnabled()  # 여덟 칸만으로는 안 된다: 3단계 칸과 확인란이 남았다
+    assert not reason.isHidden()
+    fill_trade_fields(first)
     assert start.isEnabled()
     assert reason.isHidden()  # 누를 수 있으면 보이지 않는다
     # 하나를 다시 비우면 다시 눌리지 않고 까닭이 돌아온다.
@@ -241,6 +245,7 @@ def test_start_passes_the_four_choices_in_the_slot_order(window, actions):
     for slot in AiSlot:
         _combo(first, "firstSetup", "Model", slot).setCurrentIndex(models[slot])
         _combo(first, "firstSetup", "Effort", slot).setCurrentIndex(efforts[slot])
+    fill_trade_fields(first)
     _button(first, "firstSetupStart").click()
     ((_args, kwargs),) = actions.saves
     assert kwargs["ai_choices"] == (
@@ -264,6 +269,8 @@ def test_a_legacy_record_does_not_lock_the_eight_values(window, actions):
     first.findChild(QRadioButton, "firstSetupUnit_minute60").click()
     assert not start.isEnabled()  # 봉 단위만으로는 안 된다
     _choose_all(first, "firstSetup")
+    assert not start.isEnabled()  # 3단계 칸과 확인란이 남았다
+    fill_trade_fields(first)
     assert start.isEnabled()
 
 

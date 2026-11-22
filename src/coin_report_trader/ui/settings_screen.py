@@ -10,6 +10,7 @@ from coin_report_trader.core import (
     CandleUnit,
     Market,
     ScreenId,
+    TradeSettings,
 )
 from coin_report_trader.core.texts import SETTINGS_SAVED
 from coin_report_trader.ui import theme
@@ -32,6 +33,7 @@ from coin_report_trader.ui.texts import (
     SAVE_TEXT,
     SETTINGS_INTRO,
 )
+from coin_report_trader.ui.trade_fields import TradeFields
 from coin_report_trader.ui.widgets import make_label, set_dim, set_role, show_message
 
 PREFIX = "settings"
@@ -47,7 +49,7 @@ AUTOSTART_MESSAGE_NAME = "settingsAutostartMessage"
 
 
 class AutostartChoice(QWidget):
-    """"PC를 켜면 자동으로 시작" 확인란과 그 옆 'ⓘ', 아래의 결과 글(M1 명세 3.16.1).
+    """ "PC를 켜면 자동으로 시작" 확인란과 그 옆 'ⓘ', 아래의 결과 글(M1 명세 3.16.1).
 
     `objectName`: `settingsAutostart`(확인란), `settingsAutostartInfo`('ⓘ'. 툴팁은 글 하나이고,
     이 실행에서 쓸 수 없으면 둘째 줄이 더해져 두 줄이 "• "로 시작한다), `settingsAutostartMessage`
@@ -104,15 +106,17 @@ class SettingsScreen(QWidget):
     """처음 설정을 마친 뒤에만 칸이 채워지고 고칠 수 있다(그 전에는 비어 있고 흐리다).
 
     저장된 코인, 봉 단위, 봉 개수, 알림 보관 기간이 골라진 채 보인다. "저장"을 누르면
-    `save_requested(coins, retention_days, candle_unit, candle_count, autostart, ai_choices)`
+    `save_requested(coins, retention_days, candle_unit, candle_count, autostart, ai_choices, trade)`
     (`autostart`는 이 실행에서 쓸 수 있을 때만 확인란의 값이고 아니면 `None`. `ai_choices`는
-    여덟 칸이 모두 골라져 있을 때만 네 칸이고 아니면 `None`), "다시 시도"를 누르면
+    여덟 칸이 모두 골라져 있을 때만 네 칸이고 아니면 `None`. `trade`는 저장된 3단계 값이 있을 때
+    칸을 읽은 `TradeSettings`이고, 3단계 전의 값이면 `None`. 3단계 칸의 꼴이 틀리면 그 칸 아래에
+    글이 보이고 아무것도 내지 않는다), "다시 시도"를 누르면
     `retry_requested`가 난다. 저장된 봉 단위가 없으면(옛 기록을 읽은 사이) 봉 단위는 `None`으로
     넘기고, 그러면 저장된 값을 그대로 둔다. 이 화면은 동작을 직접 부르지 않고, 보관 기간을
     줄이는 확인 창도 직접 띄우지 않는다(창이 한다).
     """
 
-    save_requested = Signal(object, int, object, object, object, object)
+    save_requested = Signal(object, int, object, object, object, object, object)
     retry_requested = Signal()
 
     def __init__(self) -> None:
@@ -127,6 +131,7 @@ class SettingsScreen(QWidget):
         self._saved_count: int | None = None
         self._saved_autostart = False
         self._saved_ai: tuple[AiChoice, ...] = ()
+        self._saved_trade: TradeSettings | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
@@ -155,18 +160,25 @@ class SettingsScreen(QWidget):
         self._ai = AiChoices(PREFIX, required=False)
         self._ai_warning = make_label(AI_PARTIAL_WARNING, AI_WARNING_NAME, Tone.WARNING)
         self._ai_warning.hide()
+        self._fields = TradeFields(PREFIX, required=False)
+        self._fields.set_funds_locked(True)  # 모의매매를 시작한 뒤에는 고칠 수 없다(M3 명세 3.7.1)
+        # 차례는 처음 설정과 같다(PPT 5-4 판 4의 23장). 알림 보관 기간과 자동 시작은 그 밖의 값
+        # 카드에 든다.
+        budget, ratio, limits, other = self._fields.cards(self._retention, self._autostart)
         cards = []
-        for part in (self._picker, self._candle, self._retention, self._ai):
-            card = Card()
-            card.body.addWidget(part)
-            if part is self._retention:
-                card.body.addWidget(self._autostart)  # 알림 보관 기간 아래(M1 명세 3.16.1)
-            if part is self._ai:
-                card.body.addWidget(self._ai_warning)  # 일부만 골랐을 때(M2 명세 3.12.2)
-            if part is not self._picker:
-                # 오른쪽 카드는 내용을 위쪽에 붙이고, 남는 높이는 아래의 빈 자리가 받는다.
-                card.body.addStretch(1)
+        for part in (self._picker, budget, ratio, limits, self._candle, self._ai):
+            if isinstance(part, Card):
+                card = part
+            else:
+                card = Card()
+                card.body.addWidget(part)
+                if part is self._ai:
+                    card.body.addWidget(self._ai_warning)  # 일부만 골랐을 때(M2 명세 3.12.2)
+                if part is not self._picker:
+                    # 오른쪽 카드는 내용을 위쪽에 붙이고, 남는 높이는 아래의 빈 자리가 받는다.
+                    card.body.addStretch(1)
             cards.append(card)
+        cards.append(other)
         grid = CardGrid(split_first=True, max_columns=2)
         grid.set_cards(cards)
         form_layout.addWidget(grid)
@@ -186,7 +198,8 @@ class SettingsScreen(QWidget):
         layout.addLayout(save_row)
         layout.addStretch(1)
 
-        self._picker.changed.connect(self._update_save)
+        self._picker.changed.connect(self._on_picks)
+        self._fields.changed.connect(self._update_save)
         self._candle.changed.connect(self._update_save)
         self._retention.changed.connect(self._update_save)
         self._autostart.changed.connect(self._update_save)
@@ -204,10 +217,12 @@ class SettingsScreen(QWidget):
         candle_count: int | None = None,
         autostart: bool = False,
         ai_choices: tuple[AiChoice, ...] = (),
+        trade: TradeSettings | None = None,
     ) -> None:
         """저장된 값을 칸에 채운다(고치던 값은 버린다). 칸을 고칠 수 있을 때만 보인다."""
         self._saved_autostart = autostart
         self._saved_ai = ai_choices
+        self._saved_trade = trade
         self._saved_coins = coins
         self._saved_days = retention_days
         self._saved_unit = candle_unit
@@ -218,6 +233,8 @@ class SettingsScreen(QWidget):
 
     def _fill_saved(self) -> None:
         self._picker.set_picks(self._saved_coins)
+        self._fields.set_coins(self._saved_coins)
+        self._fields.set_values(self._saved_trade)
         self._retention.set_value(self._saved_days)
         count = self._saved_count if self._saved_count is not None else DEFAULT_CANDLE_COUNT
         self._candle.set_values(self._saved_unit, count)
@@ -243,6 +260,8 @@ class SettingsScreen(QWidget):
         elif not active:
             # 처음 설정 전, 불러오는 중, 설정을 읽지 못함: 칸이 비어 있고 흐리다.
             self._picker.set_picks(())
+            self._fields.set_coins(())
+            self._fields.set_values(None)
             self._retention.set_value(None)
             self._candle.set_values(None, None)
             self._autostart.set_value(False)
@@ -263,12 +282,25 @@ class SettingsScreen(QWidget):
     # --- 안쪽 ---
 
     def _update_save(self) -> None:
+        # 3단계 전의 값(`trade`가 없음)이면 3단계 칸을 보지 않는다(M3 명세 3.11.2).
+        trade_ready = self._saved_trade is None or self._fields.is_complete()
         self._save.setEnabled(
-            self._active and bool(self._picker.picks()) and self._retention.value() is not None
+            self._active
+            and bool(self._picker.picks())
+            and self._retention.value() is not None
+            and trade_ready
         )
         self._revert.setEnabled(self._active)
         # 칸이 일부만 골라져 있으면 그 카드 아래에 경고가 보인다(나머지 값은 저장된다).
         self._ai_warning.setVisible(self._active and self._ai.is_partial())
+
+    def _on_picks(self) -> None:
+        self._fields.set_coins(self._picker.picks())
+        self._update_save()
+
+    def show_errors(self, errors) -> None:
+        """저장 뒤 검사에 걸린 칸의 글(`SaveResult.field_errors`)을 칸 아래에 보인다."""
+        self._fields.show_errors(errors)
 
     def _on_revert(self) -> None:
         """저장하지 않은 고침을 버리고 칸을 마지막으로 받은 값으로 되돌린다(동작은 안 부른다)."""
@@ -283,6 +315,17 @@ class SettingsScreen(QWidget):
         if not self._save.isEnabled() or not coins or days is None:
             return
         autostart = self._autostart.value() if self._autostart.supported() else None
+        trade = None
+        if self._saved_trade is not None:
+            trade = self._fields.trade()  # 꼴이 틀리면 칸 아래에 글이 보이고 저장은 부르지 않는다
+            if trade is None:
+                return
         self.save_requested.emit(
-            coins, days, self._candle.unit(), self._candle.count(), autostart, self._ai.choices()
+            coins,
+            days,
+            self._candle.unit(),
+            self._candle.count(),
+            autostart,
+            self._ai.choices(),
+            trade,
         )

@@ -147,14 +147,15 @@ def test_the_field_sits_in_the_other_values_card_under_the_retention_choice(wind
         widget = layout.itemAt(index).widget()
         if widget is not None:
             names.append(widget.objectName())
-    assert names[:1] == ["settingsRetention"]
+    assert names[-2] == "settingsRetention"  # 그 밖의 값 카드의 끝: 알림 보관 기간, 자동 시작
     box = _box(screen)
     assert card.isAncestorOf(box)
     assert box.mapTo(card, box.rect().topLeft()).y() > retention.mapTo(
         card, retention.rect().bottomLeft()
     ).y() - 1
-    # 카드는 코인, 봉 단위·봉 개수, 그 밖의 값에 2단계의 Claude 모델이다(M2 명세 3.12.2).
-    assert len(screen.findChildren(Card)) == 4
+    # 카드는 코인, 예산과 투자 비율, 매수 비율, 손절과 한도, 봉 단위·봉 개수, Claude 모델, 그 밖의
+    # 값이다(M3 명세 3.17.5).
+    assert len(screen.findChildren(Card)) == 7
     # 'ⓘ'는 확인란 바로 오른쪽이다.
     row = box.parentWidget().layout().itemAt(0).layout()
     assert [row.itemAt(i).widget().objectName() for i in range(2)] == [

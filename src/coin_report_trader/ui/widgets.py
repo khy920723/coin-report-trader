@@ -40,6 +40,10 @@ def make_label(text: str, name: str, tone: Tone = Tone.NORMAL) -> QLabel:
     return label
 
 
+LOCK_PROPERTY = "dimLocked"
+"""참이면 `set_dim`이 다시 켜지 못하는 칸(예: 모의매매를 시작한 뒤의 가상 자금. M3 명세 3.7.1)."""
+
+
 def set_dim(root: QWidget, dim: bool) -> None:
     """`root` 안의 칸을 흐리게(`dim`이 참) 하거나 다시 고칠 수 있게 한다.
 
@@ -49,6 +53,9 @@ def set_dim(root: QWidget, dim: bool) -> None:
     """
     for child in root.children():
         if not isinstance(child, QWidget) or isinstance(child, InfoIcon):
+            continue
+        if child.property(LOCK_PROPERTY):
+            child.setEnabled(False)
             continue
         if child.findChildren(InfoIcon):
             child.setEnabled(True)

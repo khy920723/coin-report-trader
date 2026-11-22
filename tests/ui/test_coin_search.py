@@ -54,6 +54,8 @@ class FakeActions:
         candle_unit=None,
         candle_count=None,
         ai_choices=None,
+        trade=None,
+        accept_below_stop=(),
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
 
@@ -164,7 +166,7 @@ def test_each_line_is_the_symbol_and_the_korean_name(screen):
     texts = {
         box.objectName().removeprefix(f"{prefix}Coin_KRW-"): box.text()
         for box in found.findChildren(QCheckBox)
-        if box.objectName() != "settingsAutostart"  # 코인 줄이 아니다
+        if "Coin_" in box.objectName()  # 코인 줄만(자동 시작과 읽었습니다 확인란은 아니다)
     }
     assert texts == {
         "bnb": "bnb 비엔비",

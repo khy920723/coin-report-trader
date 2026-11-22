@@ -30,7 +30,9 @@ from coin_report_trader.core import (
     AlertCategory,
     AlertsView,
     AlertView,
+    BelowStopView,
     CandleUnit,
+    CoinTradeView,
     CoinView,
     LoadState,
     MarketsView,
@@ -39,10 +41,12 @@ from coin_report_trader.core import (
     SaveResult,
     ScreenId,
     SettingsView,
+    TradeSettings,
     UiActions,
     UiContext,
     UiUpdate,
     WebhookView,
+    coin_label,
 )
 from coin_report_trader.core.texts import (
     ERROR_BLOCKED,
@@ -70,6 +74,8 @@ from coin_report_trader.ui.texts import (
     ALERT_CLEAR_TITLE,
     ALERT_DELETE_BODY,
     ALERT_DELETE_TITLE,
+    BELOW_STOP_TITLE,
+    HOLDING_REMOVE_TITLE,
     LOADING_TEXT,
     REPORT_BEFORE_FIRST_SETUP,
     REPORT_NONE,
@@ -78,6 +84,9 @@ from coin_report_trader.ui.texts import (
     STATUS_BEFORE_FIRST_SETUP,
     WEBHOOK_DELETE_TITLE,
     alert_clear_body,
+    below_stop_body,
+    holding_remove_body,
+    price_text,
     retention_shrink_body,
     status_nav_text,
     webhook_delete_body,
@@ -169,6 +178,10 @@ class MainWindow(QMainWindow):
         self._report_selected: int | None = None
         self._report_wanted: int | None = None
         """다른 화면에서 열 때 고를 `report_id`. 받은 목록에 있을 때만 쓴다."""
+        self._trade_views: dict[str, CoinTradeView] = {}
+        self._last_save: dict[str, object] | None = None
+        """마지막으로 부른 `save_settings`의 인자. 손절선 아래 확인 뒤 다시 저장할 때 쓴다."""
+        self._accepted_below_stop: tuple[str, ...] = ()
         self._report_coins: tuple[str, ...] | None = None
         self._report_rounds_key: object = None
 
@@ -324,6 +337,10 @@ class MainWindow(QMainWindow):
             self._on_report_list(update)
         elif isinstance(update, ReportView):
             self._on_report_view(update)
+        elif isinstance(update, CoinTradeView):
+            self._trade_views[update.market] = update  # 보유 코인을 뺄 때의 확인에 쓴다(3.11.4)
+        elif isinstance(update, BelowStopView):
+            self._on_below_stop(update)
 
     def set_confirm_handler(self, handler: ConfirmHandler | None) -> None:
         """확인 창 대신 `handler(제목, 본문)`을 부르게 한다. `None`이면 진짜 확인 창을 띄운다.
@@ -352,6 +369,7 @@ class MainWindow(QMainWindow):
             view.candle_count,
             view.autostart,
             view.ai_choices,
+            view.trade,
         )
         old_key = (
             None
@@ -364,10 +382,18 @@ class MainWindow(QMainWindow):
                 old.candle_count,
                 old.autostart,
                 old.ai_choices,
+                old.trade,
             )
         )
         if key != old_key:
-            self._first_setup.load_saved(view.coins, view.retention_days)
+            self._first_setup.load_saved(
+                view.coins,
+                view.retention_days,
+                view.candle_unit,
+                view.candle_count,
+                view.ai_choices,
+                view.trade,
+            )
             self._settings.load_saved(
                 view.coins,
                 view.retention_days,
@@ -375,6 +401,7 @@ class MainWindow(QMainWindow):
                 view.candle_count,
                 view.autostart,
                 view.ai_choices,
+                view.trade,
             )
         self._settings.set_autostart_state(view.autostart_supported, view.autostart_error)
         # 고른 코인에 없는 코인의 마지막 `CoinView`는 버린다(다시 고르면 새 값이 올 때까지
@@ -427,6 +454,11 @@ class MainWindow(QMainWindow):
         self._messages.pop(origin, None)
         self._saved_timer.stop()
         self._saved_message = None
+        self._last_save = None
+        self._accepted_below_stop = ()
+        # 받지 않는 값의 글은 걸린 칸 아래에 보인다(비어 있으면 이전 글을 걷는다. 3.11.2).
+        screen = self._first_setup if origin is ScreenId.FIRST_SETUP else self._settings
+        screen.show_errors(result.field_errors)
         if result.ok:
             if origin is ScreenId.FIRST_SETUP:
                 select_screen(self, ScreenId.STATUS)
@@ -455,8 +487,11 @@ class MainWindow(QMainWindow):
         unit: CandleUnit | None,
         count: int | None,
         ai_choices: tuple[AiChoice, ...] | None = None,
+        trade: TradeSettings | None = None,
     ) -> None:
-        self._submit(ScreenId.FIRST_SETUP, coins, days, unit, count, ai_choices=ai_choices)
+        self._submit(
+            ScreenId.FIRST_SETUP, coins, days, unit, count, ai_choices=ai_choices, trade=trade
+        )
 
     def _on_save(
         self,
@@ -466,6 +501,7 @@ class MainWindow(QMainWindow):
         count: int | None,
         autostart: bool | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
+        trade: TradeSettings | None = None,
     ) -> None:
         saved_days = self._saved.retention_days if self._saved is not None else None
         # 저장된 값이 없을 때(처음 고를 때)와 같거나 길게 바꿀 때는 확인 창이 없다.
@@ -474,7 +510,22 @@ class MainWindow(QMainWindow):
             RETENTION_SHRINK_TITLE, retention_shrink_body(saved_days, days)
         ):
             return
-        self._submit(ScreenId.SETTINGS, coins, days, unit, count, autostart, ai_choices)
+        # 가상 보유가 있는 코인을 빼면 SCR-06-6(3.11.4). 하나라도 "취소"면 아무것도 저장하지 않는다.
+        for market in self._removed_held_coins(coins):
+            if not self._ask_confirm(HOLDING_REMOVE_TITLE, holding_remove_body(coin_label(market))):
+                return
+        self._submit(ScreenId.SETTINGS, coins, days, unit, count, autostart, ai_choices, trade)
+
+    def _removed_held_coins(self, coins: tuple[str, ...]) -> list[str]:
+        if self._saved is None:
+            return []
+        held = []
+        for market in self._saved.coins:
+            view = self._trade_views.get(market)
+            holding = view.holding if view is not None else None
+            if market not in coins and holding is not None and holding.qty > 0:
+                held.append(market)
+        return held
 
     def _submit(
         self,
@@ -485,6 +536,7 @@ class MainWindow(QMainWindow):
         count: int | None,
         autostart: bool | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
+        trade: TradeSettings | None = None,
     ) -> None:
         first_setup = origin is ScreenId.FIRST_SETUP
         if (
@@ -503,10 +555,53 @@ class MainWindow(QMainWindow):
             extra["autostart"] = autostart
         if ai_choices is not None:  # 여덟 칸이 다 골라져 있을 때만 넘긴다(M2 명세 3.12.2)
             extra["ai_choices"] = ai_choices
+        if trade is not None:  # 3단계 칸이 있을 때만 넘긴다(M3 명세 3.11.2)
+            extra["trade"] = trade
+        self._last_save = {
+            "coins": coins,
+            "retention_days": days,
+            "first_setup": first_setup,
+            "candle_unit": unit,
+            "candle_count": count,
+            **extra,
+        }
+        self._accepted_below_stop = ()
         self._actions.save_settings(
             coins, days, first_setup=first_setup, candle_unit=unit, candle_count=count, **extra
         )
         self._update()
+
+    def _on_below_stop(self, view: BelowStopView) -> None:
+        """손절선 아래인 보유(3.11.4): 저장하지 않고 SCR-06-5를 띄운다. "확인"이면 그 코인을
+        `accept_below_stop`에 넣어 다시 저장하고, "취소"면 아무것도 저장하지 않고 고친 값은 칸에
+        남긴다(그 뒤의 모습은 M3 명세 7절의 물을 것 2)."""
+        pending = self._last_save
+        if pending is None or self._actions is None:
+            return
+        body = below_stop_body(
+            coin_label(view.market),
+            price_text(view.avg_price),
+            price_text(view.price),
+            price_text(view.stop_line),
+        )
+        if not self._ask_confirm(BELOW_STOP_TITLE, body):
+            if self._pending_saves:
+                self._pending_saves.pop(0)
+            self._last_save = None
+            self._accepted_below_stop = ()
+            self._update()
+            return
+        if view.market not in self._accepted_below_stop:
+            self._accepted_below_stop = (*self._accepted_below_stop, view.market)
+        arguments = dict(pending)
+        coins = arguments.pop("coins")
+        days = arguments.pop("retention_days")
+        self._actions.save_settings(
+            coins,  # type: ignore[arg-type]
+            days,  # type: ignore[arg-type]
+            accept_below_stop=self._accepted_below_stop,
+            **arguments,  # type: ignore[arg-type]
+        )
 
     def _on_nav_clicked(self, item) -> None:
         """사용자가 화면 이름 목록의 줄을 눌렀다. 현황이면 보지 않은 알림이 있는 맨 앞 탭을 연다."""
@@ -669,7 +764,7 @@ class MainWindow(QMainWindow):
             select_screen(self, ScreenId.REPORTS)
 
     def _open_help(self) -> None:
-        """"도움말" 단추와 F1: 도움말 창을 연다(열려 있으면 앞으로 낸다). 처음 설정 전에도 된다."""
+        """ "도움말" 단추와 F1: 도움말 창을 연다(열려 있으면 앞으로 낸다). 처음 설정 전에도 된다."""
         if self._help is None:
             self._help = HelpWindow(guide_path(), self)
         self._help.open_help()
@@ -931,6 +1026,30 @@ def create_main_window(context: UiContext) -> MainWindow:
       `firstSetupAiInfo`, 제목 옆 'ⓘ' `firstSetupIntroInfo`(2 자리의 글. 처음 설정을 마친 뒤에는
       숨김), 시작할 수 없는 까닭 `firstSetupStartReason`(단추가 눌리지 않을 때만 보임).
       "꼭 읽을 글" 'ⓘ'는 다섯 글(가, 마, 바, 사, 아)을 "• "로 잇는다.
+
+    - 3단계(M3 명세 3.17.5. 이름은 `trade_fields.py`의 문서 문자열에 모두 있다. 앞은
+      `firstSetup`이나 `settings`): 예산 `<앞>Budget`, 투자 비율 `<앞>CoinRatio_<마켓 코드>`,
+      "코인 예산 {금액}원"
+      `<앞>CoinBudget_<마켓 코드>`, "합계 {합}%" `<앞>CoinRatioSum`(받지 않는 합의 글
+      `<앞>CoinRatioSumError`), `<앞>FirstRatio`, `<앞>MrFirstRatio`, `<앞>AddRatio`,
+      `<앞>Tolerance`, 코인마다의 "첫 매수 금액 …" `<앞>CoinBuy_<마켓 코드>`, `<앞>StopRatio`,
+      `<앞>DailyLoss`, `<앞>OrderInterval`, 둥근 단추 `<앞>Method_<값>`, `<앞>PauseStop_<값>`,
+      `<앞>MrSell_yes`·`<앞>MrSell_no`, `<앞>MrLoss`, `<앞>PaperFunds`, `<앞>BackupDays`, 칸 아래 글
+      `<칸 객체 이름>Error`, 'ⓘ' `<앞>BudgetInfo`, `<앞>RatioInfo`, `firstSetupLimitsInfo`
+      (설정에는 없다), 유의·주의 코인을 고르면 `<앞>CautionNote`.
+    - 처음 설정의 확인란 `firstSetupRead`("꼭 읽을 글을 읽었습니다". '꼭 읽을 글'의 제목과 'ⓘ' 바로
+      아래)와 단추 `firstSetupStart`("모의매매 시작"). 꼭 넣는 칸이 모두 차고 확인란을 골랐을 때만
+      눌리고, 아니면 곁에 `firstSetupStartReason`이 보인다. `firstSetupNoticesInfo`의 툴팁은
+      일곱 글(가, 나, 라, 마, 바, 사, 아)이다. 누르면 칸의 꼴을 보고, 걸리면 그 칸 아래에 글이
+      보이고 `save_settings`를 부르지 않는다. 걸리지 않으면 `trade=TradeSettings`를 넘긴다.
+      저장 뒤 검사에 걸린 글(`SaveResult.field_errors`)은 걸린 칸 아래에 보인다.
+    - 예전 기록(1·2단계를 마침)은 저장된 값이 있는 칸(코인, 알림 보관 기간, 봉 단위와 봉 개수,
+      모델과 노력 값)이 채워진 채 잠기고, 3단계 칸만 고른다(M3 명세 3.11.3).
+    - 설정의 가상 자금 `settingsPaperFunds`는 늘 흐리다(`set_dim`이 다시 켜지 못한다). 설정의
+      "저장"은 저장된 3단계 값이 있으면 3단계의 꼭 넣는 칸이 모두 차야 눌리고 `trade`를 넘긴다.
+      보유가 있는 코인을 빼고 "저장"을 누르면 SCR-06-6을 띄우고(`CoinTradeView.holding.qty > 0`),
+      `BelowStopView`가 오면 SCR-06-5를 띄운다. "확인"이면 그 코인을 `accept_below_stop`에 넣어
+      다시 저장하고, "취소"면 아무것도 저장하지 않는다.
 
     설정 자리(`screen_settings`)의 `objectName`:
 

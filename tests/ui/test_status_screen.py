@@ -56,6 +56,8 @@ class FakeActions:
         candle_unit=None,
         candle_count=None,
         ai_choices=None,
+        trade=None,
+        accept_below_stop=(),
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
 
