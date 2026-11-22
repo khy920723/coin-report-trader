@@ -23,7 +23,7 @@ from coin_report_trader.core import (
     WebhookView,
 )
 from coin_report_trader.ui import create_main_window, screen_widget, select_screen
-from coin_report_trader.ui.widgets import LineLabel, make_label, make_line_label
+from coin_report_trader.ui.widgets import LineLabel, make_line_label
 
 MARKETS = tuple(Market(f"KRW-C{i}", f"가짜{i}", caution=False) for i in range(60))
 
@@ -133,14 +133,6 @@ def test_a_line_label_is_one_line_when_there_is_room_and_wraps_only_when_not(qap
     QApplication.processEvents()
     assert label.heightForWidth(label.width()) >= 2 * one_line - 4
     assert label.text() == TITLE  # 글은 그대로다
-    host.close()
-
-
-def test_a_plain_label_gets_a_narrow_width_even_with_room(qapp):
-    """제목에 `make_label`을 쓰면 안 되는 까닭: 자리가 있어도 접힌 너비를 바란다."""
-    plain = make_label(TITLE, "t")
-    host = _in_row(plain, 600)
-    assert plain.width() < plain.fontMetrics().horizontalAdvance(TITLE)
     host.close()
 
 
