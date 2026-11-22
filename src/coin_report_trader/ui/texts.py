@@ -107,7 +107,6 @@ REPORT_LAST_RESULT_TITLE: Final = "지난 판단의 결과"
 REPORT_CHECKS_TITLE: Final = "검증 목록"
 REPORT_CHECK_COLUMNS: Final = ("항목", "믿음", "견준 횟수", "맞은 횟수")
 REPORT_DECISION_TITLE: Final = "판단"
-REPORT_DECISION_NOTE: Final = "예측 가격은 보여 주는 값이고 주문을 정하는 데 쓰지 않습니다."
 REPORT_EVIDENCE_TITLE: Final = "근거"
 REPORT_FINAL_PART: Final = "최종 예측"
 REPORT_SOURCES_TITLE: Final = "출처"
@@ -145,6 +144,22 @@ def report_tokens_text(
         f"세션 전체 토큰: 입력 {input_tokens:,} · 출력 {output_tokens:,} · "
         f"캐시 읽기 {cache_read:,} · 캐시 만들기 {cache_creation:,}"
     )
+
+
+REPORT_PAUSE_LINE: Final = "멈춤 동안 새 보고서를 받지 않습니다."
+REPORT_DISCARDED: Final = "이 회차는 멈춤으로 버렸습니다."
+
+
+def report_order_text(summary: str) -> str:
+    return f"이 판단으로 낸 주문: {summary}"
+
+
+def report_no_order_text(reason: str) -> str:
+    return f"주문하지 않은 까닭: {reason}"
+
+
+def report_order_elapsed_text(seconds: int) -> str:
+    return f"주문까지 걸린 시간: {seconds // 60}분 {seconds % 60}초"
 
 
 def report_elapsed_text(seconds: int) -> str:
@@ -307,10 +322,6 @@ def tab_title_text(category_title: str, unseen: int) -> str:
     return f"{category_title} ({unseen})" if unseen > 0 else category_title
 
 
-def status_nav_text(screen_title: str, unseen: int) -> str:
-    """화면 이름 목록의 "현황 ({n})"(M1 명세 2의 4)."""
-    return f"{screen_title} ({unseen})" if unseen > 0 else screen_title
-
 
 DETAIL_STAGE: Final = "단계"
 DETAIL_COIN: Final = "코인"
@@ -443,3 +454,80 @@ def buy_amounts_text(first: str | None, add: str | None) -> str:
 def price_text(value: Decimal) -> str:
     """가격: 쉼표를 붙이고 뒤의 0은 뗀다(예: 1,000, 0.0012)."""
     return format(value.normalize(), ",f")
+
+
+# --- 3단계: 상태 띠, 긴급 정지 두 단추, SCR-06-7, 상태 줄(M3 명세 3.17.1) ---
+BAND_MODE_PAPER: Final = "모의매매"
+BAND_MODE_LIVE: Final = "실거래"
+BAND_PAUSE_USER: Final = "멈춤(사용자)"
+BAND_PAUSE_ERROR: Final = "오류 멈춤"
+BAND_PAUSE_BOTH: Final = "멈춤(사용자) · 오류 멈춤"
+RESUME_USER_TEXT: Final = "멈춤 풀기"
+RESUME_ERROR_TEXT: Final = "오류 멈춤 풀기"
+BAND_STOP_OFF: Final = "지금 손절이 동작하지 않음"
+PAUSE_TEXT: Final = "멈춤"
+SELL_ALL_TEXT: Final = "멈추고 전량 매도"
+SELL_ALL_TITLE: Final = "멈추고 전량 매도할까요?"
+SELL_ALL_BODY: Final = (
+    "멈춤 상태로 들어가고 프로그램이 건 주문을 취소한 뒤, 보유 코인을 그때 시세로 모두 팝니다. "
+    "직접 걸어 둔 주문에 묶인 수량은 팔지 못합니다."
+)
+SELL_ALL_BLOCKED_NOTE: Final = "오류 멈춤을 푼 뒤 누를 수 있습니다."
+
+
+def band_alerts_text(count: int) -> str:
+    return f"알림 {count}건"
+
+
+def resume_wait_text(when: str) -> str:
+    return f"{when} 뒤에 풀 수 있습니다."
+
+
+def status_line(version: str, middle: str, data_dir: str) -> str:
+    return f"판 v{version} · {middle} · 자료 폴더 {data_dir}"
+
+
+STATUS_PAUSED_MIDDLE: Final = "멈춤 동안 회차를 돌리지 않음"
+STATUS_BEFORE_SETUP_MIDDLE: Final = "처음 설정 전"
+
+
+def status_next_round_middle(when: str | None) -> str:
+    return f"다음 예정 시각 {when if when is not None else '-'}"
+
+
+# --- 3단계: 현황(M3 명세 3.17.2) ---
+TODAY_TITLE: Final = "오늘 요약"
+ROUND_NOW_TITLE: Final = "지금 회차"
+PERFORMANCE_TITLE: Final = "모의 성적"
+PERFORMANCE_INFO: Final = "실거래를 켜는 기준이 아닙니다. 판단에 참고하는 값입니다."
+PERFORMANCE_COLUMNS: Final = (
+    "코인",
+    "판단 회차",
+    "오름·내림 맞음",
+    "예측 차이 평균",
+    "예측 차이 크기 평균",
+    "실현 손익",
+    "이익 낸 매도",
+    "평가 손익",
+    "자산 변화",
+)
+PERFORMANCE_TOTAL: Final = "합계"
+NO_JUDGMENT_YET: Final = "아직 판단이 없습니다."
+HOLDING_NONE: Final = "보유 없음"
+AVG_PRICE_NONE: Final = "평균 매수가 없음"
+DUST_TEXT: Final = "팔 수 없는 잔량"
+NO_OPEN_ORDER: Final = "걸린 주문 없음"
+UNCONFIRMED_TEXT: Final = "확인 안 됨"
+PAUSED_ROUNDS_TEXT: Final = "멈춤 동안 회차를 돌리지 않습니다."
+
+
+def error_pause_line(kind: str, uncanceled: tuple[str, ...]) -> str:
+    listing = ", ".join(uncanceled) if uncanceled else "없음"
+    return f"오류 멈춤: {kind}. 지금 손절이 동작하지 않습니다. 취소하지 못한 주문: {listing}"
+
+ERROR_PAUSE_KINDS: Final = {
+    "exchange": "일시 차단",
+    "unexpected": "예상하지 못한 오류",
+    "save": "저장 실패",
+}
+"""오류 멈춤의 {오류 종류}(`ErrorPauseCause`의 값에서. M3 명세 3.10.2)."""

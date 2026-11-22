@@ -298,6 +298,14 @@ class SettingsScreen(QWidget):
         self._fields.set_coins(self._picker.picks())
         self._update_save()
 
+    def first_error_widget(self) -> QWidget | None:
+        """걸린 칸 가운데 맨 위의 것(알림 A-15가 가는 곳). 없으면 `None`."""
+        return self._fields.first_error_widget()
+
+    def coins_widget(self) -> QWidget:
+        """코인 고르기(알림 A-16이 가는 곳)."""
+        return self._picker
+
     def show_errors(self, errors) -> None:
         """저장 뒤 검사에 걸린 칸의 글(`SaveResult.field_errors`)을 칸 아래에 보인다."""
         self._fields.show_errors(errors)

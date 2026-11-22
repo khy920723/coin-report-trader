@@ -67,6 +67,10 @@ LABEL_GAP: Final = 4
 BUTTON_HEIGHT: Final = 36
 BUTTON_MIN_WIDTH: Final = 80
 BUTTON_RADIUS: Final = 6
+TAG_RADIUS: Final = 12
+"""상태 띠 칸의 꼬리표 모서리(M3 명세 3.17.1)."""
+DANGER_BORDER: Final = 2
+"""위험한 동작의 단추 테두리 굵기(px. M3 명세 3.17.1)."""
 ICON_SIZE: Final = 16
 ICON_GAP: Final = 4
 TOOLTIP_WIDTH: Final = 320
