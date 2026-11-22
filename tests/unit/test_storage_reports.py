@@ -758,6 +758,36 @@ def test_the_last_judgment_is_the_latest_earlier_ok_report_of_that_coin(
     )
 
 
+def test_the_three_reads_keep_paper_and_live_apart(conn: sqlite3.Connection) -> None:
+    def add(mode: Mode, number: int, close, market: str = AAA) -> int:
+        round_id = new_round(conn, number, close, mode)
+        report_id = insert_report(
+            conn, round_id=round_id, mode=mode, market=market, created_at=close
+        )
+        finish_report(conn, report_id, ok_record(), ok_rows())
+        return report_id
+
+    paper = add(Mode.PAPER, 1, T0)
+    live_same = add(Mode.LIVE, 1, T0)  # 같은 번호, 같은 때, 같은 코인
+    live_later = add(Mode.LIVE, 7, T1)  # 더 큰 번호와 더 늦은 때
+    # 그 모드의 가장 큰 회차 번호
+    assert reports.max_round_number(conn, Mode.PAPER) == 1
+    assert reports.max_round_number(conn, Mode.LIVE) == 7
+    # 보고서 목록(그 코인, 그 모드)
+    assert [i.report_id for i in reports.list_round_items(conn, AAA, Mode.PAPER)] == [paper]
+    assert [i.report_id for i in reports.list_round_items(conn, AAA, Mode.LIVE)] == [
+        live_later,
+        live_same,
+    ]
+    # 지난 판단(그 코인, 그 모드): 다른 모드의 더 늦은 `OK`를 고르지 않는다.
+    last_paper = reports.read_last_judgment(conn, market=AAA, mode=Mode.PAPER, before_close=T2)
+    assert last_paper is not None
+    assert last_paper.report_id == paper
+    last_live = reports.read_last_judgment(conn, market=AAA, mode=Mode.LIVE, before_close=T2)
+    assert last_live is not None
+    assert last_live.report_id == live_later
+
+
 def test_unfinished_rounds_and_reports_become_interrupted(conn: sqlite3.Connection) -> None:
     done_round = new_round(conn, 1, T0)
     done = insert_report(conn, round_id=done_round, mode=Mode.PAPER, market=AAA, created_at=T0)
