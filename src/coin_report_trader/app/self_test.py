@@ -39,6 +39,7 @@ from coin_report_trader.core import (
 )
 from coin_report_trader.storage.database import (
     SCHEMA_VERSION,
+    TABLES,
     migrate,
     open_database,
     schema_version,
@@ -178,7 +179,7 @@ def check_sqlite() -> str:
         raise CheckFailed(f"DB 설정이 맞지 않습니다: journal={mode}, synchronous={synchronous}")
     if version != SCHEMA_VERSION:
         raise CheckFailed(f"스키마 번호가 {version}입니다(기대 {SCHEMA_VERSION})")
-    if tables != {"settings", "candles", "alerts", "rounds", "reports", "report_rows"}:
+    if tables != set(TABLES):
         raise CheckFailed(f"표가 맞지 않습니다: {sorted(tables)}")
     return (
         f"SQLite {sqlite3.sqlite_version}, wal, synchronous 2, 스키마 번호 {version}, "

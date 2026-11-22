@@ -1,7 +1,7 @@
 """DB 파일 열기와 스키마 올리기(M1 명세 3.7).
 
 연결마다 `journal_mode=WAL`, `synchronous=FULL`을 걸고 다시 읽어 확인한다. 스키마 번호는
-`PRAGMA user_version`이다(M0는 0, M1은 1, M2는 2). `open_database`는 열기만 하고, 표는
+`PRAGMA user_version`이다(M0는 0, M1은 1, M2는 2, M3는 3). `open_database`는 열기만 하고, 표는
 `migrate`가 만든다.
 """
 
@@ -15,7 +15,7 @@ from coin_report_trader.storage.states import DiscordState
 
 _DISCORD_STATES = ", ".join(repr(state.value) for state in DiscordState)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """이 앱이 아는 스키마 번호."""
 
 _SCHEMA_1 = (
@@ -134,6 +134,110 @@ _SCHEMA_2 = (
 """1에서 2로 올리는 묶음(M2 명세 3.10). 열거 값의 열에는 CHECK를 걸지 않는다(3단계와 4단계가
 값을 더하고, 실패한 답의 값도 저장하기 때문이다)."""
 
+_SCHEMA_3 = (
+    "ALTER TABLE rounds ADD COLUMN stage TEXT",
+    "ALTER TABLE reports ADD COLUMN method TEXT",
+    "ALTER TABLE reports ADD COLUMN order_id INTEGER",
+    "ALTER TABLE reports ADD COLUMN no_order_reason TEXT",
+    """
+    CREATE TABLE paper_accounts (
+        mode TEXT PRIMARY KEY,
+        funds TEXT NOT NULL,
+        krw TEXT NOT NULL,
+        locked_krw TEXT NOT NULL,
+        created_utc TEXT NOT NULL
+    ) STRICT
+    """,
+    """
+    CREATE TABLE paper_holdings (
+        mode TEXT NOT NULL,
+        market TEXT NOT NULL,
+        qty TEXT NOT NULL,
+        locked_qty TEXT NOT NULL,
+        buy_amount_sum TEXT NOT NULL,
+        buy_qty_sum TEXT NOT NULL,
+        PRIMARY KEY (mode, market)
+    ) STRICT
+    """,
+    """
+    CREATE TABLE orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        uid TEXT NOT NULL UNIQUE,
+        mode TEXT NOT NULL,
+        round_id INTEGER REFERENCES rounds(id),
+        market TEXT NOT NULL,
+        side TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        price TEXT,
+        qty TEXT NOT NULL,
+        state TEXT NOT NULL,
+        sent INTEGER NOT NULL CHECK (sent IN (0, 1)),
+        created_utc TEXT NOT NULL,
+        closed_utc TEXT,
+        error_name TEXT,
+        canceled_by_round INTEGER,
+        judged_until_utc TEXT NOT NULL
+    ) STRICT
+    """,
+    """
+    CREATE TABLE fills (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
+        mode TEXT NOT NULL,
+        market TEXT NOT NULL,
+        side TEXT NOT NULL,
+        price TEXT NOT NULL,
+        qty TEXT NOT NULL,
+        fee TEXT NOT NULL,
+        realized_pnl TEXT,
+        filled_utc TEXT NOT NULL
+    ) STRICT
+    """,
+    """
+    CREATE TABLE pauses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        cause TEXT,
+        detail TEXT,
+        sell_all INTEGER NOT NULL CHECK (sell_all IN (0, 1)),
+        started_utc TEXT NOT NULL,
+        released_utc TEXT
+    ) STRICT
+    """,
+    """
+    CREATE TABLE setting_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        market TEXT,
+        value TEXT,
+        utc TEXT NOT NULL
+    ) STRICT
+    """,
+)
+"""2에서 3으로 올리는 묶음(M3 명세 3.12). 표와 열을 지우거나 바꾸지 않는다. `rounds.state`와
+`reports.state`에는 CHECK가 없으므로 `discarded`는 값만 더한다. 열거 값의 열(주문의 `side`,
+`kind`, `reason`, `state`, 멈춤의 `kind`, `cause`, 설정 바뀜의 `kind`)에도 뒤 단계가 값을 더하므로
+CHECK를 걸지 않는다."""
+
+TABLES = (
+    "settings",
+    "candles",
+    "alerts",
+    "rounds",
+    "reports",
+    "report_rows",
+    "paper_accounts",
+    "paper_holdings",
+    "orders",
+    "fills",
+    "pauses",
+    "setting_events",
+)
+"""스키마 3의 표 열둘(M3 명세 3.18)."""
+
 _SYNCHRONOUS_FULL = 2
 
 
@@ -194,10 +298,11 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 def migrate(conn: sqlite3.Connection) -> int:
     """스키마를 이 앱이 아는 번호(`SCHEMA_VERSION`)로 올리고, 올린 뒤의 번호를 돌려준다.
 
-    트랜잭션으로 잠근 뒤 다시 읽은 번호로 가른다(M2 명세 3.10): 0이면 표 셋(`_SCHEMA_1`)과 1에서
-    2로 올리는 묶음을, 1이면 그 묶음만 돌리고, 2면 아무것도 하지 않는다. 이 앱이 아는 것보다 큰
-    번호면 `StorageError`를 낸다. DDL과 번호 쓰기는 모두 그 한 트랜잭션 안에서 `execute`로 하고
-    (`executescript`와 `IF NOT EXISTS`는 쓰지 않는다), 번호는 끝에 한 번 쓴다. 중간에 실패하면
+    트랜잭션으로 잠근 뒤 다시 읽은 번호로 가른다(M2 명세 3.10, M3 명세 3.12): 0이면 표 셋
+    (`_SCHEMA_1`), 1→2, 2→3을, 1이면 1→2와 2→3을, 2면 2→3만 돌리고, 3이면 아무것도 하지 않는다.
+    이 앱이 아는 것보다 큰 번호면 `StorageError`를 낸다. DDL과 번호 쓰기는 모두 그 한 트랜잭션
+    안에서 `execute`로 하고(`executescript`와 `IF NOT EXISTS`는 쓰지 않는다), 번호는 끝에 한 번
+    쓴다. 중간에 실패하면
     번호도 표도 남지 않는다(`StorageError`). WAL과 synchronous 설정은 건드리지 않는다.
     """
     with translate_errors("DB 스키마 올리기"):
@@ -209,11 +314,11 @@ def migrate(conn: sqlite3.Connection) -> int:
             version = schema_version(conn)  # 잠근 뒤에 다시 읽는다
             _check_known(version)
             if version < SCHEMA_VERSION:
-                if version == 0:
-                    for statement in _SCHEMA_1:
-                        conn.execute(statement)
-                for statement in _SCHEMA_2:
-                    conn.execute(statement)
+                steps = ((0, _SCHEMA_1), (1, _SCHEMA_2), (2, _SCHEMA_3))
+                for start, statements in steps:
+                    if version <= start:
+                        for statement in statements:
+                            conn.execute(statement)
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
