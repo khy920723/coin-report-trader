@@ -1,6 +1,6 @@
 [project]
 name = "coin-report-trader"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI 보고서로 판단하는 원화 코인 자동매매 Windows 프로그램 (개인 프로젝트, 투자 자문 아님)"
 requires-python = ">=3.13,<3.14"
 classifiers = [

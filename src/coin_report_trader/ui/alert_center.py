@@ -55,6 +55,8 @@ from coin_report_trader.core.texts import (
     WEBHOOK_SAVE_FAILED,
     kst_datetime_text,
 )
+from coin_report_trader.ui import theme
+from coin_report_trader.ui.info_icon import InfoIcon
 from coin_report_trader.ui.state import Message, Tone
 from coin_report_trader.ui.texts import (
     ALERT_CLEAR_TEXT,
@@ -79,7 +81,7 @@ from coin_report_trader.ui.texts import (
     tab_title_text,
     webhook_title_text,
 )
-from coin_report_trader.ui.widgets import make_label, show_message
+from coin_report_trader.ui.widgets import make_label, set_role, show_message
 
 CATEGORIES = tuple(AlertCategory)
 """탭의 차례(`AlertCategory`의 정의 순서)."""
@@ -170,6 +172,7 @@ class AlertCenter(QWidget):
             tab = QPushButton(ALERT_CATEGORY_TITLES[category])
             tab.setObjectName(f"alertTab_{category.value}")
             tab.setFlat(True)
+            tab.setProperty("tab", True)
             tab.clicked.connect(lambda _checked=False, c=category: self.select_tab(c))
             self._tabs[category] = tab
             tab_row.addWidget(tab)
@@ -181,7 +184,15 @@ class AlertCenter(QWidget):
         layout.addLayout(tab_row)
 
         self._webhook_title = make_label("", "alertWebhookTitle")
-        layout.addWidget(self._webhook_title)
+        set_role(self._webhook_title, theme.ROLE_GROUP)
+        self._webhook_info = InfoIcon("", WEBHOOK_NOT_SET, "alertWebhookInfo")
+        title_line = QHBoxLayout()
+        title_line.setContentsMargins(0, 0, 0, 0)
+        title_line.setSpacing(theme.ICON_GAP)
+        title_line.addWidget(self._webhook_title)
+        title_line.addWidget(self._webhook_info)
+        title_line.addStretch(1)
+        layout.addLayout(title_line)
         webhook_row = QHBoxLayout()
         self._input = QLineEdit()
         self._input.setObjectName("alertWebhookInput")
@@ -189,6 +200,7 @@ class AlertCenter(QWidget):
         self._input.textEdited.connect(self._on_input_edited)
         webhook_row.addWidget(self._input, 1)
         self._save = self._button(WEBHOOK_SAVE_TEXT, "alertWebhookSave", self._on_save)
+        set_role(self._save, theme.ROLE_PRIMARY)
         self._change = self._button(WEBHOOK_CHANGE_TEXT, "alertWebhookChange", self._on_change)
         self._delete = self._button(WEBHOOK_DELETE_TEXT, "alertWebhookDelete", self._on_delete)
         self._cancel = self._button(WEBHOOK_CANCEL_TEXT, "alertWebhookCancel", self._on_cancel)
@@ -331,6 +343,8 @@ class AlertCenter(QWidget):
     def _build_row(self, alert: AlertView) -> QWidget:
         row = QWidget()
         row.setObjectName(f"alertRow_{alert.id}")
+        row.setProperty("alertRow", True)
+        row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         outer = QVBoxLayout(row)
         outer.setContentsMargins(0, 0, 0, 0)
         top = QHBoxLayout()
@@ -356,6 +370,7 @@ class AlertCenter(QWidget):
         outer.addLayout(top)
         detail = detail_text(alert) if alert.category in DETAIL_CATEGORIES else None
         label = make_label(detail or "", f"alertDetail_{alert.id}")
+        set_role(label, theme.ROLE_SUB)
         label.setVisible(detail is not None and alert.id in self._expanded)
         outer.addWidget(label)
         if detail is not None:
@@ -395,6 +410,7 @@ class AlertCenter(QWidget):
         view = self._view()
         title = ALERT_CATEGORY_TITLES[category]
         self._webhook_title.setText(webhook_title_text(title))
+        self._webhook_info.set_info(WEBHOOK_NOT_SET, self._webhook_title.text())
         pending = category in self._pending
         changing = category in self._changing
         loaded = view is not None
@@ -418,7 +434,12 @@ class AlertCenter(QWidget):
         self._cancel.setVisible(changing)
         in_flight = view is not None and view.test_message == TEST_SENDING
         self._test.setEnabled(saved and not pending and not in_flight)
-        show_message(self._webhook_message, self._first_line(view, category))
+        first = self._first_line(view, category)
+        # 주소가 없을 때의 글은 칸 이름 옆 'ⓘ'의 툴팁이다(M1 명세 3.14.6).
+        # 칸의 "넣지 않음"은 늘 보인다.
+        not_set = first is not None and first.text == WEBHOOK_NOT_SET
+        self._webhook_info.setVisible(not_set)
+        show_message(self._webhook_message, None if not_set else first)
         show_message(self._test_message, self._second_line(view))
 
     def _first_line(self, view: WebhookView | None, category: AlertCategory) -> Message | None:
@@ -494,6 +515,9 @@ class AlertCenter(QWidget):
 
 
 def _style_button(button: QPushButton, *, selected: bool) -> None:
+    button.setProperty("selected", selected)
+    button.style().unpolish(button)
+    button.style().polish(button)
     font = button.font()
     font.setBold(selected)
     font.setUnderline(selected)

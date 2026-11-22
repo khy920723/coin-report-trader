@@ -35,6 +35,7 @@ from coin_report_trader.ui import (
     screen_widget,
     select_screen,
 )
+from coin_report_trader.ui.info_icon import InfoIcon
 from coin_report_trader.ui.texts import candle_count_tooltip
 
 AAA = Market("KRW-AAA", "가짜에이", caution=False)
@@ -123,6 +124,28 @@ def _find(parent: QWidget, kind: type, name: str):
     found = parent.findChild(kind, name)
     assert found is not None, name
     return found
+
+
+def _tip(screen: QWidget, name: str) -> str | None:
+    """'ⓘ'가 보이면 그 툴팁 글, 숨겨져 있으면 `None`. 읽는 설명도 같아야 한다."""
+    icon = _find(screen, InfoIcon, name)
+    assert icon.accessibleDescription() == icon.toolTip()
+    return None if icon.isHidden() else icon.toolTip()
+
+
+def _flat(layout) -> list[str]:
+    """레이아웃 안 위젯의 `objectName`을 놓인 차례대로(카드와 안쪽 레이아웃까지)."""
+    names: list[str] = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget = item.widget()
+        if widget is not None:
+            names.append(widget.objectName())
+            if widget.layout() is not None:
+                names.extend(_flat(widget.layout()))
+        elif item.layout() is not None:
+            names.extend(_flat(item.layout()))
+    return names
 
 
 def _radio(screen: QWidget, name: str) -> QRadioButton:
@@ -230,18 +253,17 @@ def test_first_setup_shows_four_units_and_three_counts_in_order(make_window, act
     first = _ready_first_setup(window)
     layout = _find(first, QWidget, "firstSetupCandle").layout()
     rows = [layout.itemAt(i) for i in range(layout.count())]
-    # 칸 이름, 봉 단위 줄, 칸 이름, 봉 개수 줄, 두 칸 아래 글의 차례다.
+    # 칸 이름 줄(이름과 'ⓘ'), 봉 단위 줄, 칸 이름 줄, 봉 개수 줄의 차례다.
     assert _text(first, "firstSetupUnitTitle") == "봉 단위*"
     assert _text(first, "firstSetupCountTitle") == "봉 개수*"
-    assert _text(first, "firstSetupCandleNote") == NOTE
-    names = [item.widget().objectName() if item.widget() is not None else "(줄)" for item in rows]
-    assert names == [
-        "firstSetupUnitTitle",
-        "(줄)",
-        "firstSetupCountTitle",
-        "(줄)",
-        "firstSetupCandleNote",
-    ]
+    assert _tip(first, "firstSetupCandleNote") == NOTE
+    assert [item.layout() is not None for item in rows] == [True] * 4
+    unit_title_row = rows[0].layout()
+    assert [
+        unit_title_row.itemAt(i).widget().objectName()
+        for i in range(unit_title_row.count())
+        if unit_title_row.itemAt(i).widget() is not None
+    ] == ["firstSetupUnitTitle", "firstSetupCandleNote"]
     unit_row, count_row = rows[1].layout(), rows[3].layout()
     assert [unit_row.itemAt(i).widget().text() for i in range(4)] == [
         "30분봉",
@@ -266,12 +288,9 @@ def test_first_setup_shows_four_units_and_three_counts_in_order(make_window, act
 def test_first_setup_order_is_coins_then_unit_and_count_then_retention(make_window, actions):
     window = make_window(actions)
     first = _ready_first_setup(window)
-    form = _find(first, QWidget, "firstSetupForm").layout()
-    assert [form.itemAt(i).widget().objectName() for i in range(form.count())] == [
-        "firstSetupCoins",
-        "firstSetupCandle",
-        "firstSetupRetention",
-    ]
+    order = _flat(_find(first, QWidget, "firstSetupForm").layout())
+    parts = ["firstSetupCoins", "firstSetupCandle", "firstSetupRetention"]
+    assert [name for name in order if name in parts] == parts
 
 
 def test_first_setup_starts_with_no_unit_and_200_counts(make_window, actions):
@@ -395,7 +414,7 @@ def test_settings_shows_the_saved_unit_and_count_and_sends_them_on_save(make_win
     assert _count_of(settings, "settings") == 500
     assert _text(settings, "settingsUnitTitle") == "봉 단위*"
     assert _text(settings, "settingsCountTitle") == "봉 개수*"
-    assert _text(settings, "settingsCandleNote") == NOTE
+    assert _tip(settings, "settingsCandleNote") == NOTE
     _find(settings, QPushButton, "settingsSave").click()
     assert actions.candles == [(CandleUnit.MINUTE_240, 500)]
     _radio(settings, "settingsUnit_day").click()

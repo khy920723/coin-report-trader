@@ -23,6 +23,7 @@ from coin_report_trader.core import (
     empty_bar_stats,
 )
 from coin_report_trader.ui import MainWindow, create_main_window, screen_widget
+from coin_report_trader.ui.info_icon import InfoIcon
 
 AAA = "KRW-AAA"
 BBB = "KRW-BBB"
@@ -170,6 +171,25 @@ def _shown(screen: QWidget, name: str) -> bool:
     return not _find(screen, QWidget, name).isHidden()
 
 
+def _tip(screen: QWidget, name: str) -> str | None:
+    """'ⓘ'(옮긴 보장 아님 글)가 보이면 그 툴팁 글, 숨겨져 있으면 `None`. 읽는 설명도 같아야 한다."""
+    icon = _find(screen, InfoIcon, name)
+    assert icon.accessibleDescription() == icon.toolTip()
+    return None if icon.isHidden() else icon.toolTip()
+
+
+def _flat(layout) -> list[str]:
+    """레이아웃 안 위젯의 `objectName`을 놓인 차례대로(안쪽 레이아웃까지)."""
+    names: list[str] = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        if item.widget() is not None:
+            names.append(item.widget().objectName())
+        elif item.layout() is not None:
+            names.extend(_flat(item.layout()))
+    return names
+
+
 def _card_rows(screen: QWidget, market: str = AAA) -> list[str]:
     return [_find(screen, QLabel, f"statusCoinStatsRow_{market}_{i}").text() for i in range(5)]
 
@@ -205,21 +225,23 @@ def test_the_card_shows_the_unit_and_count_then_five_elements_then_the_disclaime
         "오른 봉 비율 60.00%",  # 늘 0 이상인 둘에는 부호가 없다
         "변동성 15.35%",
     ]
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
     assert _text(screen, f"statusCoinNote_{AAA}") is None
     # 옛 지표는 없다.
     assert screen.findChild(QWidget, f"statusCoinIndicator_{AAA}") is None
     assert _shown(screen, f"statusCoinStats_{AAA}")
-    # 코인 칸 안의 차례: 코인 이름, 값 자리의 글, 봉 통계, 미완성 봉 글, 보장 아님 글.
-    layout = _find(screen, QWidget, f"statusCoin_{AAA}").layout()
-    order = [
-        layout.itemAt(i).widget().objectName()
-        for i in range(layout.count())
-        if layout.itemAt(i).widget() is not None
+    # 코인 칸 안의 차례: 코인 이름, 값 자리의 글, 첫 줄과 그 옆 'ⓘ', 다섯 요소, 미완성 봉 글.
+    order = _flat(_find(screen, QWidget, f"statusCoin_{AAA}").layout())
+    expected = [
+        f"statusCoinName_{AAA}",
+        f"statusCoinNote_{AAA}",
+        f"statusCoinRetry_{AAA}",
+        f"statusCoinStatsHeader_{AAA}",
+        f"statusCoinDisclaimer_{AAA}",
+        f"statusCoinStats_{AAA}",
+        f"statusCoinIncomplete_{AAA}",
     ]
-    assert order.index(f"statusCoinStats_{AAA}") < order.index(f"statusCoinDisclaimer_{AAA}")
-    stats_box = _find(screen, QWidget, f"statusCoinStats_{AAA}").layout()
-    assert stats_box.itemAt(0).widget().objectName() == f"statusCoinStatsHeader_{AAA}"
+    assert [name for name in order if name in expected] == expected
 
 
 def test_a_negative_change_has_a_minus_and_the_card_uses_the_chosen_unit_name(make_window):
@@ -262,7 +284,7 @@ def test_too_few_bars_with_some_saved_show_insufficient_for_every_element(make_w
         "변동성 봉이 모자람",
     ]
     assert _text(screen, f"statusCoinNote_{AAA}") is None  # 요소마다의 글이 있어 하나는 없다
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
     assert _text(screen, f"statusCoinStatsHeader_{AAA}") != "60분봉 5개"
 
 
@@ -276,8 +298,8 @@ def test_too_few_bars_with_none_saved_show_one_insufficient_line_when_fetched(ma
     assert not _shown(screen, "statusStatsTable")
     assert not _shown(screen, "statusStatsSummary")
     # 늘 보이는 것들: 보장 아님 글, 마지막으로 받은 때.
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
-    assert _text(screen, "statusStatsDisclaimer") == DISCLAIMER
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
+    assert _tip(screen, "statusStatsDisclaimer") == DISCLAIMER
     assert _text(screen, "statusStatsFetched") == "마지막으로 받은 때 2026-01-02 10:30"
 
 
@@ -346,7 +368,7 @@ def test_a_failed_receive_without_saved_stats_shows_only_the_line(make_window):
     assert _text(screen, f"statusCoinNote_{AAA}") == "봉을 받지 못했습니다(DB 오류)."
     assert not _shown(screen, f"statusCoinStats_{AAA}")
     assert not _shown(screen, "statusStatsTable")
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
 
 
 def test_a_blocked_receive_shows_the_blocked_line_with_the_saved_stats_dim(make_window):
@@ -363,7 +385,7 @@ def test_a_blocked_receive_shows_the_blocked_line_with_the_saved_stats_dim(make_
 # --- 봉 통계 자리 ---
 
 
-def test_the_stats_place_has_a_summary_a_two_column_table_and_the_disclaimer_under_it(make_window):
+def test_the_stats_place_has_a_summary_a_table_and_the_disclaimer_by_the_title(make_window):
     window = make_window(FakeActions())
     screen = _open(window, _view())
     assert _find(screen, QLabel, "statusStatsTitle").text() == "봉 통계"
@@ -387,17 +409,13 @@ def test_the_stats_place_has_a_summary_a_two_column_table_and_the_disclaimer_und
         ("최고가", "132원"),
         ("최저가", "99원"),
     ]
-    assert _text(screen, "statusStatsDisclaimer") == DISCLAIMER
+    assert _tip(screen, "statusStatsDisclaimer") == DISCLAIMER
     assert _text(screen, "statusStatsFetched") == "마지막으로 받은 때 2026-01-02 10:30"
-    # 표 아래의 차례: 보장 아님 글, 마지막으로 받은 때, 미완성 봉 글, 다시 시도.
-    layout = _find(screen, QWidget, "statusStats").layout()
-    names = [
-        layout.itemAt(i).widget().objectName()
-        for i in range(layout.count())
-        if layout.itemAt(i).widget() is not None
-    ]
-    assert names.index("statusStatsTable") < names.index("statusStatsDisclaimer")
-    assert names.index("statusStatsDisclaimer") < names.index("statusStatsFetched")
+    # 카드 안의 차례: 제목, 제목 옆 'ⓘ', 표, 마지막으로 받은 때, 미완성 봉 글, 다시 시도.
+    names = _flat(_find(screen, QWidget, "statusStats").layout())
+    assert names.index("statusStatsTitle") + 1 == names.index("statusStatsDisclaimer")
+    assert names.index("statusStatsDisclaimer") < names.index("statusStatsTable")
+    assert names.index("statusStatsTable") < names.index("statusStatsFetched")
 
 
 def test_the_table_rows_are_the_titles_of_the_bar_stats_columns_in_order(make_window):
@@ -429,7 +447,7 @@ def test_too_few_bars_make_the_bar_count_row_say_the_chosen_count(make_window):
     assert rows[0] == ("쓴 봉 수", "3개(고른 개수 5개)")
     assert [value for _title, value in rows[1:]] == [INSUFFICIENT] * 12
     assert _text(screen, "statusStatsNote") is None
-    assert _text(screen, "statusStatsDisclaimer") == DISCLAIMER
+    assert _tip(screen, "statusStatsDisclaimer") == DISCLAIMER
 
 
 def test_every_bar_is_counted_as_n_when_there_are_enough(make_window):
@@ -461,9 +479,9 @@ def test_the_disclaimer_is_only_missing_before_the_first_value_of_a_coin(make_wi
     window = make_window(FakeActions())
     screen = _open(window)  # `CoinView`가 오기 전
     assert _text(screen, f"statusCoinNote_{AAA}") == "불러오는 중"
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") is None
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") is None
     window.apply(_view())
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
 
 
 # --- 옛 그리기는 없다(49번) ---
@@ -473,8 +491,8 @@ def test_nothing_of_the_old_table_or_indicator_is_drawn_without_stats(make_windo
     window = make_window(FakeActions())
     screen = _open(window, CoinView(AAA, LoadState.NO_DATA, fetched_at=FETCHED_AT))
     assert _text(screen, "statusStatsNote") == INSUFFICIENT
-    assert _text(screen, "statusStatsDisclaimer") == DISCLAIMER
-    assert _text(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
+    assert _tip(screen, "statusStatsDisclaimer") == DISCLAIMER
+    assert _tip(screen, f"statusCoinDisclaimer_{AAA}") == DISCLAIMER
     assert not _shown(screen, f"statusCoinStats_{AAA}")
     assert _find(screen, QLabel, "statusStatsTitle").text() == "봉 통계"
     names = [label.objectName() for label in screen.findChildren(QLabel)]

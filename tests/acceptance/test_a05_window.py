@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 
 from coin_report_trader.core import ScreenId, UiContext
 from coin_report_trader.ui import create_main_window, current_screen, screen_order, screen_widget
+from coin_report_trader.ui.info_icon import InfoIcon
 
 # 명세 2절의 글. 앱의 상수를 가져오지 않고 명세의 글자를 그대로 쓴다.
 TITLES = ["처음 설정", "현황", "보고서", "기록", "설정"]
@@ -29,6 +30,15 @@ def _texts(widget) -> list[str]:
     return [label.text() for label in widget.findChildren(QLabel)]
 
 
+def _info_tips(widget) -> list[str]:
+    """화면의 'ⓘ'(M1 명세 3.14.6)의 툴팁 글. 투자 자문 글은 '꼭 읽을 글' 옆 'ⓘ'에 있다."""
+    return [
+        line.removeprefix("• ")
+        for icon in widget.findChildren(InfoIcon)
+        for line in icon.toolTip().split("\n")
+    ]
+
+
 @pytest.mark.scenario("A5")
 def test_a5_window_has_five_empty_screens_in_order(qapp: QApplication) -> None:
     assert QApplication.platformName() == "offscreen"
@@ -47,7 +57,8 @@ def test_a5_window_has_five_empty_screens_in_order(qapp: QApplication) -> None:
             # M1 명세 3.1: 처음 설정, 현황, 설정 자리는 설계서대로 채워져 빈 글이 없다.
             assert (EMPTY_BODY in texts) is (screen_id not in FILLED_SCREENS)
             assert (STATUS_BEFORE_SETUP in texts) is (screen_id is ScreenId.STATUS)
-            assert (ADVICE in texts) is (screen_id is ScreenId.FIRST_SETUP)
+            assert (ADVICE in _info_tips(widget)) is (screen_id is ScreenId.FIRST_SETUP)
+            assert ADVICE not in texts  # 늘 보이는 글이 아니다
         assert current_screen(window) is ScreenId.FIRST_SETUP
     finally:
         window.close()
