@@ -32,6 +32,7 @@ class AppActions:
         candle_unit: CandleUnit | None = None,
         candle_count: int | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
+        autostart: bool | None = None,
     ) -> None:
         self._data.save_settings(
             coins,
@@ -40,6 +41,7 @@ class AppActions:
             candle_unit=candle_unit,
             candle_count=candle_count,
             ai_choices=ai_choices,
+            autostart=autostart,
         )
 
     def load_reports(self, market: str) -> None:

@@ -118,6 +118,23 @@ class SecretStore(Protocol):
 
 
 @runtime_checkable
+class AutostartStore(Protocol):
+    """PC를 켤 때 자동 시작하는 앱의 등록(M1 명세 3.16.3). 실패하면 `OSError`를 낸다."""
+
+    def supported(self) -> bool: ...
+
+    def read(self) -> str | None:
+        """등록된 명령의 글. 없으면 `None`."""
+        ...
+
+    def write(self, command: str) -> None: ...
+
+    def delete(self) -> None:
+        """등록을 지운다. 없으면 그대로 성공이다."""
+        ...
+
+
+@runtime_checkable
 class UiActions(Protocol):
     """화면이 부르는 동작. 모두 Qt의 주 스레드에서 부르고, 일을 큐에 넣고 바로 돌아온다.
     결과는 `MainWindow.apply`로 온다."""
@@ -133,6 +150,7 @@ class UiActions(Protocol):
         candle_unit: CandleUnit | None = None,
         candle_count: int | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
+        autostart: bool | None = None,
     ) -> None: ...
 
     def load_reports(self, market: str) -> None: ...

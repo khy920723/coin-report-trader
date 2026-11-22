@@ -55,6 +55,7 @@ from coin_report_trader.core.market import (
 )
 from coin_report_trader.core.ports import (
     AiRunner,
+    AutostartStore,
     ClaudeCheck,
     PriceSource,
     QuoteSource,
@@ -136,6 +137,7 @@ __all__ = [
     "AlertDetail",
     "AlertView",
     "AlertsView",
+    "AutostartStore",
     "BarStats",
     "Belief",
     "Candle",

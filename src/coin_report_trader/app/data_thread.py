@@ -36,6 +36,7 @@ from coin_report_trader.core import (
     AlertCategory,
     AlertsView,
     AlertView,
+    AutostartStore,
     BarStats,
     CandleUnit,
     Clock,
@@ -53,6 +54,8 @@ from coin_report_trader.core import (
     redact,
 )
 from coin_report_trader.core.texts import (
+    AUTOSTART_REGISTER_FAILED,
+    AUTOSTART_REMOVE_FAILED,
     CONTENT_BLOCKED,
     CONTENT_BLOCKED_NOT_REQUESTED,
     CONTENT_MARKETS_FAILED,
@@ -107,6 +110,7 @@ from .alert_rules import (
     AlertSpec,
     RepeatRules,
 )
+from .autostart import WindowsAutostart, current_command
 from .memory_alerts import MemoryAlert, MemoryAlerts
 from .send_types import (
     AddressState,
@@ -166,6 +170,7 @@ class _SaveTask:
     first_setup: bool
     candle_unit: CandleUnit | None = None
     candle_count: int | None = None
+    autostart: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -224,8 +229,10 @@ class DataWorker:
         quote: QuoteSource | None,
         sink: Callable[[UiUpdate], None],
         send: SendPort | None = None,
+        autostart: AutostartStore | None = None,
     ) -> None:
         self._send = send
+        self._autostart: AutostartStore = WindowsAutostart() if autostart is None else autostart
         self._database_file = database_file
         self._logs_dir = logs_dir
         self._clock = clock
@@ -310,14 +317,21 @@ class DataWorker:
         candle_unit: CandleUnit | None = None,
         candle_count: int | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
+        autostart: bool | None = None,
     ) -> None:
         """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4).
 
         `ai_choices`는 받기만 하고 쓰지 않는다(M2 명세 4절 1번. 자료 스레드는 15번까지 아무것도
         하지 않는다).
+
+        `autostart`가 `None`이면 저장된 값을 그대로 둔다(M1 명세 3.16.3).
         """
         del ai_choices
-        self._put(_SaveTask(tuple(coins), retention_days, first_setup, candle_unit, candle_count))
+        self._put(
+            _SaveTask(
+                tuple(coins), retention_days, first_setup, candle_unit, candle_count, autostart
+            )
+        )
 
     def load_reports(self, market: str) -> None:
         """받기만 하고 하지 않는다(M2 명세 4절 1번. 15번이 `ReportListView`를 보낸다)."""
@@ -485,6 +499,7 @@ class DataWorker:
             self._settings_unreadable()
             self._publish_alerts_first()
             return
+        view = self._match_autostart_at_start(view)
         self._settings = view
         self._settings_failed = False
         self._settings_retry_mono = None
@@ -495,6 +510,40 @@ class DataWorker:
         self._publish_alerts_first()
         if view.first_setup_done and view.coins:
             self._guard(self._fetch_round)
+
+    def _supported(self) -> bool:
+        """`supported()`가 `OSError`를 내도 지원하지 않음으로 본다."""
+        try:
+            return bool(self._autostart.supported())
+        except OSError as exc:
+            log.error("시작 앱 지원 확인이 실패했습니다: %s", redact(str(exc)))
+            return False
+
+    def _register_autostart(self) -> str | None:
+        """등록된 값이 지금 exe의 명령과 다르면(없거나 옛 판의 폴더) 쓴다. 실패 글이나 `None`."""
+        try:
+            command = current_command()
+            if self._autostart.read() != command:
+                self._autostart.write(command)
+        except OSError as exc:
+            log.error("시작 앱 등록이 실패했습니다: %s", redact(str(exc)))
+            return AUTOSTART_REGISTER_FAILED
+        return None
+
+    def _remove_autostart(self) -> str | None:
+        try:
+            self._autostart.delete()
+        except OSError as exc:
+            log.error("시작 앱 지우기가 실패했습니다: %s", redact(str(exc)))
+            return AUTOSTART_REMOVE_FAILED
+        return None
+
+    def _match_autostart_at_start(self, view: SettingsView) -> SettingsView:
+        """켤 때 맞추기(3.16.2): 저장된 값이 켜짐이고 지원하면 다를 때만 다시 쓴다. 꺼짐이면
+        레지스트리를 건드리지 않는다. `supported`와 마지막 실패 글을 `SettingsView`에 담는다."""
+        supported = self._supported()
+        error = self._register_autostart() if view.autostart and supported else None
+        return replace(view, autostart_supported=supported, autostart_error=error)
 
     def _settings_unreadable(self) -> None:
         first = not self._settings_failed
@@ -690,12 +739,24 @@ class DataWorker:
                 self._emit_save_failed(STAGE_SETTINGS_SAVE, None, exc)
                 return
         done = True if task.first_setup else current.first_setup_done
+        autostart = current.autostart if task.autostart is None else task.autostart
         new = SettingsView(
-            task.coins, task.retention_days, done, candle_unit=unit, candle_count=count
+            task.coins,
+            task.retention_days,
+            done,
+            candle_unit=unit,
+            candle_count=count,
+            autostart=autostart,
+            autostart_supported=current.autostart_supported,
+            autostart_error=current.autostart_error,
         )
         try:
             write_settings(
-                self._conn, new, drop_other_unit_candles=unit_changed, clear_fetched_at=fresh
+                self._conn,
+                new,
+                drop_other_unit_candles=unit_changed,
+                clear_fetched_at=fresh,
+                autostart=task.autostart,
             )
         except StorageError as exc:
             self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
@@ -707,6 +768,10 @@ class DataWorker:
             return
         # 처음 설정을 마쳤다는 것은 단위와 개수가 모두 저장된 것이다(3.7).
         new = replace(new, first_setup_done=done and unit is not None and count is not None)
+        if task.autostart is not None and new.autostart_supported:
+            # 저장 때 맞추기(3.16.2): 설정 값의 저장은 이미 됐고, 레지스트리의 실패는 글로만 남는다.
+            error = self._register_autostart() if task.autostart else self._remove_autostart()
+            new = replace(new, autostart_error=error)
         self._settings = new
         if unit_changed:
             self._reached_oldest.clear()

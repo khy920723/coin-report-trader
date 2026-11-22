@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from coin_report_trader.core import (
     AiRunner,
+    AutostartStore,
     Clock,
     QuoteSource,
     SecretStore,
@@ -25,6 +26,8 @@ class Services:
     clock: Clock | None = None
     ai: AiRunner | None = None
     """2단계: 없으면 진짜 `ClaudeCodeRunner`다. 15번까지 쓰지 않는다(M2 명세 3.4)."""
+    autostart: AutostartStore | None = None
+    """없으면 진짜 `WindowsAutostart`다(M1 명세 3.16.3)."""
 
 
 def resolve_clock(services: Services | None) -> Clock:

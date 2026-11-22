@@ -87,6 +87,12 @@ class SettingsView:
     """고른 봉 개수(1단계 보완). 저장되지 않았으면 `None`."""
     ai_choices: tuple[AiChoice, ...] = ()
     """저장된 AI의 칸만 담는다. 차례는 `AiSlot`의 차례(M2 명세 3.4)."""
+    autostart: bool = False
+    """PC를 켜면 자동으로 시작할지(저장된 값. M1 명세 3.16.3). 처음 값은 꺼짐."""
+    autostart_supported: bool = False
+    """이 실행에서 레지스트리를 쓸 수 있는지. 자료 스레드가 `supported()`로 채운다."""
+    autostart_error: str | None = None
+    """마지막 맞추기의 실패 글. 없으면 `None`."""
 
 
 @dataclass(frozen=True)
