@@ -1,4 +1,4 @@
-"""프로젝트 검사(M0 명세 3.7절, M1 명세 4절 7번, M2 명세 4절 3번, M3 명세 4절 3번).
+"""프로젝트 검사(M0 명세 3.7절, M1 명세 4절 7번, M2·M3 명세 4절 3번, M5 명세 4절 5번).
 
 표준 라이브러리만 쓴다.
 
@@ -18,7 +18,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
 # M0 명세 3.7절의 순서에 M1 명세 4절 7번의 웹후크 주소 검사, M2 명세 3.13의 Claude 자격 정보
-# 검사, M3 명세 4절 3번의 거래 코드 위치 검사를 더했다.
+# 검사, M3 명세 4절 3번의 거래 코드 위치 검사, M5 명세 3.13(4절 5번)의 실거래 허용 값 검사를
+# 더했다.
 ITEM_MODULES = (
     "required_files",
     "legacy_excluded",
@@ -28,6 +29,7 @@ ITEM_MODULES = (
     "webhook_urls",
     "claude_credentials",
     "trade_code_location",
+    "live_switch",
 )
 
 
