@@ -16,6 +16,7 @@ from coin_report_trader.core import (
     QuoteSource,
     SecretStore,
     SystemClock,
+    UpbitTransport,
     WebhookSender,
 )
 
@@ -35,6 +36,8 @@ class Services:
     쓴다(M3 명세 3.4)."""
     min_order: Decimal | None = None
     """3단계: 시험만 넣는 최소 주문 금액. `None`이면 `MIN_ORDER_FALLBACK`(5,000원)이다."""
+    exchange_transport: UpbitTransport | None = None
+    """5단계: 시험이 가짜를 넣는다. `None`이면 진짜 `httpx` 운반이다(M5 명세 3.4)."""
 
 
 def resolve_clock(services: Services | None) -> Clock:

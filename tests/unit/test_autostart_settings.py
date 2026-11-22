@@ -48,14 +48,16 @@ def fixed_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_settings_view_gets_three_fields_last_with_the_spec_defaults() -> None:
     names = [f.name for f in dataclasses.fields(SettingsView)]
-    assert names[-4:-1] == ["autostart", "autostart_supported", "autostart_error"]
+    assert names[-5:-2] == ["autostart", "autostart_supported", "autostart_error"]
     view = SettingsView()
     assert (view.autostart, view.autostart_supported, view.autostart_error) == (False, False, None)
 
 
 def test_save_settings_of_the_port_gets_autostart_last_as_a_keyword_with_none() -> None:
     parameters = inspect.signature(UiActions.save_settings).parameters
-    assert list(parameters)[-3] == "autostart"  # 3단계가 `trade`, `accept_below_stop`을 더했다
+    assert (
+        list(parameters)[-4] == "autostart"
+    )  # 3·5단계가 `trade`, `accept_below_stop`, `live`를 더했다
     assert parameters["autostart"].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["autostart"].default is None
     assert list(inspect.signature(AppActions.save_settings).parameters) == list(parameters)
@@ -64,7 +66,7 @@ def test_save_settings_of_the_port_gets_autostart_last_as_a_keyword_with_none() 
 def test_the_two_texts_and_the_services_field_follow_the_spec() -> None:
     assert texts.AUTOSTART_REGISTER_FAILED == "시작 앱에 등록하지 못했습니다."
     assert texts.AUTOSTART_REMOVE_FAILED == "시작 앱에서 지우지 못했습니다."
-    assert [f.name for f in dataclasses.fields(Services)][-3] == "autostart"
+    assert [f.name for f in dataclasses.fields(Services)][-4] == "autostart"
     assert Services().autostart is None
 
 

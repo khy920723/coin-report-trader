@@ -2,8 +2,10 @@
 
 `run_gui`를 그대로 돌리고 `services`에 가짜(시세, 디스코드, 보관소, 시계)를 넣는다(6절의 아래 글).
 `services`에는 `FakeAiRunner`(`check()`는 `READY`, 정상 답)도 넣는다(M2 명세 3.15. 15번 뒤의 회차가
-진짜 실행기를 부르지 않게). "저장하고 시작"을 누르기 전에 2단계의 여덟 칸(M2 명세 3.12.2. 13번부터
-있다)이 있으면 모두 빈 항목이 아닌 값을 고른다.
+진짜 실행기를 부르지 않게), 가짜 시세를 `BookSource`로도 넣는다(M3 명세 3.4. 23번 뒤의 주문이
+진짜 시세를 부르지 않게). "저장하고 시작"(3단계는 "모의매매 시작". 단추 이름은 그대로)을 누르기
+전에 2단계의 여덟 칸(M2 명세 3.12.2. 13번부터 있다)이 있으면 모두 빈 항목이 아닌 값을 고르고,
+3단계의 매매 칸과 확인란(M3 명세 3.17.5. 17번부터 있다)이 있으면 만든 값으로 채운다.
 자료 폴더는 `tests/conftest.py`가 시험마다 `tmp_path` 아래로 바꾼다. 사람이 하는 일은 창의 단추나
 화면이 부르는 동작(`UiActions`)으로 한다. B41의 두 번째 실행은 다른 프로세스로 돌린다.
 """
@@ -23,6 +25,7 @@ from typing import Any
 
 import pytest
 from acceptance.m1_support import AAA, HOUR, NOW, THIS_HOUR, markets, prepare_db, webhook_url
+from acceptance.m3_support import fill_trade_fields
 from fakes.ai import FakeAiRunner
 from fakes.clock import FakeClock
 from fakes.discord import FakeDiscord
@@ -78,6 +81,7 @@ def services(clock: FakeClock | None = None, **kwargs: Any) -> Services:
         vault=kwargs.pop("vault", None) or FakeVault(),
         clock=clock,
         ai=kwargs.pop("ai", None) or FakeAiRunner(),
+        book=quote,  # 23번 뒤의 주문이 진짜 시세를 부르지 않게(M3 명세 3.4)
     )
 
 
@@ -475,6 +479,7 @@ def test_b38_an_old_record_stays_on_first_setup_until_a_unit_is_chosen(
         seen["retention_locked"] = not find(window, QWidget, "firstSetupRetention30").isEnabled()
         find(window, QAbstractButton, f"firstSetupUnit_{CandleUnit.MINUTE_60.value}").click()
         choose_ai_slots(window)  # 예전 기록에서도 여덟 칸은 잠그지 않는다(M2 명세 3.12.2)
+        fill_trade_fields(window)  # 17번부터 매매 칸과 확인란이 있다(M3 명세 3.17.5)
         find(window, QAbstractButton, "firstSetupStart").click()
         return True
 
@@ -492,7 +497,8 @@ def test_b38_an_old_record_stays_on_first_setup_until_a_unit_is_chosen(
     assert (seen["unit_chosen"], seen["count_200"]) == ([], True)
     assert (seen["coins_locked"], seen["retention_locked"]) == (True, True)
     stored = dict(read("SELECT key, value FROM settings WHERE key NOT LIKE 'fetched%'"))
-    assert stored["first_setup_level"] == "2"
+    # 17번 앞에는 "2", 17번과 5번 뒤에는 "3"이다(M3 명세 3.11.1).
+    assert stored["first_setup_level"] in ("2", "3")
     assert (stored["candle_unit"], stored["candle_count"]) == ("minute60", "200")
 
 

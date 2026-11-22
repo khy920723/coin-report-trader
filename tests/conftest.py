@@ -59,8 +59,9 @@
     감싼다.
   - 한계: 장치를 걸기 전에 `from winreg import SetValueEx`처럼 함수를 따로 가져간 이름, `ctypes`로
     부르는 Windows API, 자식 프로세스, 원래 함수를 일부러 되돌리는 코드는 막지 못한다.
-- 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12(M0)와 B22(M1 명세 6절)
-  시험은 수집한 시험의 맨 끝으로 옮겨(`LAST_SCENARIOS`), 앞에서 돈 시나리오의 막힌 시도 기록을 본다.
+- 수용 시나리오: `@pytest.mark.scenario("A1")`처럼 명세의 번호를 붙인다. A12(M0), B22(M1 명세 6절),
+  C30(M2 명세 6절) 시험은 수집한 시험의 맨 끝으로 옮겨(`LAST_SCENARIOS`), 앞에서 돈 시나리오의 막힌
+  시도 기록을 본다.
 
 시험은 `network_guard`, `keyring_guard`, `claude_guard`, `winreg_guard` 픽스처로 네 장치를
 받는다.
@@ -88,7 +89,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 DATA_DIR_VARIABLES = ("LOCALAPPDATA", "XDG_DATA_HOME")
 SCENARIO_MARKER = "scenario"
-LAST_SCENARIOS = ("A12", "B22")
+LAST_SCENARIOS = ("A12", "B22", "C30")
 
 _INET_FAMILIES = (socket.AF_INET, socket.AF_INET6)
 _REPORT_LIMIT = 10
@@ -795,11 +796,11 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
-    """수집 중의 막힌 시도를 보고, 시나리오를 적고, A12와 B22 시험을 맨 끝으로 옮긴다.
+    """수집 중의 막힌 시도를 보고, 시나리오를 적고, A12, B22, C30 시험을 맨 끝으로 옮긴다.
 
-    `LAST_SCENARIOS`의 차례(A12, 그다음 B22)로 옮기고, 같은 번호 안의 차례는 그대로 둔다. 순서는
-    여기서 옮긴다. `pytest_collection_modifyitems`에서 옮기면 `--ff`, `--nf`처럼 그 뒤에
-    순서를 바꾸는 플러그인이 두 시험을 앞으로 되돌릴 수 있다. 이 훅은 모든 정렬과 `-k` 등의 선택이
+    `LAST_SCENARIOS`의 차례(A12, B22, 그다음 C30)로 옮기고, 같은 번호 안의 차례는 그대로 둔다.
+    순서는 여기서 옮긴다. `pytest_collection_modifyitems`에서 옮기면 `--ff`, `--nf`처럼 그 뒤에
+    순서를 바꾸는 플러그인이 이 시험들을 앞으로 되돌릴 수 있다. 이 훅은 모든 정렬과 `-k` 등의 선택이
     끝난 뒤에 불리고, 실행은 `session.items`의 순서를 따른다.
     """
     attempts = GUARD.take_attempts()
