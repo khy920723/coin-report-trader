@@ -33,6 +33,8 @@ from coin_report_trader.core import (
     SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_SETTINGS,
     AiChoice,
+    AiRunner,
+    AiSlot,
     AlertCategory,
     AlertsView,
     AlertView,
@@ -71,6 +73,7 @@ from coin_report_trader.core.texts import (
     STAGE_CANDLE_SAVE,
     STAGE_CANDLES,
     STAGE_MARKETS,
+    STAGE_REPORT,
     STAGE_SETTINGS_SAVE,
     STAGE_STARTUP,
     STAGE_STATS,
@@ -112,6 +115,7 @@ from .alert_rules import (
 )
 from .autostart import WindowsAutostart, current_command
 from .memory_alerts import MemoryAlert, MemoryAlerts
+from .report_round import SESSIONS_FOLDER, LoadReport, LoadReports, ReportRoundMixin, SessionDone
 from .send_types import (
     AddressState,
     DeliveryResult,
@@ -142,6 +146,14 @@ STATES_WAIT_SECONDS: Final = 30.0
 못한 것으로 보고 이어간다(보내기 스레드가 보관소에서 막혀도 받기가 시작되도록)."""
 
 
+def _four_choices(choices: tuple[AiChoice, ...] | None) -> tuple[AiChoice, ...] | None:
+    """네 칸(`AiSlot` 넷이 하나씩)이 다 있으면 `AiSlot`의 차례로 고른 묶음, 아니면 `None`."""
+    if not choices or len(choices) != len(AiSlot) or {c.slot for c in choices} != set(AiSlot):
+        return None
+    by_slot = {choice.slot: choice for choice in choices}
+    return tuple(by_slot[slot] for slot in AiSlot)
+
+
 def _has_values(stats: BarStats) -> bool:
     """완성된 봉이 고른 개수 이상이라 값이 났는가(`READY`의 기준. 3.4)."""
     return stats.bar_count >= stats.requested_count
@@ -161,6 +173,8 @@ class _CoinResult:
     market: str
     a1: _A1 | None = None
     blocked: bool = False
+    stats_ok: bool = False
+    """봉을 새로 받고 봉 통계에 값이 났다(회차가 세션을 띄울 수 있다. M2 명세 3.5.2의 4)."""
 
 
 @dataclass(frozen=True)
@@ -171,6 +185,7 @@ class _SaveTask:
     candle_unit: CandleUnit | None = None
     candle_count: int | None = None
     autostart: bool | None = None
+    ai_choices: tuple[AiChoice, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -198,7 +213,18 @@ class _Webhook:
     result: WebhookResult
 
 
-type _Task = str | _SaveTask | _Seen | _Delete | _Clear | _Delivery | _Webhook
+type _Task = (
+    str
+    | _SaveTask
+    | _Seen
+    | _Delete
+    | _Clear
+    | _Delivery
+    | _Webhook
+    | SessionDone
+    | LoadReports
+    | LoadReport
+)
 
 
 class _WakeEvent(threading.Event):
@@ -217,7 +243,7 @@ class _WakeEvent(threading.Event):
         return super().wait(timeout)
 
 
-class DataWorker:
+class DataWorker(ReportRoundMixin):
     """자료 스레드와 그 동작 큐. `UiActions`를 지킨다(주 스레드에서 부른다)."""
 
     def __init__(
@@ -230,8 +256,12 @@ class DataWorker:
         sink: Callable[[UiUpdate], None],
         send: SendPort | None = None,
         autostart: AutostartStore | None = None,
+        ai: AiRunner | None = None,
+        sessions_root: Path | None = None,
     ) -> None:
         self._send = send
+        root = logs_dir.parent / SESSIONS_FOLDER if sessions_root is None else sessions_root
+        self._init_reports(ai, root)
         self._autostart: AutostartStore = WindowsAutostart() if autostart is None else autostart
         self._database_file = database_file
         self._logs_dir = logs_dir
@@ -283,6 +313,7 @@ class DataWorker:
         self._stop.set()
         self._wake.set()
         self._states_ready.set()
+        self.stop_ai()  # 도는 세션을 끝낸다. 기다리지 않는다(M2 명세 3.5.2)
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -321,25 +352,21 @@ class DataWorker:
     ) -> None:
         """`candle_unit`, `candle_count`가 `None`이면 저장된 값을 그대로 둔다(3.5.4).
 
-        `ai_choices`는 받기만 하고 쓰지 않는다(M2 명세 4절 1번. 자료 스레드는 15번까지 아무것도
-        하지 않는다).
+        `ai_choices`가 `None`이나 빈 튜플이면 저장된 칸을 그대로 둔다(M2 명세 3.10).
 
         `autostart`가 `None`이면 저장된 값을 그대로 둔다(M1 명세 3.16.3).
         """
-        del ai_choices
         self._put(
             _SaveTask(
-                tuple(coins), retention_days, first_setup, candle_unit, candle_count, autostart
+                tuple(coins),
+                retention_days,
+                first_setup,
+                candle_unit,
+                candle_count,
+                autostart,
+                None if ai_choices is None else tuple(ai_choices),
             )
         )
-
-    def load_reports(self, market: str) -> None:
-        """받기만 하고 하지 않는다(M2 명세 4절 1번. 15번이 `ReportListView`를 보낸다)."""
-        del market
-
-    def load_report(self, report_id: int) -> None:
-        """받기만 하고 하지 않는다(M2 명세 4절 1번. 15번이 `ReportView`를 보낸다)."""
-        del report_id
 
     def retry_candles(self) -> None:
         self._put("retry")
@@ -428,6 +455,7 @@ class DataWorker:
             self._settings_unreadable()
             self._publish_alerts_first()
             return
+        self._guard(self._clean_interrupted, STAGE_REPORT)  # 끊긴 회차(M2 명세 3.5.3)
         self._alert_steps()  # 차례 2, 3
         self._read_settings_and_start()  # 차례 4, 5, 6
 
@@ -508,6 +536,8 @@ class DataWorker:
         for market in view.coins:
             self._send_initial_view(market)
         self._publish_alerts_first()
+        self._guard(self._start_ai_status, STAGE_REPORT)
+        self._guard(self._post_start_reports, STAGE_REPORT)
         if view.first_setup_done and view.coins:
             self._guard(self._fetch_round)
 
@@ -607,6 +637,15 @@ class DataWorker:
         if isinstance(task, _Webhook):
             self._guard(lambda: self._on_webhook(task.result), STAGE_ALERT_SAVE)
             return
+        if isinstance(task, SessionDone):
+            self._guard(lambda: self._on_session_done(task), STAGE_REPORT)
+            return
+        if isinstance(task, LoadReports):
+            self._guard(lambda: self._post_report_list(task.market), STAGE_REPORT)
+            return
+        if isinstance(task, LoadReport):
+            self._guard(lambda: self._do_load_report(task), STAGE_REPORT)
+            return
         if self._settings_failed or self._settings is None:
             return  # 설정을 읽지 못한 동안은 아무것도 하지 않는다.
         if isinstance(task, _SaveTask):
@@ -676,7 +715,10 @@ class DataWorker:
             self._next_round_mono = None
             self._blocked_mono = None
             return
-        self._fetch_round()
+        # 일시 차단이 풀려 저절로 하는 받기는 회차가 아니다(M2 명세 3.5.1). (라)의 받기만 회차다.
+        due = self._next_due
+        is_round = self._blocked_mono is None and due is not None
+        self._fetch_round(due - FETCH_MARGIN if is_round and due is not None else None)
 
     # --- 화면의 동작 ----------------------------------------------------------------------------
 
@@ -740,6 +782,8 @@ class DataWorker:
                 return
         done = True if task.first_setup else current.first_setup_done
         autostart = current.autostart if task.autostart is None else task.autostart
+        four = _four_choices(task.ai_choices)
+        stored_choices = current.ai_choices if four is None else four
         new = SettingsView(
             task.coins,
             task.retention_days,
@@ -749,6 +793,7 @@ class DataWorker:
             autostart=autostart,
             autostart_supported=current.autostart_supported,
             autostart_error=current.autostart_error,
+            ai_choices=four or (),  # 빈 묶음은 저장된 칸을 그대로 둔다(M2 명세 3.10)
         )
         try:
             write_settings(
@@ -767,7 +812,11 @@ class DataWorker:
             self._emit_unexpected(STAGE_SETTINGS_SAVE, None, exc)
             return
         # 처음 설정을 마쳤다는 것은 단위와 개수가 모두 저장된 것이다(3.7).
-        new = replace(new, first_setup_done=done and unit is not None and count is not None)
+        new = replace(
+            new,
+            first_setup_done=done and unit is not None and count is not None,
+            ai_choices=stored_choices,
+        )
         if task.autostart is not None and new.autostart_supported:
             # 저장 때 맞추기(3.16.2): 설정 값의 저장은 이미 됐고, 레지스트리의 실패는 글로만 남는다.
             error = self._register_autostart() if task.autostart else self._remove_autostart()
@@ -781,6 +830,8 @@ class DataWorker:
         self._rules.a29_succeeded(STAGE_SETTINGS_SAVE, None)
         self._post(SaveResult(SAVE_TARGET_SETTINGS, True, SETTINGS_SAVED))
         self._post(new)
+        if four is not None:  # 네 칸을 저장한 때(저장이 성공한 뒤) `check()`(M2 명세 3.5.4)
+            self._guard(self._after_ai_choices_saved, STAGE_REPORT)
         self._cleanup_old(always_post=True)  # 보관 기간을 저장한 직후(3.9)
         if unit_changed:
             for market in new.coins:  # 받기 앞의 값: 고른 단위의 저장된 봉으로 셈한 것
@@ -830,8 +881,9 @@ class DataWorker:
 
     # --- 받기(2의 1, 3.8의 "받기가 끝나는 모습") --------------------------------------------------
 
-    def _fetch_round(self) -> None:
-        """한 번의 받기. 어떻게 끝나든(예외 포함) 다음 (라)의 때를 정한다(3.5.3).
+    def _fetch_round(self, round_close: datetime | None = None) -> None:
+        """한 번의 받기. `round_close`가 있으면 (라)의 받기이고 끝난 뒤 그 봉 마감 시각 T의
+        회차를 시작한다(M2 명세 3.5.2). 어떻게 끝나든(예외 포함) 다음 (라)의 때를 정한다(3.5.3).
 
         고른 봉 단위가 없으면 받지 않는다. 멈추려고 끝난 받기는 정하지 않는다. 요청하지 않는
         일(차단 중의 `retry_candles` 등)은 이 함수를 부르지 않으므로 (라)를 새로 세지 않는다.
@@ -840,7 +892,7 @@ class DataWorker:
         if self._chosen() is None:
             return
         try:
-            self._fetch_round_body()
+            self._fetch_round_body(round_close)
         finally:
             if not self._stop.is_set():
                 self._schedule_next()
@@ -879,7 +931,7 @@ class DataWorker:
         self._next_round_mono = self._clock.monotonic() + max(0.0, delay)
         return due
 
-    def _fetch_round_body(self) -> None:
+    def _fetch_round_body(self, round_close: datetime | None = None) -> None:
         settings = self._settings
         assert settings is not None
         self._expire_block()
@@ -918,6 +970,8 @@ class DataWorker:
                     result.market, a1.stage, a1.error_name, a1.content, after
                 )
                 self._insert(spec, ended)
+        if round_close is not None:
+            self._start_round(round_close, results)
 
     def _fetch_coin(self, market: str) -> _CoinResult:
         assert self._client is not None
@@ -1015,6 +1069,7 @@ class DataWorker:
             return
         if _has_values(stats):
             self._rules.a1_succeeded(market)
+            result.stats_ok = True
             self._post(self._build_view(market, LoadState.READY, self._last_stats[market]))
             return
         self._post(self._build_view(market, LoadState.NO_DATA, self._last_stats[market]))
@@ -1128,7 +1183,9 @@ class DataWorker:
 
     # --- 알림 저장, 보내기, 보았다는 표시, 지우기 -----------------------------------------------
 
-    def _insert(self, spec: AlertSpec, created_at: datetime | None = None) -> bool:
+    def _insert(
+        self, spec: AlertSpec, created_at: datetime | None = None, *, report_id: int | None = None
+    ) -> bool:
         """알림을 `"not_sent"`로 표에 쓰고 보내기 스레드에 넘긴다. 되풀이가 막은 알림은 여기
         오기 전에 걸러진다(만들지 않은 알림은 보내지도 않는다). 표에 쓰지 못하면 그 알림은 로그에만
         남기고, 알림 저장 실패(A-29)를 메모리 알림으로 둔다(3.9)."""
@@ -1146,6 +1203,7 @@ class DataWorker:
                 detail=spec.detail,
                 seen=False,
                 discord_state=DiscordState.NOT_SENT,
+                report_id=report_id,
             )
         except StorageError as exc:
             log.warning("알림 %s을 저장하지 못했습니다: %s", spec.code, exc)
@@ -1344,11 +1402,24 @@ class DataWorker:
         if self._rules.want_alert_save(kind):
             self._insert(alert_rules.save_failed(STAGE_ALERT_SAVE, None, redact(str(exc))))
 
-    def _emit_unexpected(self, stage: str, coin: str | None, exc: BaseException) -> None:
-        """A-30: 읽기의 실패와 그 밖의 예외."""
+    def _emit_unexpected(
+        self,
+        stage: str,
+        coin: str | None,
+        exc: BaseException,
+        *,
+        after: str | None = None,
+        content: str | None = None,
+    ) -> None:
+        """A-30: 읽기의 실패와 그 밖의 예외. `after`와 `content`는 AI 보고서의 일이 정한다."""
         name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
         if self._rules.want_a30(stage, coin, type(exc).__name__, self._clock.monotonic()):
-            self._insert(alert_rules.unexpected(stage, coin, name, redact(str(exc))))
+            text = redact(str(exc)) if content is None else content
+            if after is None:
+                spec = alert_rules.unexpected(stage, coin, name, text)
+            else:
+                spec = alert_rules.unexpected(stage, coin, name, text, after)
+            self._insert(spec)
 
     def _emit_markets_failed(self, error_name: str, content: str) -> None:
         """A-31."""

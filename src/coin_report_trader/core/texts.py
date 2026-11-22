@@ -159,6 +159,9 @@ AFTER_SAVE_FAILED: Final[Mapping[str, str]] = MappingProxyType(
         STAGE_WEBHOOK_SAVE: "주소는 저장되지 않았습니다. 다시 넣어 저장하세요.",
         STAGE_WEBHOOK_DELETE: "저장된 주소는 그대로 남아 있습니다.",
         STAGE_STARTUP: "창을 띄우지 못하고 끝냈습니다. 다음에 켤 때 다시 시도합니다.",
+        STAGE_REPORT_SAVE: (
+            "AI를 껐습니다. 봉 받기는 계속하고, 프로그램을 다시 켜면 AI가 다시 돕니다."
+        ),
     }
 )
 AFTER_UNEXPECTED: Final = "그 일을 그만두고 다음 일을 계속합니다."
