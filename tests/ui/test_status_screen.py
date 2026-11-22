@@ -48,9 +48,22 @@ class FakeActions:
         self.calls.append(("refresh_markets",))
 
     def save_settings(
-        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+        self,
+        coins,
+        retention_days,
+        *,
+        first_setup,
+        candle_unit=None,
+        candle_count=None,
+        ai_choices=None,
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
+
+    def load_reports(self, market) -> None:
+        pass  # 2단계의 동작. 화면이 부르기 전까지 아무것도 하지 않는다
+
+    def load_report(self, report_id) -> None:
+        pass
 
     def retry_candles(self) -> None:
         self.calls.append(("retry_candles",))
@@ -638,13 +651,14 @@ def test_other_updates_do_not_disturb_the_status_screen(make_window, actions):
     assert actions.calls == []
 
 
-def test_the_empty_body_and_the_other_two_screens_are_unchanged(make_window):
+def test_only_the_history_screen_keeps_the_empty_body(make_window):
     window = make_window(FakeActions())
     window.apply(SettingsView(("KRW-AAA",), 30, True))
     assert current_screen(window) is ScreenId.STATUS
-    for screen_id in (ScreenId.REPORTS, ScreenId.HISTORY):
-        label = _find(screen_widget(window, screen_id), QLabel, "screenBody")
-        assert label.text() == "이 화면은 아직 비어 있습니다."
+    # 보고서 화면은 2단계(M2 명세 3.12.1)에서 채워져 빈 글이 없다. 기록 화면만 비어 있다.
+    label = _find(screen_widget(window, ScreenId.HISTORY), QLabel, "screenBody")
+    assert label.text() == "이 화면은 아직 비어 있습니다."
+    assert screen_widget(window, ScreenId.REPORTS).findChild(QLabel, "screenBody") is None
     assert _status(window).findChild(QLabel, "screenBody") is None
 
 

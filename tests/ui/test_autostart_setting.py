@@ -153,8 +153,8 @@ def test_the_field_sits_in_the_other_values_card_under_the_retention_choice(wind
     assert box.mapTo(card, box.rect().topLeft()).y() > retention.mapTo(
         card, retention.rect().bottomLeft()
     ).y() - 1
-    # 카드의 수는 그대로다(코인, 봉 단위·봉 개수, 그 밖의 값).
-    assert len(screen.findChildren(Card)) == 3
+    # 카드는 코인, 봉 단위·봉 개수, 그 밖의 값에 2단계의 Claude 모델이다(M2 명세 3.12.2).
+    assert len(screen.findChildren(Card)) == 4
     # 'ⓘ'는 확인란 바로 오른쪽이다.
     row = box.parentWidget().layout().itemAt(0).layout()
     assert [row.itemAt(i).widget().objectName() for i in range(2)] == [

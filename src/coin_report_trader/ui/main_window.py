@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -19,15 +19,21 @@ from PySide6.QtWidgets import (
 from coin_report_trader.core import (
     ALERT_CATEGORY_TITLES,
     SAVE_TARGET_ALERT_DELETE,
+    SAVE_TARGET_REPORT,
     SAVE_TARGET_SETTINGS,
     SCREEN_TITLES,
     WINDOW_TITLE,
+    AiChoice,
+    AiStatusView,
     AlertCategory,
     AlertsView,
+    AlertView,
     CandleUnit,
     CoinView,
     LoadState,
     MarketsView,
+    ReportListView,
+    ReportView,
     SaveResult,
     ScreenId,
     SettingsView,
@@ -40,7 +46,11 @@ from coin_report_trader.core.texts import (
     ERROR_BLOCKED,
     MARKETS_FAILED,
     MARKETS_LOADING,
+    REPORT_UNREADABLE,
     SETTINGS_UNREADABLE,
+    STAGE_SETTINGS_SAVE,
+    STAGE_WEBHOOK_DELETE,
+    STAGE_WEBHOOK_SAVE,
     blocked_markets_text,
     kst_when_text,
 )
@@ -48,6 +58,7 @@ from coin_report_trader.ui import theme
 from coin_report_trader.ui.dialogs import ask_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
 from coin_report_trader.ui.icons import screen_icon
+from coin_report_trader.ui.report_screen import ReportScreen
 from coin_report_trader.ui.screens import build_screen, screen_object_name
 from coin_report_trader.ui.settings_screen import SettingsScreen
 from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
@@ -57,6 +68,8 @@ from coin_report_trader.ui.texts import (
     ALERT_DELETE_BODY,
     ALERT_DELETE_TITLE,
     LOADING_TEXT,
+    REPORT_BEFORE_FIRST_SETUP,
+    REPORT_NONE,
     RETENTION_SHRINK_TITLE,
     SETTINGS_BEFORE_FIRST_SETUP,
     STATUS_BEFORE_FIRST_SETUP,
@@ -142,6 +155,15 @@ class MainWindow(QMainWindow):
         self._saved_message: Message | None = None
         """타이머가 지울 "저장했습니다." 글. 1 자리의 글이 이것일 때만 지운다."""
         self._showing: ScreenId | None = None
+        self._ai_status: AiStatusView | None = None
+        self._report_lists: dict[str, ReportListView] = {}
+        self._report_views: dict[int, ReportView] = {}
+        self._report_unreadable = False
+        self._report_selected: int | None = None
+        self._report_wanted: int | None = None
+        """다른 화면에서 열 때 고를 `report_id`. 받은 목록에 있을 때만 쓴다."""
+        self._report_coins: tuple[str, ...] | None = None
+        self._report_rounds_key: object = None
 
         self.setObjectName(WINDOW_NAME)
         self.setWindowTitle(WINDOW_TITLE)
@@ -154,6 +176,7 @@ class MainWindow(QMainWindow):
         self._first_setup = FirstSetupScreen()
         self._settings = SettingsScreen()
         self._status = StatusScreen()
+        self._reports = ReportScreen()
         for screen_id in ScreenId:
             nav.addItem(QListWidgetItem(screen_icon(screen_id), SCREEN_TITLES[screen_id]))
             if screen_id is ScreenId.FIRST_SETUP:
@@ -162,6 +185,8 @@ class MainWindow(QMainWindow):
                 stack.addWidget(_scroll_page(screen_id, self._settings))
             elif screen_id is ScreenId.STATUS:
                 stack.addWidget(_scroll_page(screen_id, self._status))
+            elif screen_id is ScreenId.REPORTS:
+                stack.addWidget(_scroll_page(screen_id, self._reports))
             else:
                 stack.addWidget(_scroll_page(screen_id, build_screen(screen_id)))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
@@ -202,6 +227,9 @@ class MainWindow(QMainWindow):
         self._settings.save_requested.connect(self._on_save)
         self._settings.retry_requested.connect(self._retry_markets)
         self._status.retry_requested.connect(self._retry_candles)
+        self._status.report_requested.connect(self._open_report)
+        self._reports.coin_chosen.connect(self._on_report_coin)
+        self._reports.round_chosen.connect(self._on_report_round)
         center = self._status.alert_center
         center.seen_requested.connect(self._on_seen)
         center.delete_alert_requested.connect(self._on_alert_delete)
@@ -209,7 +237,11 @@ class MainWindow(QMainWindow):
         center.save_webhook_requested.connect(self._on_webhook_save)
         center.delete_webhook_requested.connect(self._on_webhook_delete)
         center.send_test_requested.connect(self._on_send_test)
+        center.go_requested.connect(self._go_alert)
         stack.currentChanged.connect(self._on_screen_changed)
+        for index, screen_id in enumerate(ScreenId):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
+            shortcut.activated.connect(lambda sid=screen_id: self._open_screen(sid))
 
         self._update()
 
@@ -260,6 +292,13 @@ class MainWindow(QMainWindow):
             self._update()
         elif isinstance(update, SaveResult):
             self._on_save_result(update)
+        elif isinstance(update, AiStatusView):
+            self._ai_status = update
+            self._update()
+        elif isinstance(update, ReportListView):
+            self._on_report_list(update)
+        elif isinstance(update, ReportView):
+            self._on_report_view(update)
 
     def set_confirm_handler(self, handler: ConfirmHandler | None) -> None:
         """확인 창 대신 `handler(제목, 본문)`을 부르게 한다. `None`이면 진짜 확인 창을 띄운다.
@@ -287,6 +326,7 @@ class MainWindow(QMainWindow):
             view.candle_unit,
             view.candle_count,
             view.autostart,
+            view.ai_choices,
         )
         old_key = (
             None
@@ -298,6 +338,7 @@ class MainWindow(QMainWindow):
                 old.candle_unit,
                 old.candle_count,
                 old.autostart,
+                old.ai_choices,
             )
         )
         if key != old_key:
@@ -308,6 +349,7 @@ class MainWindow(QMainWindow):
                 view.candle_unit,
                 view.candle_count,
                 view.autostart,
+                view.ai_choices,
             )
         self._settings.set_autostart_state(view.autostart_supported, view.autostart_error)
         # 고른 코인에 없는 코인의 마지막 `CoinView`는 버린다(다시 고르면 새 값이 올 때까지
@@ -345,6 +387,12 @@ class MainWindow(QMainWindow):
             self._delete_message = Message(result.message, Tone.WARNING) if failed else None
             self._update()
             return
+        if result.target == SAVE_TARGET_REPORT:
+            # 보고서를 읽지 못함: 오른쪽에 글 하나가 보인다. 다시 고르면 다시 부른다(3.12.1).
+            if not result.ok:
+                self._report_unreadable = True
+                self._update()
+            return
         if result.target != SAVE_TARGET_SETTINGS:
             return
         if self._pending_saves:
@@ -376,9 +424,14 @@ class MainWindow(QMainWindow):
     # --- 사용자의 동작 ---
 
     def _on_start(
-        self, coins: tuple[str, ...], days: int, unit: CandleUnit | None, count: int | None
+        self,
+        coins: tuple[str, ...],
+        days: int,
+        unit: CandleUnit | None,
+        count: int | None,
+        ai_choices: tuple[AiChoice, ...] | None = None,
     ) -> None:
-        self._submit(ScreenId.FIRST_SETUP, coins, days, unit, count)
+        self._submit(ScreenId.FIRST_SETUP, coins, days, unit, count, ai_choices=ai_choices)
 
     def _on_save(
         self,
@@ -387,6 +440,7 @@ class MainWindow(QMainWindow):
         unit: CandleUnit | None,
         count: int | None,
         autostart: bool | None = None,
+        ai_choices: tuple[AiChoice, ...] | None = None,
     ) -> None:
         saved_days = self._saved.retention_days if self._saved is not None else None
         # 저장된 값이 없을 때(처음 고를 때)와 같거나 길게 바꿀 때는 확인 창이 없다.
@@ -395,7 +449,7 @@ class MainWindow(QMainWindow):
             RETENTION_SHRINK_TITLE, retention_shrink_body(saved_days, days)
         ):
             return
-        self._submit(ScreenId.SETTINGS, coins, days, unit, count, autostart)
+        self._submit(ScreenId.SETTINGS, coins, days, unit, count, autostart, ai_choices)
 
     def _submit(
         self,
@@ -405,6 +459,7 @@ class MainWindow(QMainWindow):
         unit: CandleUnit | None,
         count: int | None,
         autostart: bool | None = None,
+        ai_choices: tuple[AiChoice, ...] | None = None,
     ) -> None:
         first_setup = origin is ScreenId.FIRST_SETUP
         if (
@@ -418,7 +473,11 @@ class MainWindow(QMainWindow):
             self._saved_timer.stop()
             self._saved_message = None
         self._pending_saves.append(origin)
-        extra = {} if autostart is None else {"autostart": autostart}  # 쓸 수 없으면 넘기지 않는다
+        extra: dict[str, object] = {}
+        if autostart is not None:  # 쓸 수 없으면 넘기지 않는다(M1 명세 3.16.1)
+            extra["autostart"] = autostart
+        if ai_choices is not None:  # 여덟 칸이 다 골라져 있을 때만 넘긴다(M2 명세 3.12.2)
+            extra["ai_choices"] = ai_choices
         self._actions.save_settings(
             coins, days, first_setup=first_setup, candle_unit=unit, candle_count=count, **extra
         )
@@ -490,8 +549,191 @@ class MainWindow(QMainWindow):
         self._markets_loading = True
         self._actions.refresh_markets()
 
-    def _on_screen_changed(self, _index: int) -> None:
+    def _on_screen_changed(self, index: int) -> None:
+        if list(ScreenId)[index] is ScreenId.REPORTS:
+            self._request_reports()  # 보고서 화면이 보일 때 부른다(M2 명세 3.12.1)
         self._update()
+
+    # --- 보고서 화면(M2 명세 3.12.1) ---
+
+    def _reports_ready(self) -> bool:
+        return (
+            self._actions is not None
+            and self._phase is Phase.READY
+            and self._first_setup_done()
+            and self._reports.chosen_market() is not None
+        )
+
+    def _request_reports(self) -> None:
+        """고른 코인의 회차 목록을 부른다. 다시 부르는 것이므로 읽지 못함의 글은 걷는다."""
+        if not self._reports_ready():
+            return
+        market = self._reports.chosen_market()
+        if market is None or self._actions is None:
+            return
+        self._report_unreadable = False
+        self._actions.load_reports(market)
+
+    def _request_report(self, report_id: int) -> None:
+        if self._actions is None or self._phase is not Phase.READY:
+            return
+        self._report_unreadable = False
+        self._actions.load_report(report_id)
+
+    def _on_report_coin(self, _market: str) -> None:
+        """사용자가 코인을 골랐다."""
+        self._report_selected = None
+        self._report_wanted = None
+        self._request_reports()
+        self._update()
+
+    def _on_report_round(self, report_id: int) -> None:
+        """사용자가 회차를 골랐다."""
+        self._report_selected = report_id
+        self._report_wanted = None
+        self._request_report(report_id)
+        self._update()
+
+    def _on_report_list(self, view: ReportListView) -> None:
+        old = self._report_lists.get(view.market)
+        self._report_lists[view.market] = view
+        shown = current_screen(self) is ScreenId.REPORTS
+        if shown and view.market == self._reports.chosen_market() and view.state is LoadState.READY:
+            self._choose_round(view, old)
+        self._update()
+
+    def _choose_round(self, view: ReportListView, old: ReportListView | None) -> None:
+        """받은 목록에서 볼 회차를 정한다. 주어진 번호(다른 화면에서 열 때)가 있으면 그것, 없으면
+        보던 것, 그것도 없으면 맨 위다. 보던 줄의 `state`가 바뀌면 보고서를 다시 부른다."""
+        ids = {item.report_id: item for item in view.items}
+        if not ids:
+            self._report_selected = None
+            return
+        if self._report_wanted in ids:
+            chosen = self._report_wanted
+        elif self._report_selected in ids:
+            chosen = self._report_selected
+        else:
+            chosen = view.items[0].report_id
+        self._report_wanted = None
+        previous = self._report_selected
+        changed = chosen != previous
+        if not changed and old is not None:
+            before = next((i for i in old.items if i.report_id == chosen), None)
+            changed = before is None or before.state != ids[chosen].state
+        self._report_selected = chosen
+        if changed:
+            self._request_report(chosen)
+
+    def _on_report_view(self, view: ReportView) -> None:
+        self._report_views[view.report_id] = view
+        if view.report_id == self._report_selected:
+            self._report_unreadable = False
+        self._update()
+
+    def _open_report(self, market: str, report_id: int | None = None) -> None:
+        """다른 화면에서 보고서 화면을 연다: 그 코인을 고르고 목록을 부른다. `report_id`가 받은
+        목록에 있으면 그 줄을, 아니면 맨 위 줄을 고른다."""
+        self._reports.choose_market(market)
+        self._report_selected = None
+        self._report_wanted = report_id
+        if current_screen(self) is ScreenId.REPORTS:
+            self._request_reports()
+            self._update()
+        else:
+            select_screen(self, ScreenId.REPORTS)
+
+    def _open_screen(self, screen_id: ScreenId) -> None:
+        """Ctrl+1~5: 화면 이름 목록에서 그 줄을 누른 것과 같다."""
+        select_screen(self, screen_id)
+        if screen_id is ScreenId.STATUS:
+            self._hold_seen = False
+            self._status.alert_center.select_first_unseen_tab()
+
+    def _report_message(self) -> Message | None:
+        """오른쪽에 글 하나만 보이는 모습. 없으면 `None`(고른 회차의 보고서를 그린다)."""
+        if self._phase is Phase.WAITING:
+            return Message(LOADING_TEXT)
+        if self._phase is Phase.UNREADABLE:
+            return Message(SETTINGS_UNREADABLE, Tone.WARNING)
+        if not self._first_setup_done():
+            return Message(REPORT_BEFORE_FIRST_SETUP)
+        market = self._reports.chosen_market()
+        listing = self._report_lists.get(market) if market is not None else None
+        if listing is None or listing.state is LoadState.LOADING:
+            return Message(LOADING_TEXT)
+        if listing.state is LoadState.FAILED:
+            return Message(REPORT_UNREADABLE, Tone.WARNING)
+        if not listing.items:
+            return Message(REPORT_NONE)
+        if self._report_unreadable:
+            return Message(REPORT_UNREADABLE, Tone.WARNING)
+        if self._report_selected is None or self._report_selected not in self._report_views:
+            return Message(LOADING_TEXT)
+        return None
+
+    def _render_reports(self) -> None:
+        coins = self._saved.coins if self._saved is not None and self._first_setup_done() else ()
+        if coins != self._report_coins:
+            self._report_coins = coins
+            self._reports.set_coins(coins)
+        self._reports.set_ai_status(self._ai_status)
+        market = self._reports.chosen_market()
+        listing = self._report_lists.get(market) if market is not None else None
+        items = listing.items if listing is not None and listing.state is LoadState.READY else ()
+        key = (market, items, self._report_selected)
+        if key != self._report_rounds_key:
+            self._report_rounds_key = key
+            self._reports.set_rounds(items, self._report_selected)
+        message = self._report_message()
+        view = None
+        if message is None and self._report_selected is not None:
+            view = self._report_views.get(self._report_selected)
+        self._reports.render(message=message, view=view)
+
+    # --- 알림의 곳으로 가기(M2 명세 3.12.6) ---
+
+    def _go_alert(self, alert: AlertView) -> None:
+        """알림이 가리키는 곳으로 화면만 바꾼다(알림을 지우거나 다른 동작을 부르지 않는다)."""
+        code = alert.code
+        done = self._first_setup_done()
+        setup = ScreenId.SETTINGS if done else ScreenId.FIRST_SETUP
+        if code in ("A-1", "A-2", "A-17", "A-30"):
+            self._go_status_coin(alert.coin)
+        elif code in ("A-18", "A-19"):
+            select_screen(self, ScreenId.REPORTS)
+        elif code == "A-26":
+            if alert.coin is not None:
+                self._open_report(alert.coin, alert.report_id)
+            else:
+                select_screen(self, ScreenId.REPORTS)
+        elif code == "A-29":
+            stage = alert.detail.stage if alert.detail is not None else None
+            if stage == STAGE_SETTINGS_SAVE:
+                select_screen(self, setup)
+            elif stage in (STAGE_WEBHOOK_SAVE, STAGE_WEBHOOK_DELETE):
+                select_screen(self, ScreenId.STATUS)  # 알림센터(탭은 바꾸지 않는다)
+                self._scroll_status_to(self._status.alert_center)
+            else:
+                self._go_status_coin(alert.coin)
+        elif code == "A-31":
+            select_screen(self, setup)
+
+    def _go_status_coin(self, market: str | None) -> None:
+        """현황 화면의 그 코인 칸으로 간다. 그 칸이 없으면 현황 화면 맨 위로 간다."""
+        select_screen(self, ScreenId.STATUS)
+        card = self._status.card_of(market) if market is not None else None
+        self._scroll_status_to(card)
+
+    def _scroll_status_to(self, widget: QWidget | None) -> None:
+        page = self._status.parentWidget()
+        scroll = page.parentWidget() if page is not None else None
+        if not isinstance(scroll, QScrollArea):
+            return
+        if widget is None:
+            scroll.verticalScrollBar().setValue(0)
+        else:
+            scroll.ensureWidgetVisible(widget)
 
     # --- 그리기 ---
 
@@ -586,6 +828,7 @@ class MainWindow(QMainWindow):
         self._settings.render(
             phase=self._phase, done=done, picker=mode, message=self._settings_message()
         )
+        self._render_reports()
         self._status.render(
             message=self._status_message(),
             coins=self._saved.coins if self._saved is not None else (),
@@ -652,6 +895,11 @@ def create_main_window(context: UiContext) -> MainWindow:
       버튼 `firstSetupUnit_<봉 단위 값>`, `firstSetupCount_<수>`),
       보관 기간(`firstSetupRetention`)의 안쪽 이름은 `coin_picker.py`, `candle_choice.py`,
       `retention.py`의 문서 문자열에 있다. 앞이 `firstSetup`이다.
+    - 2단계(M2 명세 3.12.2~3.12.3): 모델과 노력 값 드롭다운 `firstSetupAiModel_<칸>`,
+      `firstSetupAiEffort_<칸>`(`<칸>`은 `AiSlot` 값. 라벨 뒤 '*'), 칸 이름 옆 'ⓘ'
+      `firstSetupAiInfo`, 제목 옆 'ⓘ' `firstSetupIntroInfo`(2 자리의 글. 처음 설정을 마친 뒤에는
+      숨김), 시작할 수 없는 까닭 `firstSetupStartReason`(단추가 눌리지 않을 때만 보임).
+      "꼭 읽을 글" 'ⓘ'는 다섯 글(가, 마, 바, 사, 아)을 "• "로 잇는다.
 
     설정 자리(`screen_settings`)의 `objectName`:
 
@@ -663,6 +911,10 @@ def create_main_window(context: UiContext) -> MainWindow:
       (`autostart_supported`가 거짓) 확인란은 흐리고 "저장"이 `autostart`를 넘기지 않는다.
     - 코인 고르기(찾기 칸 `settingsCoinSearch`), 봉 단위(`settingsUnit_<봉 단위 값>`)와 봉 개수
       (`settingsCount_<수>`), 보관 기간의 안쪽 이름은 앞이 `settings`다.
+    - 2단계: 모델과 노력 값 `settingsAiModel_<칸>`, `settingsAiEffort_<칸>`, 'ⓘ' `settingsAiInfo`,
+      네 칸 중 일부만 골랐을 때의 경고 `settingsAiWarning`, "되돌리기" `settingsRevert`(저장된
+      값으로 칸을 되돌리고 동작은 부르지 않는다), 제목 옆 'ⓘ' `settingsIntroInfo`.
+      "저장"은 여덟 값이 모두 골라졌을 때만 `ai_choices`를 넘긴다.
 
     현황 자리(`screen_status`)의 `objectName`(`<m>`은 마켓 코드, 자세한 것은 `status_screen.py`):
 
@@ -700,10 +952,20 @@ def create_main_window(context: UiContext) -> MainWindow:
       `alertWebhookMessage`와 `alertWebhookTestMessage`, 지우기 결과 글 `alertDeleteMessage`.
       주소가 저장된 분류의 칸은 비어 있고 `placeholderText()`가 "(가려서 보임) 저장됨"이다.
       흐린 것은 `isEnabled()`가 거짓이다. 주소는 `UiActions.save_webhook`의 인자로만 창을 떠난다.
+    - 코인 칸의 "보고서 보기" `statusCoinReport_<m>`(늘 보이고, 누르면 보고서 화면에서 그 코인을
+      연다). 칸의 빈 곳을 눌러도 같다.
+    - 알림센터 2단계: "가 보기" `alertGo_<id>`(오류·기타 알림을 펼쳤을 때), 줄은 Tab으로 초점을
+      받고 Enter·Space로 누른 것과 같다, 주소를 읽지 못함 `alertWebhookUnreadable`(경고 색).
     - 화면 이름 목록의 현황 줄: `screenNav`의 `ScreenId` 차례의 줄(`item(1)`)의 글이 "현황"이나
       "현황 ({n})"이다. 사용자가 그 줄을 누른 것은 `screenNav.itemClicked`로 알린다(시험은
       `itemClicked.emit(item)`). `select_screen`은 누른 것이 아니라서 마지막에 고른 탭을
       그대로 둔다.
+    - Ctrl+1~5는 화면 이름 목록의 위에서 1~5째 줄을 누른 것과 같다.
+    - 보고서 자리(`screen_reports`, M2 명세 3.12.1): 맨 위 줄 `reportAiStatus`, 코인 `reportCoin`
+      (`QListWidget`), 회차 `reportRounds`(`QListWidget`), 글 하나만 보이는 모습 `reportMessage`,
+      `reportAiMark`, 오른쪽 `reportDetailScroll`(`QScrollArea`)의 묶음 `reportLastResult`,
+      `reportChecks`, `reportDecision`, `reportEvidence`, `reportSources`, `reportUsage`,
+      `reportNotices`, 'ⓘ' `reportDecisionInfo`, `reportUsageInfo`, `reportNoticesInfo`.
     - 현황 자리의 "다시 시도"는 `retry_candles()`를 부른다. 처음 설정을 마치고 설정을 읽은 뒤에만
       불리고, 그 밖의 때에는 단추가 보이지 않는다.
     """
