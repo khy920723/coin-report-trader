@@ -56,6 +56,100 @@ MOVE_UP_TEXT: Final = "위로"
 MOVE_DOWN_TEXT: Final = "아래로"
 REMOVE_TEXT: Final = "빼기"
 
+# --- 2단계: 모델·노력 값 칸, 처음 설정과 설정의 글(M2 명세 3.12.2, 3.12.3, 3.12.5) ---
+AI_CARD_TITLE_REQUIRED: Final = "Claude 모델*"
+AI_CARD_TITLE: Final = "Claude 모델"
+AI_USAGE_NOTE: Final = "앱의 AI 사용은 이 PC 사용자의 Claude 구독 사용 한도에서 빠집니다."
+"""칸 아래 글(3.12.2)이자 10 자리의 아(3.12.3)."""
+NOTICE_PERSONAL: Final = (
+    "개인용입니다. 쓰는 사람은 각자 자기 업비트 키와 자기 Claude Code 로그인으로, "
+    "자기 책임으로 씁니다. 아무것도 보증하지 않습니다. 팔거나 돈을 받고 넘기지 않습니다."
+)
+"""10 자리의 사(3.12.3)."""
+FIRST_SETUP_INTRO: Final = (
+    '아래 값을 고른 뒤 "저장하고 시작"을 누르세요. 별표(*)가 붙은 칸은 꼭 골라야 합니다.'
+)
+"""2 자리의 안내 글(3.12.3). 제목 옆 'ⓘ'의 툴팁이다."""
+START_REASON: Final = (
+    "코인, 봉 단위, 알림 보관 기간과 여덟 칸의 모델·노력 값을 고르면 누를 수 있습니다."
+)
+"""저장하고 시작을 누를 수 없을 때 단추 곁의 까닭(3.12.2)."""
+SETTINGS_INTRO: Final = "값을 고친 뒤 저장을 누르면 적용됩니다."
+AI_PARTIAL_WARNING: Final = "네 칸의 모델과 노력 값을 모두 골라야 저장됩니다."
+REVERT_TEXT: Final = "되돌리기"
+
+
+def ai_model_label(slot_title: str, *, required: bool) -> str:
+    return f"{slot_title} 모델" + ("*" if required else "")
+
+
+def ai_effort_label(slot_title: str, *, required: bool) -> str:
+    return f"{slot_title} 노력 값" + ("*" if required else "")
+
+
+# --- 현황 화면의 보고서 보기(3.12.4)와 알림의 가 보기(3.12.6) ---
+REPORT_VIEW_TEXT: Final = "보고서 보기"
+GO_TEXT: Final = "가 보기"
+
+# --- 보고서 화면(M2 명세 3.12.1) ---
+REPORT_COIN_TITLE: Final = "코인"
+REPORT_ROUNDS_TITLE: Final = "회차"
+AI_NOT_CHOSEN: Final = "설정에서 네 칸의 모델과 노력 값을 고르면 다음 회차부터 보고서를 만듭니다."
+AI_NOT_FOUND: Final = "Claude Code를 찾지 못했거나 버전을 읽지 못해 AI를 껐습니다."
+AI_VERSION_OFF: Final = "Claude Code 버전이 시험한 범위 밖이라 AI를 껐습니다."
+AI_ERROR_OFF: Final = "예상하지 못한 오류로 AI를 껐습니다. 프로그램을 다시 켜면 AI가 다시 돕니다."
+REPORT_NONE: Final = "아직 받은 보고서가 없습니다."
+REPORT_RUNNING: Final = "이 회차의 보고서를 만드는 중입니다."
+REPORT_BEFORE_FIRST_SETUP: Final = "처음 설정을 마치면 보고서를 볼 수 있습니다."
+REPORT_INTERRUPTED: Final = "이 회차는 끝까지 가지 못했습니다(끊긴 회차)."
+REPORT_LAST_RESULT_TITLE: Final = "지난 판단의 결과"
+REPORT_CHECKS_TITLE: Final = "검증 목록"
+REPORT_CHECK_COLUMNS: Final = ("항목", "믿음", "견준 횟수", "맞은 횟수")
+REPORT_DECISION_TITLE: Final = "판단"
+REPORT_DECISION_NOTE: Final = "예측 가격은 보여 주는 값이고 주문을 정하는 데 쓰지 않습니다."
+REPORT_EVIDENCE_TITLE: Final = "근거"
+REPORT_FINAL_PART: Final = "최종 예측"
+REPORT_SOURCES_TITLE: Final = "출처"
+REPORT_USAGE_TITLE: Final = "사용량과 걸린 시간"
+REPORT_USAGE_NOTE: Final = "부분마다의 토큰은 나눠 재지 못했습니다."
+REPORT_NOTICES_TITLE: Final = "꼭 읽을 글"
+REPORT_PROGRAM_VALUES: Final = "프로그램이 계산한 값"
+NO_VALUE: Final = "-"
+
+
+def report_failed_text(failure: str | None) -> str:
+    return f"이 회차에 이 코인의 보고서를 받지 못했습니다: {failure if failure else NO_VALUE}"
+
+
+def report_skipped_text(reason: str | None) -> str:
+    return f"이 회차에 이 코인은 쉬었습니다: {reason if reason else NO_VALUE}"
+
+
+def report_round_text(number: int, when: str, end: str) -> str:
+    return f"회차 {number} · {when} · {end}"
+
+
+def report_compared_title(round_number: int) -> str:
+    return f"근거를 견준 결과(회차 {round_number}의 근거)"
+
+
+def report_last_price_text(round_number: int, value: str) -> str:
+    return f"지난 예측 가격(회차 {round_number}가 예측한 다음 회차 때의 값): {value}"
+
+
+def report_tokens_text(
+    input_tokens: int, output_tokens: int, cache_read: int, cache_creation: int
+) -> str:
+    return (
+        f"세션 전체 토큰: 입력 {input_tokens:,} · 출력 {output_tokens:,} · "
+        f"캐시 읽기 {cache_read:,} · 캐시 만들기 {cache_creation:,}"
+    )
+
+
+def report_elapsed_text(seconds: int) -> str:
+    return f"보고서까지 걸린 시간: {seconds // 60}분 {seconds % 60}초"
+
+
 # --- 코인 고르기의 찾기 칸(M1 명세 3.14.3) ---
 SEARCH_LABEL: Final = "찾기"
 SEARCH_PLACEHOLDER: Final = "코인 기호나 한글 이름"
@@ -191,6 +285,8 @@ WEBHOOK_TEST_TEXT: Final = "확인용 글 보내기"
 WEBHOOK_EMPTY_TEXT: Final = "넣지 않음"
 WEBHOOK_SAVED_SUFFIX: Final = " 저장됨"
 DISCORD_FAILED_TEXT: Final = "디스코드로 보내지 못함"
+WEBHOOK_UNREADABLE: Final = "주소를 읽지 못했습니다."
+"""`WebhookView.unreadable`일 때 주소 칸 아래(M2 명세 3.12.7). 늘 보이는 오류 글이다."""
 UNSEEN_DOT: Final = "●"
 ALERTS_UNREADABLE: Final = "알림을 읽지 못했습니다."
 
@@ -206,8 +302,8 @@ def no_alerts_text(category_title: str) -> str:
 
 
 def tab_title_text(category_title: str, unseen: int) -> str:
-    """탭 이름. 아직 보지 않은 알림이 있으면 뒤에 "({n})"(설계서 8.2. 빈칸은 없다)."""
-    return f"{category_title}({unseen})" if unseen > 0 else category_title
+    """탭 이름. 아직 보지 않은 알림이 있으면 뒤에 빈칸과 "({n})"(M2 명세 3.12.7)."""
+    return f"{category_title} ({unseen})" if unseen > 0 else category_title
 
 
 def status_nav_text(screen_title: str, unseen: int) -> str:

@@ -10,6 +10,7 @@ import pytest
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from coin_report_trader.core import (
+    AiSlot,
     CandleUnit,
     LoadState,
     Market,
@@ -71,7 +73,14 @@ class FakeActions:
         self.calls.append(("refresh_markets",))
 
     def save_settings(
-        self, coins, retention_days, *, first_setup, candle_unit=None, candle_count=None
+        self,
+        coins,
+        retention_days,
+        *,
+        first_setup,
+        candle_unit=None,
+        candle_count=None,
+        ai_choices=None,
     ) -> None:
         self.calls.append(("save_settings", coins, retention_days, first_setup))
         self.candles.append((candle_unit, candle_count))
@@ -209,6 +218,13 @@ def _choose_days(screen: QWidget, prefix: str, days: int) -> None:
     _find(screen, QRadioButton, f"{prefix}Retention{days}").click()
 
 
+def _choose_ai(screen: QWidget, prefix: str) -> None:
+    """여덟 칸(네 칸의 모델과 노력 값)을 모두 고른다(M2 명세 3.12.2)."""
+    for slot in AiSlot:
+        _find(screen, QComboBox, f"{prefix}AiModel_{slot.value}").setCurrentIndex(1)
+        _find(screen, QComboBox, f"{prefix}AiEffort_{slot.value}").setCurrentIndex(1)
+
+
 def _choose_unit(screen: QWidget, prefix: str, unit: CandleUnit) -> None:
     _find(screen, QRadioButton, f"{prefix}Unit_{unit.value}").click()
 
@@ -276,6 +292,7 @@ def test_without_actions_nothing_is_called_and_the_first_screen_is_first_setup(m
     _choose(first, "firstSetup", "KRW-AAA")
     _choose_days(first, "firstSetup", 30)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
+    _choose_ai(first, "firstSetup")
     _button(first, "firstSetupStart").click()
     window.apply(MarketsView(LoadState.FAILED, error_name="시간 초과"))
     _button(first, "firstSetupCoinsRetry").click()
@@ -572,6 +589,7 @@ def test_up_down_and_remove_change_the_order(picker_ready, actions):
     _choose_days(screen, prefix, 90)
     if prefix == "firstSetup":
         _choose_unit(screen, prefix, CandleUnit.MINUTE_60)
+        _choose_ai(screen, prefix)
     button = "firstSetupStart" if prefix == "firstSetup" else "settingsSave"
     _button(screen, button).click()
     expected_first = prefix == "firstSetup"
@@ -609,6 +627,7 @@ def test_first_setup_start_needs_both_a_coin_and_a_retention(make_window, action
     _coin_box(first, "firstSetup", "KRW-AAA").click()  # 다시 빼면 코인이 없다
     _choose_days(first, "firstSetup", 7)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
+    _choose_ai(first, "firstSetup")
     assert not start.isEnabled()
     _choose(first, "firstSetup", "KRW-AAA")
     assert start.isEnabled()
@@ -622,6 +641,7 @@ def test_first_setup_start_calls_save_settings_and_goes_to_status_when_saved(mak
     _choose(first, "firstSetup", "KRW-CCC", "KRW-AAA")
     _choose_days(first, "firstSetup", 30)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
+    _choose_ai(first, "firstSetup")
     confirm = Confirm(False)
     window.set_confirm_handler(confirm)
     _button(first, "firstSetupStart").click()
@@ -642,6 +662,7 @@ def test_first_setup_goes_to_status_whichever_update_comes_first(make_window, ac
     _choose(first, "firstSetup", "KRW-AAA")
     _choose_days(first, "firstSetup", 7)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
+    _choose_ai(first, "firstSetup")
     _button(first, "firstSetupStart").click()
     window.apply(SettingsView(("KRW-AAA",), 7, True))
     assert current_screen(window) is ScreenId.STATUS
@@ -663,6 +684,7 @@ def test_first_setup_failed_save_stays_and_shows_the_message_in_warning_color(
     _choose(first, "firstSetup", "KRW-BBB", "KRW-AAA")
     _choose_days(first, "firstSetup", 90)
     _choose_unit(first, "firstSetup", CandleUnit.MINUTE_60)
+    _choose_ai(first, "firstSetup")
     _button(first, "firstSetupStart").click()
     window.apply(SaveResult("settings", ok=False, message=message))
     assert current_screen(window) is ScreenId.FIRST_SETUP
@@ -704,7 +726,7 @@ def test_first_setup_after_it_is_done_shows_the_texts_and_the_settings_button(ma
 
 def test_first_setup_read_first_texts_are_the_design_texts(make_window):
     first = _first(make_window())
-    # 세 글은 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이고, 옛 글 라벨은 없다(M1 명세 3.14.6).
+    # 다섯 글(가, 마, 바, 사, 아)은 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이다(M2 명세 3.12.3).
     assert _find(first, QLabel, "firstSetupNoticesTitle").text() == "꼭 읽을 글"
     assert _tip(first, "firstSetupNoticesInfo") == "\n".join(
         (
@@ -715,6 +737,9 @@ def test_first_setup_read_first_texts_are_the_design_texts(make_window):
             "• 디스코드 주소를 넣지 않은 분류의 알림은 디스코드로 가지 않습니다"
             "(오류 알림의 주소가 비어 있으면 오류 멈춤의 "
             '"지금 손절이 동작하지 않음"도 가지 않습니다).',
+            "• 개인용입니다. 쓰는 사람은 각자 자기 업비트 키와 자기 Claude Code 로그인으로, "
+            "자기 책임으로 씁니다. 아무것도 보증하지 않습니다. 팔거나 돈을 받고 넘기지 않습니다.",
+            "• 앱의 AI 사용은 이 PC 사용자의 Claude 구독 사용 한도에서 빠집니다.",
         )
     )
     for old in ("screenNotice", "noticeDiscordOffline", "noticeDiscordNoAddress"):
@@ -763,8 +788,9 @@ def test_settings_screen_shows_the_saved_values_selected(make_window, actions):
     assert _shown_text(settings, "settingsMessage") is None
     assert _button(settings, "settingsSave").text() == "저장"
     assert _button(settings, "settingsSave").isEnabled()
-    # 안내 글과 되돌리기는 이 마일스톤에서 넣지 않는다.
-    assert settings.findChild(QPushButton, "settingsRevert") is None
+    # 안내 글('ⓘ')과 되돌리기가 있다(M2 명세 3.12.2).
+    assert _button(settings, "settingsRevert").text() == "되돌리기"
+    assert _tip(settings, "settingsIntroInfo") == "값을 고친 뒤 저장을 누르면 적용됩니다."
 
 
 def test_settings_save_calls_save_settings_with_first_setup_false(make_window, actions):

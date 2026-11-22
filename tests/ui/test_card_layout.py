@@ -70,8 +70,8 @@ def test_the_right_hand_cards_keep_their_content_at_the_top(window, prefix):
         content = screen.findChild(QWidget, name)
         assert content is not None
         card = content.parentWidget()
-        # 카드가 내용보다 훨씬 높아도(왼쪽 코인 카드가 길어서) 내용은 제 높이 그대로다.
-        assert card.height() > content.sizeHint().height() + 40, name
+        # 카드가 내용보다 높아도(왼쪽 코인 카드가 길어서) 내용은 제 높이 그대로다.
+        assert card.height() >= content.sizeHint().height(), name
         assert content.height() == content.sizeHint().height(), name
         # 내용은 카드의 위쪽(안쪽 여백 바로 아래)에 붙는다.
         assert content.y() == card.layout().contentsMargins().top(), name

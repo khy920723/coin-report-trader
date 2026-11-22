@@ -67,8 +67,9 @@ def test_only_unfilled_screens_show_the_empty_body(window):
     for screen_id in ScreenId:
         widget = screen_widget(window, screen_id)
         body = widget.findChild(QLabel, "screenBody")
-        # M1 명세 3.1: 처음 설정, 현황, 설정은 채워져 빈 글이 없다. 보고서, 기록은 그대로다.
-        if screen_id in (ScreenId.FIRST_SETUP, ScreenId.STATUS, ScreenId.SETTINGS):
+        # M1 명세 3.1: 처음 설정, 현황, 설정은 채워져 빈 글이 없다. 보고서도 2단계에서 채워진다
+        # (M2 명세 3.12.1). 기록만 그대로다.
+        if screen_id is not ScreenId.HISTORY:
             assert body is None
         else:
             assert body is not None
@@ -87,7 +88,7 @@ def test_only_first_setup_shows_advice_notice(window):
             assert info is not None
             lines = info.toolTip().split("\n")
             assert lines[0] == f"• {ADVICE_NOTICE}"
-            assert len(lines) == 3
+            assert len(lines) == 5  # 가, 마, 바에 사, 아(M2 명세 3.12.3)
             assert info.accessibleDescription() == info.toolTip()
             assert info.accessibleName() == "꼭 읽을 글 설명"
         else:
