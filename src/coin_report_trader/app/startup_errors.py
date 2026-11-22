@@ -2,8 +2,9 @@
 
 한 줄이 UTF-8 JSON 객체 하나다. 키는 `kind`(`"startup"`, `"memory"`), `created_utc`, `mode`,
 `category`, `code`, `coin`, `text`, `stage`, `error_name`, `content`, `after`다. `"memory"` 줄은
-`id`(음수), `seen`(참·거짓), `discord_state`(3.7의 값, 아직 결과가 없으면 `null`)도 담는다. 글은
-모두 `redact`를 거친 것이다.
+`id`(음수), `seen`(참·거짓), `discord_state`(3.7의 값, 아직 결과가 없으면 `null`)도 담는다.
+`source`(일어난 자리. 문제 보고 표의 열. M2 명세 3.11.1)는 21번부터 두 줄 모두 담고, 키가 없는
+앞의 줄은 `app.startup_errors`로 읽는다. 글은 모두 `redact`를 거친 것이다.
 
 `"startup"` 줄(19번)은 다음에 켤 때 알림(`discord_state` `"local_only"`)으로 옮긴다. `"memory"`
 줄(27번)은 표에 쓰지 못해 메모리에 둔 알림이다. 그 알림의 보았다는 표시와 디스코드 결과를 줄에
@@ -35,12 +36,15 @@ from coin_report_trader.storage.states import DiscordState
 from coin_report_trader.storage.times import format_utc, parse_utc
 
 from .memory_alerts import MemoryAlert
+from .problem_report import problem_source
 
 log = logging.getLogger(__name__)
 
 FILE_NAME = "startup-errors.jsonl"
 KIND_STARTUP = "startup"
 KIND_MEMORY = "memory"
+DEFAULT_SOURCE = "app.startup_errors"
+"""`source` 키가 없는 앞의 줄의 일어난 자리."""
 _KEYS = (
     "kind", "created_utc", "mode", "category", "code", "coin", "text", "stage", "error_name",
     "content", "after",
@@ -67,6 +71,7 @@ def startup_line(exc: BaseException, now: datetime) -> dict[str, object]:
         "error_name": redact(error_name),
         "content": redact(str(exc)),
         "after": redact(after),
+        "source": problem_source(exc, __name__),
     }
 
 
@@ -88,6 +93,7 @@ def memory_line(alert: MemoryAlert) -> dict[str, object]:
         "id": alert.id,
         "seen": alert.seen,
         "discord_state": None if alert.discord_state is None else alert.discord_state.value,
+        "source": alert.source or problem_source(None, "app.data_thread"),
     }
 
 
@@ -115,6 +121,7 @@ class _Parsed:
     detail: AlertDetail | None
     seen: bool = False
     discord_state: DiscordState | None = None
+    source: str = DEFAULT_SOURCE
 
 
 def _text(value: object, key: str) -> str:
@@ -140,6 +147,7 @@ def _parse(raw: str) -> _Parsed:
             raise ValueError("detail")
         detail = AlertDetail(stage, coin, error_name, content, after)
     kind = _text(data["kind"], "kind")
+    source = data.get("source")
     seen, state = False, None
     if kind == KIND_MEMORY:
         seen, state = _memory_fields(data)
@@ -155,6 +163,7 @@ def _parse(raw: str) -> _Parsed:
         detail,
         seen,
         state,
+        source if isinstance(source, str) and source else DEFAULT_SOURCE,
     )
 
 
@@ -174,6 +183,7 @@ def move_to_alerts(
     conn: sqlite3.Connection,
     logs_dir: Path,
     settle: Callable[[AlertCategory], DiscordState] | None = None,
+    on_moved: Callable[[int, "_Parsed"], None] | None = None,
 ) -> int:
     """줄을 알림으로 옮기고 파일에서 뺀다. 줄에 적힌 생긴 때를 그대로 쓴다.
 
@@ -217,7 +227,7 @@ def move_to_alerts(
             kept.append(raw)
             continue
         try:
-            insert_alert(
+            alert_id = insert_alert(
                 conn,
                 created_at=parsed.created_at,
                 mode=parsed.mode,
@@ -234,6 +244,11 @@ def move_to_alerts(
             kept.append(raw)
             continue
         moved += 1
+        if on_moved is not None:
+            try:
+                on_moved(alert_id, parsed)
+            except Exception as exc:  # 문제 보고 표의 일은 옮기기를 막지 않는다
+                log.warning("옮긴 알림의 문제 보고를 쓰지 못했습니다: %s", type(exc).__name__)
     try:
         path.write_text("".join(f"{raw}\n" for raw in kept), encoding="utf-8", newline="\n")
     except OSError as exc:

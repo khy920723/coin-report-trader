@@ -15,7 +15,7 @@ from coin_report_trader.storage.states import DiscordState
 WHEN = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
 KEYS = [
     "kind", "created_utc", "mode", "category", "code", "coin", "text", "stage", "error_name",
-    "content", "after",
+    "content", "after", "source",
 ]  # fmt: skip
 
 
@@ -42,6 +42,7 @@ def test_a_storage_error_is_an_a29_line_of_the_startup_stage() -> None:
         "error_name": "DB 오류",
         "content": "DB 열기에 실패했습니다: OperationalError",
         "after": "창을 띄우지 못하고 끝냈습니다. 다음에 켤 때 다시 시도합니다.",
+        "source": "app.startup_errors",
     }
 
 

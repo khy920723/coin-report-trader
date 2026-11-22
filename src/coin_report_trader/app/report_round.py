@@ -11,7 +11,6 @@ DB는 `storage/`의 함수로만 만지고, 답의 검사와 지난 판단의 �
 
 import logging
 import shutil
-import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -70,6 +69,7 @@ from coin_report_trader.storage.candles import read_candles
 
 from . import alert_rules
 from .ai_threads import start_session
+from .problem_report import problem_source
 
 if TYPE_CHECKING:
     from coin_report_trader.app.data_thread import _CoinResult
@@ -79,7 +79,7 @@ log = logging.getLogger(__name__)
 SESSIONS_FOLDER: Final = "ai-sessions"
 """자료 폴더 아래의 세션 폴더를 담는 폴더(3.7.2)."""
 LOGGED_OUT_REASON: Final = "claude auth status가 로그인되지 않았다고 알렸습니다."
-_PACKAGE: Final = "coin_report_trader"
+_MODULE: Final = __name__.removeprefix("coin_report_trader.")
 
 
 @dataclass(frozen=True)
@@ -123,20 +123,6 @@ class _Pending:
     last_evidence: tuple[tuple[AiSlot, int], ...] | None
 
 
-def error_place(exc: BaseException) -> str:
-    """예외가 난 자리: traceback의 앱 패키지 안 마지막 자리(`경로:줄`). 없으면 예외 종류의 이름만.
-
-    절대 경로와 사용자 폴더는 쓰지 않는다(3.11.1의 `source` 꼴).
-    """
-    place = ""
-    for frame in traceback.extract_tb(exc.__traceback__):
-        parts = Path(frame.filename).parts
-        if _PACKAGE in parts:
-            index = len(parts) - 1 - parts[::-1].index(_PACKAGE)
-            place = f"{'/'.join(parts[index + 1 :])}:{frame.lineno}"
-    return place
-
-
 class ReportRoundMixin:
     """회차, AI 스레드, 보고서 쓰기, AI 끄기. `DataWorker`의 일부다."""
 
@@ -151,6 +137,7 @@ class ReportRoundMixin:
     _post: Callable[..., None]
     _put: Callable[..., None]
     _insert: Callable[..., bool]
+    _emit_alert: Callable[..., bool]
     _chosen: Callable[[], Any]
     _is_blocked: Callable[[], bool]
     _set_block: Callable[..., None]
@@ -223,8 +210,8 @@ class ReportRoundMixin:
         else:
             status, name = AiStatus.NOT_FOUND, ERROR_CLAUDE_NOT_FOUND
         self._set_ai_status(status, check.version)
-        if self._rules.want_a19():
-            self._insert(alert_rules.claude_off(name))
+        wanted = self._rules.want_a19()
+        self._emit_alert(alert_rules.claude_off(name), wanted, module=_MODULE)
         return False
 
     def _start_ai_status(self) -> None:
@@ -253,14 +240,18 @@ class ReportRoundMixin:
         `hide_text`가 참이면(답을 다루다 난 예외) A-30의 내용에 예외의 글을 쓰지 않는다."""
         self._set_ai_status(AiStatus.ERROR_OFF, self._ai_version)
         if isinstance(exc, StorageError):
-            self._emit_save_failed(alert_rules.STAGE_REPORT_SAVE, coin, exc)
+            self._emit_save_failed(alert_rules.STAGE_REPORT_SAVE, coin, exc, module=_MODULE)
             return
         content = redact(str(exc))
         if hide_text:
-            place = error_place(exc)
-            content = type(exc).__name__ + (f" · {place}" if place else "")
+            content = f"{type(exc).__name__} · {problem_source(exc, _MODULE)}"
         self._emit_unexpected(
-            STAGE_REPORT, coin, exc, after=alert_rules.AFTER_AI_OFF_ERROR, content=content
+            STAGE_REPORT,
+            coin,
+            exc,
+            after=alert_rules.AFTER_AI_OFF_ERROR,
+            content=content,
+            module=_MODULE,
         )
 
     # --- 켤 때 --------------------------------------------------------------------------------
@@ -346,6 +337,8 @@ class ReportRoundMixin:
             self._ai_off(None, exc)
         except Exception as exc:
             self._ai_off(None, exc)
+        finally:
+            self._alert_round = None
 
     def _run_round(
         self, close: datetime, results: "list[_CoinResult]", *, logged_out: bool
@@ -367,6 +360,7 @@ class ReportRoundMixin:
         )
         current = _Round(round_id, number, close, next_close, unit)
         self._active_round = current
+        self._alert_round = number  # 이 회차 안에서 만드는 알림의 문제 보고 `round_number`
         by_market = {result.market: result for result in results}
         if logged_out:
             self._write_logged_out(current, settings.coins)
@@ -395,8 +389,7 @@ class ReportRoundMixin:
             )
             report_store.finish_report(self._conn, report_id, record)
             self._post_report_list(market)
-        if self._rules.want_a18():
-            self._insert(alert_rules.logged_out())
+        self._emit_alert(alert_rules.logged_out(), self._rules.want_a18(), module=_MODULE)
 
     def _start_coin(self, current: _Round, market: str, stats_ok: bool) -> None:
         """코인 하나의 보고서를 쓰고 세션을 띄운다(3.5.2의 4)."""
@@ -492,9 +485,9 @@ class ReportRoundMixin:
             else:
                 self._rules.a2_succeeded(market)
                 return price
-        if self._rules.want_a2(market, name):
-            next_text = kst_when_text(current.next_close, self._clock.now())
-            self._insert(alert_rules.price_failed(market, name, next_text))
+        wanted = self._rules.want_a2(market, name)
+        next_text = kst_when_text(current.next_close, self._clock.now())
+        self._emit_alert(alert_rules.price_failed(market, name, next_text), wanted, module=_MODULE)
         return None
 
     def _last_judgment(
@@ -613,6 +606,7 @@ class ReportRoundMixin:
         pending = self._pending.pop(task.report_id, None)
         if pending is None:
             return
+        self._alert_round = pending.round.number
         try:
             if isinstance(task.outcome, Exception):
                 self._write_error_report(pending.report_id, type(task.outcome).__name__)
@@ -625,6 +619,8 @@ class ReportRoundMixin:
         except Exception as exc:
             self._write_error_report(pending.report_id, type(exc).__name__)
             self._ai_off(pending.market, exc, hide_text=True)
+        finally:
+            self._alert_round = None
         self._post_report_list(pending.market)
         self._maybe_finish_round(pending.round)
 
@@ -703,15 +699,16 @@ class ReportRoundMixin:
             self._insert(
                 alert_rules.report_done(market, pending.round.number, Direction(str(direction))),
                 report_id=pending.report_id,
+                module=_MODULE,
             )
             return
         if failure is FailureKind.LOGGED_OUT:
-            if self._rules.want_a18():
-                self._insert(alert_rules.logged_out())
+            self._emit_alert(alert_rules.logged_out(), self._rules.want_a18(), module=_MODULE)
             return
-        if self._rules.want_a17(market, failure.value):
-            next_text = kst_when_text(pending.round.next_close, self._clock.now())
-            self._insert(alert_rules.report_failed(market, failure.value, reason or "", next_text))
+        wanted = self._rules.want_a17(market, failure.value)
+        next_text = kst_when_text(pending.round.next_close, self._clock.now())
+        spec = alert_rules.report_failed(market, failure.value, reason or "", next_text)
+        self._emit_alert(spec, wanted, module=_MODULE)
 
 
 def _evidence_keys(last: "report_store.LastJudgment") -> tuple[tuple[AiSlot, int], ...]:

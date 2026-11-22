@@ -45,7 +45,7 @@ def read(folder: Path) -> list[dict[str, object]]:
 
 def test_a_memory_line_has_the_eleven_keys_and_the_three_more() -> None:
     line = se.memory_line(memory_alert(-3, seen=True, state=DiscordState.FAILED))
-    assert list(line) == [*se._KEYS, "id", "seen", "discord_state"]
+    assert list(line) == [*se._KEYS, "id", "seen", "discord_state", "source"]
     assert line["kind"] == "memory"
     assert (line["id"], line["seen"], line["discord_state"]) == (-3, True, "failed")
     assert (line["stage"], line["error_name"]) == ("알림 저장", "DB 오류")

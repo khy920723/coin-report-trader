@@ -960,7 +960,7 @@ def test_an_alert_that_cannot_be_saved_becomes_a_negative_memory_alert_that_is_s
     assert (line["id"], line["seen"], line["discord_state"]) == (-1, False, "sent")
     assert (line["code"], line["category"], line["stage"]) == ("A-29", "error", "알림 저장")
     assert line["created_utc"] == "2026-01-05T03:00:00Z"
-    assert len(line) == 14  # 열한 키와 `id`, `seen`, `discord_state`
+    assert len(line) == 15  # 열한 키와 `id`, `seen`, `discord_state`, `source`
 
 
 def test_the_a29_of_an_alert_save_is_made_once_until_a_save_succeeds_and_numbers_are_not_reused(
