@@ -56,7 +56,7 @@ def _repo(root: Path, files: dict[str, str]) -> Path:
 
 def test_the_item_is_the_seventh_of_run_all() -> None:
     text = (CHECKS_DIR / "run_all.py").read_text(encoding="utf-8")
-    assert '    "webhook_urls",\n    "claude_credentials",\n)' in text
+    assert '    "webhook_urls",\n    "claude_credentials",\n' in text
 
 
 def test_the_title(checker) -> None:
