@@ -7,7 +7,8 @@
   중에 이어 붙여 만든다(M1 명세 3.13).
 
 차례:
-1. 처음 설정 화면에서 코인 목록이 오면 코인 하나와 보관 기간 30일을 고르고 "저장하고 시작"을 누른다.
+1. 처음 설정 화면에서 코인 목록이 오면 코인 하나와 보관 기간 30일을 고르고 "저장하고 시작"(3단계는
+   "모의매매 시작". 단추 이름은 `firstSetupStart` 그대로)을 누른다.
    봉 단위 칸(`firstSetupUnit_minute60`, M1 명세 3.14.1. 37번부터 있다)이 있으면 60분봉도 고른다.
    2단계의 여덟 칸(`firstSetupAiModel_{칸 값}`, `firstSetupAiEffort_{칸 값}`, M2 명세 3.12.2.
    13번부터 있다)이 있으면 모두 빈 항목이 아닌 값을 고른다. `services`에는 `FakeAiRunner`
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acceptance.m3_support import fill_trade_fields
 from fakes.ai import FakeAiRunner
 from fakes.clock import DEFAULT_START, FakeClock
 from fakes.discord import FakeDiscord
@@ -99,9 +101,7 @@ def _choose_ai_slots(parent: QWidget) -> int:
 
     고른 칸의 수(0이나 8)를 돌려준다. 일부만 있으면 13번이 덜 된 것이라 실패로 본다.
     """
-    names = [
-        f"firstSetupAi{kind}_{slot.value}" for slot in AiSlot for kind in ("Model", "Effort")
-    ]
+    names = [f"firstSetupAi{kind}_{slot.value}" for slot in AiSlot for kind in ("Model", "Effort")]
     combos = [combo for name in names if (combo := _find(parent, QComboBox, name)) is not None]
     if len(combos) not in (0, len(names)):
         raise AssertionError(f"처음 설정의 여덟 칸 가운데 {len(combos)}칸만 있다")
@@ -181,7 +181,9 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
     url = _webhook_url()
     discord = FakeDiscord()
     vault = FakeVault({webhook_secret_name(AlertCategory.ERROR): url})
-    services = Services(quote=quote, webhook=discord, vault=vault, clock=clock, ai=FakeAiRunner())
+    services = Services(
+        quote=quote, webhook=discord, vault=vault, clock=clock, ai=FakeAiRunner(), book=quote
+    )
 
     made: list[Any] = []
     real_create = ui.create_main_window
@@ -217,10 +219,12 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         if unit is not None:  # 37번부터 봉 단위 칸이 있다(3.14.1). 봉 개수는 "200개"가 골라져 있다
             unit.click()
         _choose_ai_slots(first)  # 13번부터 여덟 칸이 있다(M2 명세 3.12.2)
+        fill_trade_fields(first)  # 17번부터 매매 칸과 확인란이 있다(M3 명세 3.17.5)
         start = _find(first, QPushButton, "firstSetupStart")
         if not start.isEnabled():
             raise AssertionError(
-                "코인, 보관 기간(있으면 봉 단위와 여덟 칸)을 골랐는데 저장 단추를 누를 수 없다"
+                "코인, 보관 기간(있으면 봉 단위, 여덟 칸, 매매 칸, 확인란)을 골랐는데 시작 단추를"
+                " 누를 수 없다"
             )
         start.click()
         return True

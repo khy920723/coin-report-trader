@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from acceptance.m3_support import fill_trade_fields
 from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -54,7 +55,8 @@ class Actions:
         self.calls.append(("refresh_markets",))
 
     def save_settings(self, coins, retention_days, *, first_setup, candle_unit=None,
-                      candle_count=None, ai_choices=None) -> None:  # fmt: skip
+                      candle_count=None, ai_choices=None, trade=None,
+                      accept_below_stop=()) -> None:  # fmt: skip
         self.calls.append(("save_settings", coins, retention_days, first_setup))
 
     def load_reports(self, market) -> None:
@@ -196,6 +198,7 @@ def test_b28_choosing_a_retention_first_or_longer_asks_nothing(make_window) -> N
     click(window, "firstSetupRetention30")  # 처음 고르기
     click(window, f"firstSetupUnit_{HOUR.value}")
     choose_ai_slots(window)  # 13번부터 여덟 칸이 있다(M2 명세 3.12.2)
+    fill_trade_fields(window)  # 17번부터 매매 칸과 확인란이 있다(M3 명세 3.17.5)
     click(window, "firstSetupStart")
     window.apply(SettingsView((AAA,), 30, True, candle_unit=HOUR, candle_count=100))
     go(window, ScreenId.SETTINGS)
