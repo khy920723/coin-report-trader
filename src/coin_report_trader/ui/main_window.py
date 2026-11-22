@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPushButton,
     QScrollArea,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -57,6 +59,7 @@ from coin_report_trader.core.texts import (
 from coin_report_trader.ui import theme
 from coin_report_trader.ui.dialogs import ask_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
+from coin_report_trader.ui.help import HelpWindow, guide_path
 from coin_report_trader.ui.icons import screen_icon
 from coin_report_trader.ui.report_screen import ReportScreen
 from coin_report_trader.ui.screens import build_screen, screen_object_name
@@ -82,6 +85,10 @@ from coin_report_trader.ui.texts import (
 
 WINDOW_NAME = "mainWindow"
 NAV_NAME = "screenNav"
+LEFT_NAME = "screenLeft"
+HELP_BUTTON_NAME = "helpButton"
+HELP_BUTTON_TEXT = "도움말"
+HELP_KEY = "F1"
 STACK_NAME = "screenStack"
 STATUS_LINE_NAME = "statusLine"
 
@@ -198,11 +205,27 @@ class MainWindow(QMainWindow):
         self._nav = nav
         self._stack = stack
 
+        # 왼쪽 자리: 화면 이름 목록과 그 아래의 "도움말" 단추(M2 명세 3.16). 단추는 목록의 줄이
+        # 아니다(다섯 화면에 더하지 않는다).
+        help_button = QPushButton(HELP_BUTTON_TEXT)
+        help_button.setObjectName(HELP_BUTTON_NAME)
+        help_button.clicked.connect(self._open_help)
+        left = QWidget()
+        left.setObjectName(LEFT_NAME)
+        left.setMaximumWidth(160)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, theme.FIELD_GAP)
+        left_layout.setSpacing(theme.FIELD_GAP)
+        left_layout.addWidget(nav, 1)
+        left_layout.addWidget(help_button)
+        self._help_button = help_button
+        self._help: HelpWindow | None = None
+
         central = QWidget()
         layout = QHBoxLayout(central)
         layout.setContentsMargins(theme.FIELD_GAP, theme.FIELD_GAP, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(nav)
+        layout.addWidget(left)
         layout.addWidget(stack, 1)
         self.setCentralWidget(central)
 
@@ -242,6 +265,8 @@ class MainWindow(QMainWindow):
         for index, screen_id in enumerate(ScreenId):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
             shortcut.activated.connect(lambda sid=screen_id: self._open_screen(sid))
+        f1 = QShortcut(QKeySequence(HELP_KEY), self)
+        f1.activated.connect(self._open_help)
 
         self._update()
 
@@ -643,6 +668,12 @@ class MainWindow(QMainWindow):
         else:
             select_screen(self, ScreenId.REPORTS)
 
+    def _open_help(self) -> None:
+        """"도움말" 단추와 F1: 도움말 창을 연다(열려 있으면 앞으로 낸다). 처음 설정 전에도 된다."""
+        if self._help is None:
+            self._help = HelpWindow(guide_path(), self)
+        self._help.open_help()
+
     def _open_screen(self, screen_id: ScreenId) -> None:
         """Ctrl+1~5: 화면 이름 목록에서 그 줄을 누른 것과 같다."""
         select_screen(self, screen_id)
@@ -960,6 +991,10 @@ def create_main_window(context: UiContext) -> MainWindow:
       "현황 ({n})"이다. 사용자가 그 줄을 누른 것은 `screenNav.itemClicked`로 알린다(시험은
       `itemClicked.emit(item)`). `select_screen`은 누른 것이 아니라서 마지막에 고른 탭을
       그대로 둔다.
+    - 왼쪽 자리 `screenLeft`(M2 명세 3.16): 화면 이름 목록 `screenNav`(줄은 다섯 그대로)과 그 아래의
+      "도움말" 단추 `helpButton`. 단추나 F1은 도움말 창(`ui/help.py`의 `HelpWindow`, 객체 이름
+      `helpWindow`, 글 칸 `helpText`, 못 읽음의 글 `helpMessage`)을 연다. 이미 열려 있으면 그 창을
+      앞으로 낸다. 글은 `guide_path()`의 파일이고, 창을 열 때마다 읽는다.
     - Ctrl+1~5는 화면 이름 목록의 위에서 1~5째 줄을 누른 것과 같다.
     - 보고서 자리(`screen_reports`, M2 명세 3.12.1): 맨 위 줄 `reportAiStatus`, 코인 `reportCoin`
       (`QListWidget`), 회차 `reportRounds`(`QListWidget`), 글 하나만 보이는 모습 `reportMessage`,
