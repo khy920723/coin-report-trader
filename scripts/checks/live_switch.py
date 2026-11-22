@@ -138,10 +138,11 @@ def _module_level(tree: ast.Module) -> Iterator[ast.AST]:
 
 
 def _select_function_lines(tree: ast.Module | None) -> tuple[int, int] | None:
+    """`select_exchange`의 몸통이 차지한 줄(첫 줄, 끝 줄). 서명과 기본값은 몸통이 아니다."""
     function = _select_function(tree)
-    if function is None:
+    if function is None or not function.body:
         return None
-    return function.lineno, function.end_lineno or function.lineno
+    return function.body[0].lineno, function.end_lineno or function.body[0].lineno
 
 
 def _select_function(tree: ast.Module | None) -> ast.FunctionDef | ast.AsyncFunctionDef | None:

@@ -315,6 +315,51 @@ def test_select_exchange_in_another_file_does_not_count(checker, tmp_path: Path)
     ]
 
 
+def test_a_default_argument_in_the_select_exchange_signature_is_not_its_body(
+    checker, tmp_path: Path
+) -> None:
+    source = """\
+        from coin_report_trader.trading.live.switch import LIVE_TRADING_ALLOWED
+        from coin_report_trader.trading.live.upbit_exchange import UpbitExchange
+
+
+        def select_exchange(mode, allowed, client, fallback=UpbitExchange(None)):
+            if not (allowed and LIVE_TRADING_ALLOWED):
+                raise RuntimeError("막힘")
+            return fallback
+        """
+    assert checker.check(_tree(tmp_path, {**GOOD, SELECT: source})) == [
+        f"{SELECT}:5: UpbitExchange를 부른다{TAIL_EXCHANGE}"
+    ]
+
+
+def test_select_exchange_lines_of_select_py_do_not_free_another_file(
+    checker, tmp_path: Path
+) -> None:
+    # select.py의 select_exchange 몸통이 6~8줄이다. 다른 파일의 같은 줄 번호는 풀어 주지 않는다.
+    other = "\n" * 6 + "x = UpbitExchange(None)\n"
+    files = {**GOOD, f"{PKG}/app/wiring.py": other}
+    assert checker.check(_tree(tmp_path, files)) == [
+        f"{PKG}/app/wiring.py:7: UpbitExchange를 부른다{TAIL_EXCHANGE}"
+    ]
+
+
+def test_other_names_and_calls_that_only_look_alike_are_not_flagged(
+    checker, tmp_path: Path
+) -> None:
+    source = """\
+        from elsewhere import Other as Alias
+
+        a = Alias(1)
+        b = register(module, "UpbitExchange")
+        c = register(module, "create_order")
+        d = getattr(module)
+        e = getattr(module, name)
+        f = getattr(module, "something_else")
+        """
+    assert checker.check(_tree(tmp_path, {**GOOD, f"{PKG}/app/wiring.py": source})) == []
+
+
 # --- 2. 경로: select_exchange가 값을 읽는다 ------------------------------------------------------
 
 
@@ -362,6 +407,23 @@ def test_reading_it_through_a_module_attribute_counts(checker, tmp_path: Path) -
             return UpbitExchange(client)
         """
     assert checker.check(_tree(tmp_path, {**GOOD, SELECT: source})) == []
+
+
+def test_a_body_that_only_assigns_the_name_neither_reads_it_nor_is_allowed(
+    checker, tmp_path: Path
+) -> None:
+    source = """\
+        from coin_report_trader.trading.live.upbit_exchange import UpbitExchange
+
+
+        def select_exchange(mode, allowed, client):
+            LIVE_TRADING_ALLOWED = True
+            return UpbitExchange(client)
+        """
+    problems = checker.check(_tree(tmp_path, {**GOOD, SELECT: source}))
+    assert len(problems) == 2
+    assert "새로 정한다" in problems[0]
+    assert problems[1].endswith("select_exchange의 몸통이 LIVE_TRADING_ALLOWED를 읽지 않는다")
 
 
 def test_select_py_without_select_exchange_fails(checker, tmp_path: Path) -> None:
