@@ -50,13 +50,13 @@ MAX_COUNT = 200
 
 MARKETS_PATH = "/v1/market/all"
 PRICE_PATH = "/v1/ticker"
+"""현재가(최근 체결가)의 요청 경로(M2 명세 3.6). 마켓 코드 하나로 부른다."""
 BOOK_PATH = "/v1/orderbook"
 """호가(M3 명세 3.6). 마켓 코드 하나로 부르고 첫 줄을 쓴다."""
 TICK_PATH = "/v1/orderbook/instruments"
 """호가 정책(호가 단위 `tick_size`. M3 명세 3.6). 마켓 코드 하나로 부른다."""
 MINUTE_PATH = "/v1/candles/minutes/1"
 """1분봉(M3 명세 3.6)."""
-"""현재가(최근 체결가)의 요청 경로(M2 명세 3.6). 마켓 코드 하나로 부른다."""
 CANDLE_PATHS: MappingProxyType[CandleUnit, str] = MappingProxyType(
     {
         CandleUnit.MINUTE_30: "/v1/candles/minutes/30",
