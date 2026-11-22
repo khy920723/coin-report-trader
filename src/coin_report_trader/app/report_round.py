@@ -156,7 +156,9 @@ class ReportRoundMixin:
 
     # --- 주 스레드: 동작 -----------------------------------------------------------------------
 
-    def load_reports(self, market: str) -> None:
+    def load_reports(self, market: str, mode: Mode | None = None) -> None:
+        """`mode`는 받기만 한다(M5 명세 4절 3번. 지금 모드는 늘 모의매매다)."""
+        del mode
         self._put(LoadReports(market))
 
     def load_report(self, report_id: int) -> None:

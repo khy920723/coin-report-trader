@@ -102,7 +102,7 @@ def test_the_three_new_after_texts_follow_the_spec_and_every_stage_with_an_a29_h
 
 def test_save_settings_of_the_port_gets_trade_and_accept_below_stop_last_with_defaults() -> None:
     parameters = inspect.signature(UiActions.save_settings).parameters
-    assert list(parameters)[-2:] == ["trade", "accept_below_stop"]
+    assert list(parameters)[-3:-1] == ["trade", "accept_below_stop"]
     for name in ("trade", "accept_below_stop"):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert parameters["trade"].default is None
@@ -115,7 +115,7 @@ def test_the_new_actions_of_the_port_have_the_spec_arguments() -> None:
     for name in ("pause", "pause_and_sell_all", "resume_user", "resume_error"):
         assert list(inspect.signature(getattr(UiActions, name)).parameters) == ["self"]
     assert list(inspect.signature(UiActions.load_history).parameters) == [
-        "self", "tab", "market", "day",
+        "self", "tab", "market", "day", "mode",
     ]  # fmt: skip
     assert list(inspect.signature(UiActions.export_history).parameters) == [
         "self", "tab", "market", "path",
@@ -170,7 +170,7 @@ def test_the_app_actions_hand_every_new_call_to_the_data_thread() -> None:
         ("KRW-AAA",), 7, first_setup=False, trade=trade, accept_below_stop=("KRW-AAA",)
     )
     assert data.calls[:4] == [(name, (), {}) for name in NEW_ACTIONS[:4]]
-    assert data.calls[4] == ("load_history", (HistoryTab.ORDERS, "KRW-AAA", day), {})
+    assert data.calls[4] == ("load_history", (HistoryTab.ORDERS, "KRW-AAA", day, None), {})
     assert data.calls[5] == ("export_history", (HistoryTab.FILLS, None, "경로"), {})
     name, args, kwargs = data.calls[6]
     assert (name, args) == ("save_settings", (("KRW-AAA",), 7))
@@ -204,7 +204,7 @@ def test_the_data_thread_takes_the_new_calls_and_does_nothing_until_the_later_nu
 
 
 def test_the_services_get_book_and_min_order_last_and_none_by_default() -> None:
-    assert [f.name for f in dataclasses.fields(Services)][-2:] == ["book", "min_order"]
+    assert [f.name for f in dataclasses.fields(Services)][-3:-1] == ["book", "min_order"]
     services = Services()
     assert (services.book, services.min_order) == (None, None)
     assert Services(min_order=Decimal("5000")).min_order == Decimal("5000")

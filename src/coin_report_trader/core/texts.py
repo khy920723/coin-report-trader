@@ -33,6 +33,10 @@ STAGE_SELL_ALL: Final = "긴급 매도"
 STAGE_RECONCILE: Final = "거래소와 맞춰 보기"
 STAGE_BACKUP: Final = "DB 백업"
 STAGE_PAUSE_SAVE: Final = "멈춤 저장"
+STAGE_KEY_SAVE: Final = "업비트 키 저장"
+STAGE_LIVE_ON: Final = "실거래 켜기"
+STAGE_EXCHANGE_ACCOUNT: Final = STAGE_ACCOUNT
+"""M3의 `STAGE_ACCOUNT`와 같은 글을 쓴다(M5 명세 3.4)."""
 STAGES: Final = (
     STAGE_MARKETS,
     STAGE_CANDLES,
@@ -82,6 +86,11 @@ CODE_UNKNOWN_EXCHANGE: Final = "A-24"
 CODE_SELL_ALL_LEFT: Final = "A-25"
 CODE_ORDER_PLACED: Final = "A-27"
 CODE_FILLED: Final = "A-28"
+CODE_DIRECT_LOCKED: Final = "A-6"
+CODE_DIRECT_CANCELED: Final = "A-7"
+CODE_LIVE_OFF: Final = "A-20"
+CODE_EXTERNAL: Final = "A-22"
+CODE_KEY_EXPIRY: Final = "A-32"
 
 # --- 오류 이름: 봉 받기와 코인 목록 받기가 만나는 것(3.9) ---
 ERROR_NETWORK: Final = "네트워크 끊김"
