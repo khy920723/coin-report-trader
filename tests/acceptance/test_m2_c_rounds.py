@@ -94,12 +94,14 @@ def two_coin_round(build: Callable[..., Rig], **kwargs: Any) -> Rig:
     rig = build(coins=(AAA, BBB), **kwargs)
     rig.start()
     hold = threading.Event()
+    # 두 코인의 세션을 같은 이벤트로 잡아 둔다. 놓기 전에 둘 다 시작했으면 함께 돈 것이다(앞의
+    # 세션의 끝을 기다리면 둘째는 시작하지 못해 여기서 실패한다. 어느 코인이 앞이어도 같다).
     first = rig.runner.plan(AAA, wait=hold)
-    second = rig.runner.plan(BBB)
+    second = rig.runner.plan(BBB, wait=hold)
     rig.to_next_due(10)  # 다음 봉이 끝나는 때 + 10초
     assert first.wait(SAFETY)
-    # 둘째 세션은 첫째(붙잡힌 채)의 끝을 기다리지 않고 시작한다.
     assert second.wait(SAFETY)
+    assert not hold.is_set()  # 둘 다 붙잡힌 채로 시작했다
     hold.set()
     rig.drain()
     return rig

@@ -19,6 +19,7 @@ from fakes.ai import good_answers
 from PySide6.QtWidgets import QApplication
 
 from coin_report_trader.ai import claude_cli
+from coin_report_trader.ai.agents import coin_session_prompt
 from coin_report_trader.ai.claude_cli import ClaudeCodeRunner
 from coin_report_trader.core import (
     AiChoice,
@@ -35,21 +36,43 @@ CHOICES = (
     AiChoice(AiSlot.SEARCH, "haiku", Effort.LOW),
     AiChoice(AiSlot.CANDLE, "sonnet", Effort.MEDIUM),
     AiChoice(AiSlot.FINAL, "opus", Effort.HIGH),
-    AiChoice(AiSlot.SESSION, "sonnet", Effort.MEDIUM),
+    AiChoice(AiSlot.SESSION, "fable", Effort.XHIGH),
 )
 LIMIT_TEXT = "You've hit your session limit · resets 3:45pm"
-# 시험이 넣어 두어도 실행기의 세 명령에 가지 않아야 하는 변수(3.7.2).
+# 시험이 넣어 두어도 실행기의 세 명령에 가지 않아야 하는 변수 스물넷(M2 명세 3.7.2의 목록을 글로
+# 적는다. 실행기의 `REMOVED_VARIABLES`를 가져오지 않는다).
 DROPPED = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_MANTLE",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_AWS_BASE_URL",
+    "ANTHROPIC_GOOGLE_CLOUD_BASE_URL",
+    "ANTHROPIC_AWS_API_KEY",
+    "ANTHROPIC_FOUNDRY_API_KEY",
+    "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "ANTHROPIC_PROFILE",
     "CLAUDE_CODE_EFFORT_LEVEL",
     "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_PROFILE",
 )
-VALUE_OPTIONS = ("--output-format", "--allowedTools", "--tools", "--agents", "--model", "--effort")
+ANSWER_FIELDS = ("search_judgment", "search_rows", "candle_judgment", "candle_rows", "final_rows",
+                 "final_judgment")  # fmt: skip
+VALUE_OPTIONS = (
+    "--output-format", "--json-schema", "--model", "--effort", "--agents", "--tools",
+    "--allowedTools", "--permission-mode",
+)  # fmt: skip
 
 
 class Fake:
@@ -176,7 +199,7 @@ def test_c17_the_real_runner_gives_the_spec_command_agents_env_tools_and_tokens(
         version="2.1.314 (Claude Code)", auth_exit=0, lines=good_lines(good_answers(AAA))
     )
     runner = ClaudeCodeRunner(root / "ai-sessions", fake.command())
-    rig = make_rig(root, runner=runner)  # type: ignore[arg-type]
+    rig = make_rig(root, runner=runner, choices=CHOICES)  # type: ignore[arg-type]
     rigs.append(rig)
     rig.start()
     rig.round()
@@ -185,9 +208,28 @@ def test_c17_the_real_runner_gives_the_spec_command_agents_env_tools_and_tokens(
     (run,) = fake.records("run")
     args = run["args"]
     options = pairs(args)
-    assert options["--output-format"] == "stream-json"
-    assert {"--verbose", "--restricted"} <= set(args)
-    assert options["--allowedTools"] == "Agent,WebSearch"
+    assert args[0] == "-p"  # 셸을 거치지 않고 인자 목록으로 부른다
+    assert args[1] == coin_session_prompt()  # 코인 세션 지시
+    assert options == {
+        "--output-format": "stream-json",
+        "--json-schema": options["--json-schema"],
+        "--model": "fable",  # 코인 세션 칸의 모델
+        "--effort": "xhigh",  # 코인 세션 칸의 노력 값
+        "--agents": "agents.json",
+        "--tools": "Agent,Read,WebSearch",
+        "--allowedTools": "Agent,WebSearch",
+        "--permission-mode": "dontAsk",
+    }
+    assert {
+        "--verbose", "--restricted", "--no-session-persistence", "--strict-mcp-config",
+        "--disable-slash-commands",
+    } <= set(args)  # fmt: skip
+    schema = json.loads(options["--json-schema"])
+    assert schema["type"] == "object"
+    assert list(schema["properties"]) == list(ANSWER_FIELDS)  # 3.7.5의 여섯 필드
+    assert all(spec == {"type": "string"} for spec in schema["properties"].values())
+    assert schema["required"] == list(ANSWER_FIELDS[:4])
+    assert schema["additionalProperties"] is False
     assert "Read" not in options["--allowedTools"].split(",")
     joined = " ".join(args)
     assert "--bare" not in joined
@@ -200,9 +242,9 @@ def test_c17_the_real_runner_gives_the_spec_command_agents_env_tools_and_tokens(
     }
     assert {name: (spec["model"], spec["effort"]) for name, spec in agents.items()} == {
         "search_judge": ("haiku", "low"),
-        "candle_judge": ("haiku", "low"),
-        "final_predictor": ("haiku", "low"),
-    }  # 칸마다의 모델과 노력 값(이 시험의 네 칸은 모두 haiku·low)
+        "candle_judge": ("sonnet", "medium"),
+        "final_predictor": ("opus", "high"),
+    }  # 칸마다 서로 다른 값이다. 코인 세션 칸의 값(fable, xhigh)은 위의 `--model`, `--effort`다.
     assert all(spec["omitClaudeMd"] is True for spec in agents.values())
     records = fake.records()
     assert {r["mode"] for r in records} == {"auth", "run", "version"}  # run()과 check()의 세 명령

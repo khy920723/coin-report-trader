@@ -24,7 +24,15 @@ from coin_report_trader.ai.answers import (
     SEARCH_JUDGMENT_COLUMNS,
 )
 from coin_report_trader.ai.csv_files import ROWS_COLUMNS, read_csv, write_csv
-from coin_report_trader.core import AiStatus, ReportState, Verdict
+from coin_report_trader.core import (
+    AiStatus,
+    LoadState,
+    ReportListView,
+    ReportState,
+    ReportView,
+    SaveResult,
+    Verdict,
+)
 
 SAFETY = 10.0
 PARTS = [("검색 판별", 1), ("봉 판별", 1), ("최종 예측", 1)]
@@ -311,11 +319,18 @@ def test_c7_a_repeated_number_is_a_format_error_saved_without_the_later_row(
         newest.report_id,
     )
     assert stored == [(1, 1), (3, 1), (4, 1)]  # (최종 예측, 견준 결과, 1)이 겹친 뒤 줄은 없다
+    sent = len(rig.sink.items)
     rig.data.load_reports(AAA)
     rig.data.load_report(newest.report_id)
     rig.settle()
-    assert [i.state for i in rig.reports(AAA)] == [ReportState.FAILED, ReportState.OK]
-    assert rig.report(newest.report_id).state is ReportState.FAILED
+    with rig.sink.lock:
+        after = rig.sink.items[sent:]
+    listing = [v for v in after if isinstance(v, ReportListView)][-1]  # 마지막으로 보낸 목록
+    assert (listing.market, listing.state) == (AAA, LoadState.READY)
+    assert [i.state for i in listing.items] == [ReportState.FAILED, ReportState.OK]
+    (shown,) = [v for v in after if isinstance(v, ReportView)]
+    assert (shown.report_id, shown.state) == (newest.report_id, ReportState.FAILED)
+    assert [r for r in rig.sink.of(SaveResult) if not r.ok] == []  # 읽기가 깨지지 않았다
 
 
 # --- C8 ---------------------------------------------------------------------------------------
@@ -418,14 +433,23 @@ def test_c11_a_neutral_judgment_is_a_format_error_and_not_a_stored_judgment(
     rig.round()
     item = only(rig)
     assert (item.state, item.failure) == (ReportState.FAILED, FORMAT)
-    stored = rig.rows("SELECT search_judgment, candle_judgment FROM reports")
-    assert stored in ([("중립", "오름")], [("긍정", "보합")])  # 값은 저장되어도
+    # 틀린 판별의 값은 저장되어도(그 칸의 글) 저장된 판단이 아니다.
+    assert rig.rows("SELECT search_judgment, candle_judgment FROM reports") == [
+        ("중립", "오름") if field == "search_judgment" else ("긍정", "보합")
+    ]
     view = rig.report(item.report_id)
     if field == "search_judgment":
         assert view.search_judgment is None
     else:
         assert view.candle_judgment is None
-    assert view.direction is None  # 최종 예측의 답은 저장된 판단이 아니다
+    assert view.direction is None
+    # 담겨 온 최종 예측의 답은 DB 어디에도 없다(`read_report`가 `OK`가 아닌 보고서에 늘 `None`을
+    # 주므로 화면 값이 아니라 DB를 직접 본다).
+    assert rig.rows(
+        "SELECT direction, predicted_price, predicted_reason, buy_price, sell_price, result_text"
+        " FROM reports"
+    ) == [(None, None, None, None, None, None)]
+    assert "final" not in {part for (part,) in rig.rows("SELECT answer_part FROM report_rows")}
     runner.plan(AAA, None)
     rig.round()
     _, rows = read_csv(rig.runner.requests[1].files[ai_inputs.FILE_FINAL_LAST_JUDGMENT])
@@ -536,8 +560,12 @@ def test_c15_a_timeout_or_a_limit_is_a_failed_report_with_its_a17(
     assert (item.state, item.failure) == (ReportState.FAILED, failure)
     (alert,) = [a for a in rig.alerts() if a.code == "A-17"]
     assert alert.text == f"AI 보고서를 받지 못했습니다({failure})."
-    view = rig.report(item.report_id)
-    assert (view.direction, view.predicted_price, view.search_judgment) == (None, None, None)
+    # 판단의 칸이 모두 비어 있고 줄 표도 없다(`read_report`가 아니라 DB를 직접 본다).
+    assert rig.rows(
+        "SELECT search_judgment, search_status, candle_judgment, direction, predicted_price,"
+        " predicted_reason, buy_price, sell_price, result_text FROM reports"
+    ) == [(None,) * 9]
+    assert rig.rows("SELECT COUNT(*) FROM report_rows") == [(0,)]
     if failure == "한도 초과":
         assert alert.detail is not None
         assert "앱의 문제가 아닙니다." in (alert.detail.content or "")

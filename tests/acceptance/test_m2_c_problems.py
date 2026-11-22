@@ -293,12 +293,19 @@ def test_c33_when_problems_is_a_file_the_failure_is_only_logged_and_the_work_goe
     rig.problems.write_text("폴더가 아니라 파일", encoding="utf-8")
     caplog.set_level(logging.WARNING)
     rig.start()
+    caplog.clear()  # 켤 때의 다른 경고(폴더를 읽지 못함 등)로 이 확인이 참이 되지 않게 한다
     rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 3, kind="price", market=AAA)
     rig.round()  # A-2: 문제 보고 표에 쓰지 못한다
     fetches = len(rig.quote.candle_requests(market=AAA))
     rig.round()
     assert rig.codes() == ["A-2"]  # 줄을 쓰지 못한 것에 대한 새 알림이 없다
-    assert any("문제 보고" in record.getMessage() for record in caplog.records)
+    written = [  # 줄을 쓰지 못한 글이 로그에만 남는다
+        record
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+        and "문제 보고 표에 쓰지 못했습니다" in record.getMessage()
+    ]
+    assert written
     assert rig.rows("SELECT COUNT(*) FROM rounds") == [(2,)]  # 회차는 그대로 돈다
     assert len(rig.quote.candle_requests(market=AAA)) > fetches  # 봉 받기도 그대로다
     assert rig.problems.read_text(encoding="utf-8") == "폴더가 아니라 파일"

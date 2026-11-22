@@ -57,6 +57,15 @@ from coin_report_trader.ui.info_icon import InfoIcon
 AAA, BBB = "KRW-AAA", "KRW-BBB"
 COINS = (AAA, BBB)
 CLOSE = datetime(2026, 1, 5, 4, tzinfo=UTC)
+START_REASON = "코인, 봉 단위, 알림 보관 기간과 여덟 칸의 모델·노력 값을 고르면 누를 수 있습니다."
+NOTICE_MA = (
+    "프로그램이나 PC가 꺼져 있거나 인터넷이 끊기면 디스코드 알림도 가지 않습니다. 인터넷이 끊긴 "
+    "동안 보내지 못한 알림은 다시 이어져도 디스코드로 가지 않습니다(알림센터에서 봅니다)."
+)
+NOTICE_BA = (
+    "디스코드 주소를 넣지 않은 분류의 알림은 디스코드로 가지 않습니다(오류 알림의 주소가 비어 "
+    '있으면 오류 멈춤의 "지금 손절이 동작하지 않음"도 가지 않습니다).'
+)
 NOTICE_SA = (
     "개인용입니다. 쓰는 사람은 각자 자기 업비트 키와 자기 Claude Code 로그인으로, 자기 책임으로 "
     "씁니다. 아무것도 보증하지 않습니다. 팔거나 돈을 받고 넘기지 않습니다."
@@ -224,18 +233,33 @@ def test_c28_the_eight_slots_are_blank_combo_boxes_and_start_needs_all_of_them(
         box.setCurrentIndex(1)
     assert not start.isEnabled()  # 하나라도 비면 눌리지 않는다
     assert reason.isVisibleTo(screen)
-    assert reason.text()
+    assert reason.text() == START_REASON  # 단추 곁의 까닭(3.12.2)
     start.click()
     assert actions.saves == []
-    boxes[-1].setCurrentIndex(1)
+    # 여덟 칸에 서로 다른 값을 넣는다: 어느 칸의 어느 값이 저장되는지 본다. 목록은 빈 항목, 모델
+    # 넷(fable, opus, sonnet, haiku), 노력 값 다섯(low, medium, high, xhigh, max)의 차례다.
+    picks = {
+        AiSlot.SEARCH: (1, 5),  # fable, max
+        AiSlot.CANDLE: (2, 4),  # opus, xhigh
+        AiSlot.FINAL: (3, 3),  # sonnet, high
+        AiSlot.SESSION: (4, 1),  # haiku, low
+    }
+    for slot, (model, effort) in picks.items():
+        find(screen, QComboBox, f"firstSetupAiModel_{slot.value}").setCurrentIndex(model)
+        find(screen, QComboBox, f"firstSetupAiEffort_{slot.value}").setCurrentIndex(effort)
     assert start.isEnabled()
+    assert not reason.isVisibleTo(screen)  # 누를 수 있으면 보이지 않는다
     start.click()
     (saved,) = actions.saves
     choices = saved["ai_choices"]
     assert len(choices) == 4
     assert all(isinstance(choice, AiChoice) for choice in choices)
-    assert {choice.slot for choice in choices} == set(AiSlot)
-    assert all(isinstance(choice.effort, Effort) for choice in choices)
+    assert {choice.slot: (choice.model, choice.effort) for choice in choices} == {
+        AiSlot.SEARCH: ("fable", Effort.MAX),
+        AiSlot.CANDLE: ("opus", Effort.XHIGH),
+        AiSlot.FINAL: ("sonnet", Effort.HIGH),
+        AiSlot.SESSION: ("haiku", Effort.LOW),
+    }
 
 
 # --- 현황에서 보고서 화면으로 -------------------------------------------------------------------
@@ -330,6 +354,8 @@ def test_c28_the_read_first_icon_carries_the_five_notices_that_are_not_in_any_la
     lines = icon.toolTip().split("\n")
     assert len(lines) == 5  # 가, 마, 바, 사, 아
     assert "투자 자문이 아닙니다" in lines[0]  # 가
+    assert lines[1].removeprefix("• ") == NOTICE_MA  # 마(설계서 10.2)
+    assert lines[2].removeprefix("• ") == NOTICE_BA  # 바(설계서 10.2)
     assert lines[3].endswith(NOTICE_SA)  # 사
     assert lines[4].endswith(NOTICE_A)  # 아
     shown = "\n".join(visible_texts(screen))
