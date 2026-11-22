@@ -12,17 +12,29 @@ from decimal import Decimal
 import pytest
 from fakes.clock import FakeClock
 from fakes.quote import (
+    BOOK,
     CANDLES,
     MARKETS,
+    MINUTES,
     OK,
     PRICE,
+    TICK,
     FakeQuoteSource,
     QuoteRequest,
     make_candles,
+    make_minutes,
     with_close,
 )
 
-from coin_report_trader.core import CandleUnit, Market, PriceSource, QuoteError, QuoteSource
+from coin_report_trader.core import (
+    BookSource,
+    CandleUnit,
+    Market,
+    MinuteCandle,
+    PriceSource,
+    QuoteError,
+    QuoteSource,
+)
 from coin_report_trader.core.texts import ERROR_BLOCKED, ERROR_NETWORK, ERROR_TIMEOUT
 
 M = "KRW-AAA"
@@ -380,3 +392,102 @@ def test_script_kinds_and_units_keep_price_apart() -> None:
     with pytest.raises(QuoteError) as caught:
         source.get_price(M)
     assert caught.value.error_name == ERROR_BLOCKED
+
+
+# --- 호가, 호가 단위, 1분봉(M3 명세 3.6, 3.19) ------------------------------------------------
+
+
+def test_is_a_book_source() -> None:
+    assert isinstance(FakeQuoteSource(), BookSource)
+
+
+def test_book_and_tick_size_set_per_coin() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(1000)})
+    source.set_book(M, Decimal(1002), Decimal(998))
+    source.set_tick_size(M, Decimal("0.1"))
+    assert source.get_best_prices(M) == (Decimal(1002), Decimal(998))
+    assert source.get_tick_size(M) == Decimal("0.1")
+
+
+def test_defaults_for_a_coin_not_set() -> None:
+    # 호가 단위 1, 최우선 호가는 둘 다 그 코인의 현재가, 1분봉은 없음(M3 명세 3.6).
+    source = FakeQuoteSource(prices={M: Decimal(1234)})
+    assert source.get_tick_size(M) == Decimal(1)
+    assert source.get_best_prices(M) == (Decimal(1234), Decimal(1234))
+    assert source.get_minute_candles(M, to=None, count=200) == ()
+
+
+def test_best_prices_of_a_coin_without_book_or_price_is_a_test_mistake() -> None:
+    source = FakeQuoteSource()
+    with pytest.raises(KeyError, match="KRW-ZZZ"):
+        source.get_best_prices("KRW-ZZZ")
+    assert source.requests == []
+
+
+def test_minute_candles_before_to_newest_first() -> None:
+    candles = make_minutes(M, 10, last_start=TODAY)
+    source = FakeQuoteSource()
+    source.put_minutes(*candles)
+    assert source.get_minute_candles(M, to=None, count=3) == tuple(reversed(candles[-3:]))
+    assert source.get_minute_candles(M, to=candles[5].start, count=2) == (candles[4], candles[3])
+    assert source.get_minute_candles("KRW-BBB", to=None, count=3) == ()
+
+
+def test_put_minutes_replaces_the_same_start() -> None:
+    source = FakeQuoteSource()
+    first = make_minutes(M, 2, last_start=TODAY)
+    changed = MinuteCandle(M, first[-1].start, Decimal(1), Decimal(1), Decimal(1))
+    source.put_minutes(*first)
+    source.put_minutes(changed)
+    assert source.get_minute_candles(M, to=None, count=5) == (changed, first[0])
+
+
+@pytest.mark.parametrize("count", [0, 201, True])
+def test_minute_candles_bad_count_is_rejected_and_not_recorded(count: object) -> None:
+    source = FakeQuoteSource()
+    with pytest.raises(ValueError, match="count"):
+        source.get_minute_candles(M, to=None, count=count)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="to"):
+        source.get_minute_candles(M, to=datetime(2026, 1, 5), count=1)
+    assert source.requests == []
+
+
+def test_make_minutes_are_consecutive_made_up_numbers() -> None:
+    candles = make_minutes(M, 5, last_start=TODAY)
+    assert [c.start for c in candles] == [TODAY - timedelta(minutes=4 - i) for i in range(5)]
+    assert all(c.low <= c.close <= c.high for c in candles)
+    assert all(type(c.close) is Decimal for c in candles)
+
+
+def test_book_requests_are_recorded_and_scripted_per_method() -> None:
+    clock = FakeClock()
+    source = FakeQuoteSource(prices={M: Decimal(1000)}, clock=clock)
+    source.script(QuoteError(ERROR_BLOCKED, 120.0), kind=TICK)
+    source.script(QuoteError(ERROR_NETWORK), kind=MINUTES, market=M)
+    assert source.get_best_prices(M) == (Decimal(1000), Decimal(1000))
+    with pytest.raises(QuoteError) as tick_error:
+        source.get_tick_size(M)
+    assert (tick_error.value.error_name, tick_error.value.retry_after) == (ERROR_BLOCKED, 120.0)
+    with pytest.raises(QuoteError):
+        source.get_minute_candles(M, to=TODAY, count=7)
+    assert source.get_tick_size(M) == Decimal(1)  # 다 쓴 뒤에는 정상
+    kinds = [(r.kind, r.market, r.unit, r.to, r.count, r.error_name) for r in source.requests]
+    assert kinds == [
+        (BOOK, M, None, None, None, None),
+        (TICK, M, None, None, None, ERROR_BLOCKED),
+        (MINUTES, M, None, TODAY, 7, ERROR_NETWORK),
+        (TICK, M, None, None, None, None),
+    ]
+    assert all(r.monotonic is not None for r in source.requests)
+    assert [r.kind for r in source.book_requests(TICK)] == [TICK, TICK]
+    assert len(source.book_requests(market="KRW-BBB")) == 0
+    assert source.price_requests() == []
+    assert source.candle_requests() == []
+
+
+def test_a_script_for_candles_does_not_hit_book_requests() -> None:
+    source = FakeQuoteSource(prices={M: Decimal(1000)})
+    source.script(QuoteError(ERROR_NETWORK), kind=CANDLES)
+    source.script(QuoteError(ERROR_TIMEOUT), unit=CandleUnit.MINUTE_60)
+    assert source.get_tick_size(M) == Decimal(1)
+    assert source.get_best_prices(M) == (Decimal(1000), Decimal(1000))

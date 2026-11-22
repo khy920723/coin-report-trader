@@ -1,6 +1,10 @@
 """감싸는 부품 `QuoteClient`(M1 명세 3.4, 3.5): 나눠 받기와 요청 한도를 맡는다. `app`은 이것만 쓴다.
 
 - `list_markets()`: 요청 한 번이다.
+- `read_best_prices(market)`, `read_tick_size(market)`: 호가의 첫 줄과 호가 단위(M3 명세 3.6). 요청
+  한 번이다. `fetch_minutes(market, *, since, until)`: `since` 이상 `until` 미만에 시작한 1분봉을
+  200개씩 나눠 받아 시작 시각 순으로 준다. 셋 다 소스가 `BookSource`가 아니면 요청을 내지 않고
+  `TypeError`다.
 - `read_price(market)`: 현재가(M2 명세 3.6). 요청 한 번이고 실패하면 `QuoteError`를 그대로 낸다.
   소스가 `PriceSource`가 아니면 `TypeError`다.
 - `fetch_recent(market, unit, *, count, last_start, first_start, missing)`: 1단계 보완의
@@ -35,10 +39,11 @@ from decimal import Decimal
 from coin_report_trader.core.clock import Clock
 from coin_report_trader.core.errors import QuoteError
 from coin_report_trader.core.market import CANDLE_UNIT_LENGTHS, Candle, CandleUnit, Market
-from coin_report_trader.core.ports import PriceSource, QuoteSource
+from coin_report_trader.core.ports import BookSource, MinuteCandle, PriceSource, QuoteSource
 from coin_report_trader.core.texts import ERROR_BAD_RESPONSE
 from coin_report_trader.trading.quote.ratelimit import RequestLimiter
 
+MINUTE = timedelta(minutes=1)
 MAX_CANDLES = 200
 """요청 하나로 받는 봉의 수의 상한."""
 
@@ -98,6 +103,59 @@ class QuoteClient:
             raise TypeError("소스가 PriceSource가 아니어서 현재가를 읽을 수 없다")
         self._limiter.acquire()
         return self._source.get_price(market)
+
+    def read_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
+        """(최우선 매도 호가, 최우선 매수 호가)(M3 명세 3.6). 요청 한 번이다."""
+        source = self._book()
+        self._limiter.acquire()
+        return source.get_best_prices(market)
+
+    def read_tick_size(self, market: str) -> Decimal:
+        """호가 단위(M3 명세 3.6). 요청 한 번이다."""
+        source = self._book()
+        self._limiter.acquire()
+        return source.get_tick_size(market)
+
+    def fetch_minutes(
+        self, market: str, *, since: datetime, until: datetime
+    ) -> tuple[MinuteCandle, ...]:
+        """`since` 이상 `until` 미만에 시작한 1분봉을 시작 시각 순으로(M3 명세 3.6).
+
+        `until`부터 거슬러 200개씩 나눠 받는다. 요청 하나의 개수는 그 구간에 들 수 있는 1분봉의
+        수(200 이하)다. 받은 봉이 `since`에 닿거나 요청한 개수보다 적으면 멈춘다. `since`가
+        `until`보다 앞이 아니면 요청하지 않고 빈 튜플이다. 중간에 실패하면 받은 봉을 돌려주지 않고
+        `QuoteError`를 그대로 낸다.
+        """
+        source = self._book()
+        since = _aware(since, "since")
+        until = _aware(until, "until")
+        if since >= until:
+            return ()
+        collected: dict[datetime, MinuteCandle] = {}
+        to = until
+        while True:
+            count = max(1, min(MAX_CANDLES, math.ceil((to - since) / MINUTE)))
+            self._limiter.acquire()
+            batch = tuple(source.get_minute_candles(market, to=to, count=count))
+            if len(batch) > count or any(
+                candle.market != market or candle.start >= to for candle in batch
+            ):
+                raise QuoteError(ERROR_BAD_RESPONSE)
+            for candle in batch:
+                if candle.start >= since:
+                    collected.setdefault(candle.start, candle)
+            if len(batch) < count:
+                break
+            oldest = min(candle.start for candle in batch)
+            if oldest <= since:
+                break
+            to = oldest
+        return tuple(sorted(collected.values(), key=lambda candle: candle.start))
+
+    def _book(self) -> BookSource:
+        if not isinstance(self._source, BookSource):
+            raise TypeError("소스가 BookSource가 아니어서 호가와 1분봉을 읽을 수 없다")
+        return self._source
 
     def fetch_recent(
         self,
