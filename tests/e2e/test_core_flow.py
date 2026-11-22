@@ -9,6 +9,10 @@
 차례:
 1. 처음 설정 화면에서 코인 목록이 오면 코인 하나와 보관 기간 30일을 고르고 "저장하고 시작"을 누른다.
    봉 단위 칸(`firstSetupUnit_minute60`, M1 명세 3.14.1. 37번부터 있다)이 있으면 60분봉도 고른다.
+   2단계의 여덟 칸(`firstSetupAiModel_{칸 값}`, `firstSetupAiEffort_{칸 값}`, M2 명세 3.12.2.
+   13번부터 있다)이 있으면 모두 빈 항목이 아닌 값을 고른다. `services`에는 `FakeAiRunner`
+   (`check()`는 `READY`, 정상 답)를 넣는다(M2 명세 3.15. 15번 뒤의 회차가 진짜 실행기를 부르지
+   않게).
 2. 봉을 받아 현황 화면의 봉 통계 표에 항목마다(`core.BAR_STATS_COLUMNS`의 `bar_count`부터
    `low`까지) 이름과 값이 보이고 "전체 변화"는 "%"로 끝난다. 설정 화면에는 고른 보관 기간(30일)과
    코인이 남아 있다.
@@ -25,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes.ai import FakeAiRunner
 from fakes.clock import DEFAULT_START, FakeClock
 from fakes.discord import FakeDiscord
 from fakes.quote import FakeQuoteSource, make_candles
@@ -34,6 +39,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QApplication,
     QCheckBox,
+    QComboBox,
     QLabel,
     QListWidget,
     QPushButton,
@@ -48,6 +54,7 @@ from coin_report_trader.core import (
     BAR_STATS_COLUMNS,
     BAR_STATS_TITLES,
     INSUFFICIENT_TEXT,
+    AiSlot,
     AlertCategory,
     CandleUnit,
     Market,
@@ -84,6 +91,26 @@ def _find(parent: QWidget, kind: type, name: str) -> Any:
 
 def _shown(widget: QWidget | None, window: QWidget) -> bool:
     return widget is not None and widget.isVisibleTo(window)
+
+
+def _choose_ai_slots(parent: QWidget) -> int:
+    """처음 설정의 여덟 칸(M2 명세 3.12.2. 13번부터 있다)이 있으면 모두 빈 항목이 아닌 첫 값을
+    고른다.
+
+    고른 칸의 수(0이나 8)를 돌려준다. 일부만 있으면 13번이 덜 된 것이라 실패로 본다.
+    """
+    names = [
+        f"firstSetupAi{kind}_{slot.value}" for slot in AiSlot for kind in ("Model", "Effort")
+    ]
+    combos = [combo for name in names if (combo := _find(parent, QComboBox, name)) is not None]
+    if len(combos) not in (0, len(names)):
+        raise AssertionError(f"처음 설정의 여덟 칸 가운데 {len(combos)}칸만 있다")
+    for combo in combos:
+        index = next((i for i in range(combo.count()) if combo.itemText(i)), None)
+        if index is None:
+            raise AssertionError(f"{combo.objectName()}에 고를 값이 없다")
+        combo.setCurrentIndex(index)
+    return len(combos)
 
 
 class Driver:
@@ -154,7 +181,7 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
     url = _webhook_url()
     discord = FakeDiscord()
     vault = FakeVault({webhook_secret_name(AlertCategory.ERROR): url})
-    services = Services(quote=quote, webhook=discord, vault=vault, clock=clock)
+    services = Services(quote=quote, webhook=discord, vault=vault, clock=clock, ai=FakeAiRunner())
 
     made: list[Any] = []
     real_create = ui.create_main_window
@@ -189,10 +216,11 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         unit = _find(first, QAbstractButton, f"firstSetupUnit_{CandleUnit.MINUTE_60.value}")
         if unit is not None:  # 37번부터 봉 단위 칸이 있다(3.14.1). 봉 개수는 "200개"가 골라져 있다
             unit.click()
+        _choose_ai_slots(first)  # 13번부터 여덟 칸이 있다(M2 명세 3.12.2)
         start = _find(first, QPushButton, "firstSetupStart")
         if not start.isEnabled():
             raise AssertionError(
-                "코인, 보관 기간(있으면 봉 단위)을 골랐는데 저장 단추를 누를 수 없다"
+                "코인, 보관 기간(있으면 봉 단위와 여덟 칸)을 골랐는데 저장 단추를 누를 수 없다"
             )
         start.click()
         return True

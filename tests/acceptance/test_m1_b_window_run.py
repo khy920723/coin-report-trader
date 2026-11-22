@@ -1,6 +1,9 @@
 """M1 명세 6절의 창을 띄우는 시나리오: B18, B19, B21, B26, B38, B41(3.7, 3.8, 3.8.1, 3.9, 3.11).
 
 `run_gui`를 그대로 돌리고 `services`에 가짜(시세, 디스코드, 보관소, 시계)를 넣는다(6절의 아래 글).
+`services`에는 `FakeAiRunner`(`check()`는 `READY`, 정상 답)도 넣는다(M2 명세 3.15. 15번 뒤의 회차가
+진짜 실행기를 부르지 않게). "저장하고 시작"을 누르기 전에 2단계의 여덟 칸(M2 명세 3.12.2. 13번부터
+있다)이 있으면 모두 빈 항목이 아닌 값을 고른다.
 자료 폴더는 `tests/conftest.py`가 시험마다 `tmp_path` 아래로 바꾼다. 사람이 하는 일은 창의 단추나
 화면이 부르는 동작(`UiActions`)으로 한다. B41의 두 번째 실행은 다른 프로세스로 돌린다.
 """
@@ -20,13 +23,21 @@ from typing import Any
 
 import pytest
 from acceptance.m1_support import AAA, HOUR, NOW, THIS_HOUR, markets, prepare_db, webhook_url
+from fakes.ai import FakeAiRunner
 from fakes.clock import FakeClock
 from fakes.discord import FakeDiscord
 from fakes.quote import FakeQuoteSource, make_candles
 from fakes.vault import FakeVault
 from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtNetwork import QLocalServer
-from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QListWidget, QWidget
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QApplication,
+    QComboBox,
+    QLabel,
+    QListWidget,
+    QWidget,
+)
 
 from coin_report_trader import ui
 from coin_report_trader.__main__ import main
@@ -35,6 +46,7 @@ from coin_report_trader.app.data_thread import DATA_THREAD_NAME
 from coin_report_trader.app.services import Services
 from coin_report_trader.config.paths import resolve_app_paths
 from coin_report_trader.core import (
+    AiSlot,
     AlertCategory,
     CandleUnit,
     CoinView,
@@ -65,7 +77,24 @@ def services(clock: FakeClock | None = None, **kwargs: Any) -> Services:
         webhook=kwargs.pop("webhook", None) or FakeDiscord(),
         vault=kwargs.pop("vault", None) or FakeVault(),
         clock=clock,
+        ai=kwargs.pop("ai", None) or FakeAiRunner(),
     )
+
+
+def choose_ai_slots(window: Any) -> int:
+    """처음 설정의 여덟 칸(M2 명세 3.12.2. 13번부터 있다)이 있으면 모두 빈 항목이 아닌 첫 값을
+    고른다. 고른 칸의 수(0이나 8)를 돌려준다. 일부만 있으면 13번이 덜 된 것이라 실패로 본다.
+    """
+    names = [
+        f"firstSetupAi{kind}_{slot.value}" for slot in AiSlot for kind in ("Model", "Effort")
+    ]
+    combos = [combo for name in names if (combo := window.findChild(QComboBox, name)) is not None]
+    assert len(combos) in (0, len(names)), f"처음 설정의 여덟 칸 가운데 {len(combos)}칸만 있다"
+    for combo in combos:
+        index = next((i for i in range(combo.count()) if combo.itemText(i)), None)
+        assert index is not None, f"{combo.objectName()}에 고를 값이 없다"
+        combo.setCurrentIndex(index)
+    return len(combos)
 
 
 class App:
@@ -441,6 +470,7 @@ def test_b38_an_old_record_stays_on_first_setup_until_a_unit_is_chosen(
         # 보관 기간 묶음은 'ⓘ'가 들어 열려 있고(M1 명세 3.14.7), 그 안의 고르기 단추가 잠긴다.
         seen["retention_locked"] = not find(window, QWidget, "firstSetupRetention30").isEnabled()
         find(window, QAbstractButton, f"firstSetupUnit_{CandleUnit.MINUTE_60.value}").click()
+        choose_ai_slots(window)  # 예전 기록에서도 여덟 칸은 잠그지 않는다(M2 명세 3.12.2)
         find(window, QAbstractButton, "firstSetupStart").click()
         return True
 
