@@ -46,6 +46,35 @@ class PriceSource(Protocol):
 
 
 @dataclass(frozen=True)
+class MinuteCandle:
+    """1분봉(M3 명세 3.4). 봉 통계에 쓰지 않으므로 `Candle`과 `CandleUnit`에 더하지 않는다."""
+
+    market: str
+    start: datetime
+    high: Decimal
+    low: Decimal
+    close: Decimal
+
+
+@runtime_checkable
+class BookSource(Protocol):
+    """공개 시세의 더한 값(M3 명세 3.4, 3.6). 한 번 부르는 것이 요청 한 번이고 실패하면
+    `QuoteError`를 낸다. `QuoteSource`와 `PriceSource`에 더하지 않고 따로 둔다."""
+
+    def get_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
+        """(최우선 매도 호가, 최우선 매수 호가)."""
+        ...
+
+    def get_tick_size(self, market: str) -> Decimal: ...
+
+    def get_minute_candles(
+        self, market: str, *, to: datetime | None, count: int
+    ) -> tuple[MinuteCandle, ...]:
+        """`to` 앞에 시작한 1분봉을 새것부터 `count`(200 이하)개 준다."""
+        ...
+
+
+@dataclass(frozen=True)
 class ClaudeCheck:
     """`AiRunner.check()`의 결과(3.7.1)."""
 

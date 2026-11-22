@@ -48,7 +48,7 @@ def fixed_command(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_the_settings_view_gets_three_fields_last_with_the_spec_defaults() -> None:
     names = [f.name for f in dataclasses.fields(SettingsView)]
-    assert names[-3:] == ["autostart", "autostart_supported", "autostart_error"]
+    assert names[-4:-1] == ["autostart", "autostart_supported", "autostart_error"]
     view = SettingsView()
     assert (view.autostart, view.autostart_supported, view.autostart_error) == (False, False, None)
 
