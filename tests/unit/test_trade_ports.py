@@ -16,8 +16,11 @@ from coin_report_trader.app.services import Services
 from coin_report_trader.core import (
     BookSource,
     HistoryTab,
+    PauseStopLoss,
     ReportState,
     SystemClock,
+    TradeMethod,
+    TradeSettings,
     UiActions,
     texts,
 )
@@ -146,13 +149,32 @@ def test_the_app_actions_hand_every_new_call_to_the_data_thread() -> None:
     actions.resume_error()
     actions.load_history(HistoryTab.ORDERS, "KRW-AAA", day)
     actions.export_history(HistoryTab.FILLS, None, "경로")
-    actions.save_settings(("KRW-AAA",), 7, first_setup=False, accept_below_stop=("KRW-AAA",))
+    trade = TradeSettings(
+        budget=Decimal("1000000"),
+        coin_ratios={"KRW-AAA": Decimal("20")},
+        first_ratio=Decimal("30"),
+        mr_first_ratio=None,
+        add_ratio=Decimal("10"),
+        tolerance=Decimal("1"),
+        stop_ratio=Decimal("5"),
+        daily_loss_limit=Decimal("3000"),
+        order_interval_s=600,
+        method=TradeMethod.TREND,
+        pause_stop_loss=PauseStopLoss.KEEP,
+        mr_sell_unknown_fee=False,
+        mr_tolerable_loss=Decimal("5"),
+        paper_funds=Decimal("1000000"),
+        backup_days=7,
+    )
+    actions.save_settings(
+        ("KRW-AAA",), 7, first_setup=False, trade=trade, accept_below_stop=("KRW-AAA",)
+    )
     assert data.calls[:4] == [(name, (), {}) for name in NEW_ACTIONS[:4]]
     assert data.calls[4] == ("load_history", (HistoryTab.ORDERS, "KRW-AAA", day), {})
     assert data.calls[5] == ("export_history", (HistoryTab.FILLS, None, "경로"), {})
     name, args, kwargs = data.calls[6]
     assert (name, args) == ("save_settings", (("KRW-AAA",), 7))
-    assert kwargs["trade"] is None
+    assert kwargs["trade"] is trade
     assert kwargs["accept_below_stop"] == ("KRW-AAA",)
 
 
