@@ -269,7 +269,7 @@ def test_without_actions_nothing_is_called_and_the_first_screen_is_first_setup(m
     assert current_screen(window) is ScreenId.FIRST_SETUP
     first = _first(window)
     assert _shown_text(first, "firstSetupMessage") is None
-    assert _find(first, QWidget, "firstSetupForm").isEnabled()
+    assert _find(first, QWidget, "firstSetupCoins").isEnabled()
     # 값을 받아도 예외 없이 그리고, 눌러도 부를 동작이 없다.
     window.apply(SettingsView())
     window.apply(MarketsView(LoadState.READY, ALL))
@@ -292,7 +292,7 @@ def test_before_the_first_settings_view_the_form_is_dim_and_says_loading(make_wi
         (_settings(window), "settings", "settingsMessage"),
     ):
         assert _shown_text(screen, message) == "불러오는 중"
-        assert not _find(screen, QWidget, f"{prefix}Form").isEnabled()
+        assert not _find(screen, QWidget, f"{prefix}Coins").isEnabled()
     assert not _button(_first(window), "firstSetupStart").isEnabled()
     assert not _button(_settings(window), "settingsSave").isEnabled()
     assert current_screen(window) is ScreenId.FIRST_SETUP
@@ -306,7 +306,7 @@ def test_first_settings_view_without_first_setup_stays_and_asks_for_markets(make
     assert actions.calls == [("refresh_markets",)]
     first = _first(window)
     assert _shown_text(first, "firstSetupMessage") is None
-    assert _find(first, QWidget, "firstSetupForm").isEnabled()
+    assert _find(first, QWidget, "firstSetupCoins").isEnabled()
     # 요청한 때부터 목록이 올 때까지 "불러오는 중" 줄이 보인다.
     assert not _list_shown(first, "firstSetup")
     assert _shown_text(first, "firstSetupCoinsMessage") == LOADING_MARKETS
@@ -335,7 +335,7 @@ def test_unreadable_settings_keep_both_screens_dim_and_call_nothing(make_window,
     ):
         assert _shown_text(screen, message) == UNREADABLE
         assert _tone(screen, message) == "warning"
-        assert not _find(screen, QWidget, f"{prefix}Form").isEnabled()
+        assert not _find(screen, QWidget, f"{prefix}Coins").isEnabled()
     start = _button(_first(window), "firstSetupStart")
     save = _button(_settings(window), "settingsSave")
     assert not start.isEnabled()
@@ -362,7 +362,7 @@ def test_a_ready_settings_view_after_unreadable_counts_as_the_first_one(make_win
     other.apply(SettingsView())
     assert current_screen(other) is ScreenId.FIRST_SETUP
     assert other._actions.calls == [("refresh_markets",)]
-    assert _find(_first(other), QWidget, "firstSetupForm").isEnabled()
+    assert _find(_first(other), QWidget, "firstSetupCoins").isEnabled()
 
 
 # --- 코인 목록을 부르는 때 ---
@@ -407,7 +407,7 @@ def test_settings_screen_before_first_setup_is_empty_and_never_calls(make_window
     assert actions.count("refresh_markets") == 1
     assert _shown_text(settings, "settingsMessage") == BEFORE_SETUP
     assert _tone(settings, "settingsMessage") == "normal"
-    assert not _find(settings, QWidget, "settingsForm").isEnabled()
+    assert not _find(settings, QWidget, "settingsCoins").isEnabled()
     assert _selected_texts(settings, "settings") == []
     assert _days(settings, "settings") is None
     save = _button(settings, "settingsSave")
@@ -753,7 +753,7 @@ def test_settings_screen_shows_the_saved_values_selected(make_window, actions):
     settings = _ready_settings(window, coins=("KRW-CCC", "KRW-AAA"), days=90)
     assert _selected_texts(settings, "settings") == ["CCC 가짜씨", "AAA 가짜에이"]
     assert _days(settings, "settings") == 90
-    assert _find(settings, QWidget, "settingsForm").isEnabled()
+    assert _find(settings, QWidget, "settingsCoins").isEnabled()
     assert _shown_text(settings, "settingsMessage") is None
     assert _button(settings, "settingsSave").text() == "저장"
     assert _button(settings, "settingsSave").isEnabled()

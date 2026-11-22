@@ -465,7 +465,7 @@ def test_settings_before_first_setup_has_empty_dim_unit_and_count(make_window, a
     settings = _settings(window)
     assert _unit_of(settings, "settings") is None
     assert _count_of(settings, "settings") is None
-    assert not _find(settings, QWidget, "settingsForm").isEnabled()
+    assert not _find(settings, QWidget, "settingsCoins").isEnabled()
     for unit in UNITS:
         assert not _radio(settings, f"settingsUnit_{unit.value}").isEnabled()
     for count in CANDLE_COUNTS:
@@ -594,7 +594,7 @@ def test_an_unreadable_record_is_not_a_legacy_record(make_window, actions):
     window.apply(SettingsView(("KRW-AAA",), 30, False, state=LoadState.FAILED))
     first = _first(window)
     assert _text(first, "firstSetupLegacyNotice") is None
-    assert not _find(first, QWidget, "firstSetupForm").isEnabled()
+    assert not _find(first, QWidget, "firstSetupCoins").isEnabled()
 
 
 def test_the_notice_is_not_shown_before_the_first_settings_view(make_window, actions):

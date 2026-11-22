@@ -19,7 +19,7 @@ from coin_report_trader.ui.retention import RetentionChoice
 from coin_report_trader.ui.screens import TITLE_NAME, screen_object_name, title_label
 from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
 from coin_report_trader.ui.texts import COINS_LABEL, RETENTION_LABEL, SAVE_TEXT
-from coin_report_trader.ui.widgets import make_label, set_role, show_message
+from coin_report_trader.ui.widgets import make_label, set_dim, set_role, show_message
 
 PREFIX = "settings"
 MESSAGE_NAME = "settingsMessage"
@@ -70,6 +70,9 @@ class SettingsScreen(QWidget):
         for part in (self._picker, self._candle, self._retention):
             card = Card()
             card.body.addWidget(part)
+            if part is not self._picker:
+                # 오른쪽 카드는 내용을 위쪽에 붙이고, 남는 높이는 아래의 빈 자리가 받는다.
+                card.body.addStretch(1)
             cards.append(card)
         grid = CardGrid(split_first=True, max_columns=2)
         grid.set_cards(cards)
@@ -133,7 +136,7 @@ class SettingsScreen(QWidget):
             self._retention.set_value(None)
             self._candle.set_values(None, None)
         self._active = active
-        self._form.setEnabled(active)
+        set_dim(self._form, not active)  # 흐린 때도 'ⓘ'는 듣는다
         self._picker.show_mode(picker)
         show_message(self._message, message)
         saved = (
