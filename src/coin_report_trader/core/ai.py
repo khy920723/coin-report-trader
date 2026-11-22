@@ -121,6 +121,8 @@ class ReportState(StrEnum):
     """끊긴 회차."""
     ERROR = "error"
     """만들거나 저장하다 오류가 나 AI를 끔(3.5.4)."""
+    DISCARDED = "discarded"
+    """멈춤으로 버린 회차의 보고서(M3 명세 3.5.3). 정상으로 받은 판단이 아니다."""
 
 
 class SkipReason(StrEnum):

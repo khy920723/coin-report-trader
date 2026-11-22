@@ -7,7 +7,9 @@
 모두 Qt의 주 스레드에서 부른다.
 """
 
-from coin_report_trader.core import AiChoice, AlertCategory, CandleUnit
+from datetime import date
+
+from coin_report_trader.core import AiChoice, AlertCategory, CandleUnit, HistoryTab, TradeSettings
 
 from .data_thread import DataWorker
 from .send_thread import SendWorker
@@ -33,6 +35,8 @@ class AppActions:
         candle_count: int | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
         autostart: bool | None = None,
+        trade: TradeSettings | None = None,
+        accept_below_stop: tuple[str, ...] = (),
     ) -> None:
         self._data.save_settings(
             coins,
@@ -42,6 +46,8 @@ class AppActions:
             candle_count=candle_count,
             ai_choices=ai_choices,
             autostart=autostart,
+            trade=trade,
+            accept_below_stop=accept_below_stop,
         )
 
     def load_reports(self, market: str) -> None:
@@ -70,6 +76,24 @@ class AppActions:
 
     def send_test(self, category: AlertCategory) -> None:
         self._send.send_test(category)
+
+    def pause(self) -> None:
+        self._data.pause()
+
+    def pause_and_sell_all(self) -> None:
+        self._data.pause_and_sell_all()
+
+    def resume_user(self) -> None:
+        self._data.resume_user()
+
+    def resume_error(self) -> None:
+        self._data.resume_error()
+
+    def load_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
+        self._data.load_history(tab, market, day)
+
+    def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None:
+        self._data.export_history(tab, market, path)
 
     def __repr__(self) -> str:
         return "AppActions()"

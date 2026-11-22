@@ -25,6 +25,14 @@ STAGE_STARTUP: Final = "켜기"
 STAGE_PRICE: Final = "현재가 읽기"
 STAGE_REPORT: Final = "AI 보고서"
 STAGE_REPORT_SAVE: Final = "보고서 저장"
+STAGE_ACCOUNT: Final = "계정 읽기"
+STAGE_ORDER: Final = "주문"
+STAGE_ORDER_SAVE: Final = "주문 저장"
+STAGE_STOP_LOSS: Final = "손절"
+STAGE_SELL_ALL: Final = "긴급 매도"
+STAGE_RECONCILE: Final = "거래소와 맞춰 보기"
+STAGE_BACKUP: Final = "DB 백업"
+STAGE_PAUSE_SAVE: Final = "멈춤 저장"
 STAGES: Final = (
     STAGE_MARKETS,
     STAGE_CANDLES,
@@ -39,6 +47,14 @@ STAGES: Final = (
     STAGE_PRICE,
     STAGE_REPORT,
     STAGE_REPORT_SAVE,
+    STAGE_ACCOUNT,
+    STAGE_ORDER,
+    STAGE_ORDER_SAVE,
+    STAGE_STOP_LOSS,
+    STAGE_SELL_ALL,
+    STAGE_RECONCILE,
+    STAGE_BACKUP,
+    STAGE_PAUSE_SAVE,
 )
 
 # --- 알림 번호(설계서 12) ---
@@ -51,6 +67,21 @@ CODE_REPORT_FAILED: Final = "A-17"
 CODE_LOGGED_OUT: Final = "A-18"
 CODE_CLAUDE_OFF: Final = "A-19"
 CODE_REPORT_DONE: Final = "A-26"
+CODE_TOO_SMALL: Final = "A-3"
+CODE_PRICE_GUARD: Final = "A-4"
+CODE_STOP_FAILED: Final = "A-8"
+CODE_NO_AVG: Final = "A-9"
+CODE_BUDGET: Final = "A-10"
+CODE_NO_KRW: Final = "A-11"
+CODE_DAILY_LOSS: Final = "A-12"
+CODE_CAUTION: Final = "A-13"
+CODE_MIN_ORDER_CHANGED: Final = "A-15"
+CODE_COIN_REMOVED: Final = "A-16"
+CODE_ERROR_PAUSE: Final = "A-23"
+CODE_UNKNOWN_EXCHANGE: Final = "A-24"
+CODE_SELL_ALL_LEFT: Final = "A-25"
+CODE_ORDER_PLACED: Final = "A-27"
+CODE_FILLED: Final = "A-28"
 
 # --- 오류 이름: 봉 받기와 코인 목록 받기가 만나는 것(3.9) ---
 ERROR_NETWORK: Final = "네트워크 끊김"
@@ -161,6 +192,14 @@ AFTER_SAVE_FAILED: Final[Mapping[str, str]] = MappingProxyType(
         STAGE_STARTUP: "창을 띄우지 못하고 끝냈습니다. 다음에 켤 때 다시 시도합니다.",
         STAGE_REPORT_SAVE: (
             "AI를 껐습니다. 봉 받기는 계속하고, 프로그램을 다시 켜면 AI가 다시 돕니다."
+        ),
+        STAGE_ORDER_SAVE: "쓰지 못한 주문은 내지 않았고, 쓰지 못한 체결은 반영하지 않았습니다.",
+        STAGE_PAUSE_SAVE: (
+            "이번 실행에서는 멈춤 상태를 메모리에 지켜 새 주문을 내지 않습니다."
+            " 다시 켜면 저장된 마지막 상태로 시작합니다."
+        ),
+        STAGE_BACKUP: (
+            "백업을 만들거나 오래된 백업을 지우지 못했습니다. 다음 하루가 바뀌는 때에 다시 합니다."
         ),
     }
 )
