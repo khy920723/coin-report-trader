@@ -632,3 +632,77 @@ def test_the_stored_cells_are_trimmed_and_empty_cells_become_none() -> None:
     assert judged.buy_price == "99"
     assert judged.sell_price is None
     assert judged.result_text is None
+
+
+# --- 검토의 고칠 것 -----------------------------------------------------------------------
+
+
+def with_extra_line(text: str, extra: str) -> str:
+    return text + extra + "\r\n"
+
+
+WIDE = "KRW-AAA,근거,2,,,글,,,,,,x"  # 칸이 열둘이다(줄 표의 칸은 열하나)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "search_judgment",
+        "search_rows",
+        "candle_judgment",
+        "candle_rows",
+        "final_rows",
+        "final_judgment",
+    ],
+)
+def test_a_row_with_the_wrong_number_of_cells_is_a_format_error_in_every_table(field: str) -> None:
+    given = answers()
+    extra = "KRW-AAA,긍정,성공,x" if field.endswith("judgment") else WIDE
+    given[field] = with_extra_line(given[field], extra)
+    judged = check_fail(given, FailureKind.FORMAT)  # 줄을 말없이 버리고 `OK`가 되지 않는다
+    assert field in judged.reason
+    short = answers()
+    short[field] = with_extra_line(short[field], "KRW-AAA")
+    check_fail(short, FailureKind.FORMAT)
+
+
+def test_a_search_rows_table_without_sources_is_a_search_failure_even_with_a_broken_row() -> None:
+    rows = with_extra_line(
+        rows_text(evidence(1)), WIDE
+    )  # 출처가 0줄이고 칸 수가 틀린 근거 줄이 있다
+    judged = check_fail(answers(search_rows=rows), FailureKind.SEARCH)
+    assert judged.reason == "검색 판별이 검색에 실패했다고 알렸습니다."
+
+
+def test_a_broken_row_that_is_a_source_means_there_are_sources_so_it_is_a_format_error() -> None:
+    wide_source = "KRW-AAA,출처,1,,,제목,https://example.invalid/a,,,,,x"
+    rows = with_extra_line(rows_text(evidence(1)), wide_source)
+    judged = check_fail(answers(search_rows=rows), FailureKind.FORMAT)
+    assert "search_rows" in judged.reason
+    check_fail(
+        answers(search_rows=with_extra_line(rows_text(evidence(1)), "KRW-AAA,출처")),
+        FailureKind.FORMAT,
+    )
+    # 둘째 칸이 아예 없는 줄은 출처로 세지 않는다
+    check_fail(
+        answers(search_rows=with_extra_line(rows_text(evidence(1)), "KRW-AAA")), FailureKind.SEARCH
+    )
+
+
+def test_the_compared_text_has_no_length_limit_in_the_spec() -> None:
+    context = JudgeContext(AAA, P, ((AiSlot.SEARCH, 1),))
+    for length in (300, 301, 1000):
+        compared = [
+            line("견준 결과", 1, "가" * length, part="검색 판별", ref_seq="1", verdict="맞음")
+        ]
+        rows = rows_text(compared + checklist(1) + evidence(1))
+        judged = run(
+            answers(final_rows=rows, final_judgment=final_judgment(result_text="결과")), context
+        )
+        assert judged.failure is None, length
+    empty = [line("견준 결과", 1, "", part="검색 판별", ref_seq="1", verdict="맞음")]
+    rows = rows_text(empty + checklist(1) + evidence(1))
+    judged = run(
+        answers(final_rows=rows, final_judgment=final_judgment(result_text="결과")), context
+    )
+    assert judged.failure is FailureKind.FORMAT  # 빈 글은 그대로 형식 오류다

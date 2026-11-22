@@ -143,6 +143,8 @@ class _Table:
     rows: tuple[dict[str, str], ...]
     broken: int
     """머리줄이 맞는데 칸 수가 맞지 않은 줄의 수."""
+    broken_kinds: tuple[str, ...]
+    """그 줄들의 둘째 칸(`kind`)의 글. 칸이 모자라 없으면 빈 글이다."""
     multiline: bool
     """어느 칸에 줄바꿈이 있다."""
 
@@ -186,20 +188,20 @@ def _load(answers: Mapping[str, str], name: str, columns: Sequence[str]) -> _Tab
     try:
         header, raw_rows = read_csv(text)
     except CsvError:
-        return _Table(False, (), 0, False)
+        return _Table(False, (), 0, (), False)
     if header != tuple(columns):
-        return _Table(False, (), 0, False)
+        return _Table(False, (), 0, (), False)
     rows: list[dict[str, str]] = []
-    broken = 0
+    broken_kinds: list[str] = []
     multiline = False
     for raw in raw_rows:
         if len(raw) != len(columns):
-            broken += 1
+            broken_kinds.append(raw[1] if len(raw) > 1 else "")
             continue
         if any("\n" in cell or "\r" in cell for cell in raw):
             multiline = True
         rows.append(dict(zip(columns, raw, strict=True)))
-    return _Table(True, tuple(rows), broken, multiline)
+    return _Table(True, tuple(rows), len(broken_kinds), tuple(broken_kinds), multiline)
 
 
 # --- 검사 -------------------------------------------------------------------------------------
@@ -226,7 +228,7 @@ def _early_failure(tables: Mapping[str, _Table | None], context: JudgeContext) -
         search_rows is not None
         and search_rows.header_ok
         and not any(row["kind"] == RowKind.SOURCE.value for row in search_rows.rows)
-        and not search_rows.broken
+        and RowKind.SOURCE.value not in search_rows.broken_kinds
     ):
         return FailureKind.SEARCH, REASON_SEARCH_FAILED
     for reason in (
@@ -424,8 +426,6 @@ def _row_reason(name: str, kind: RowKind, row: Mapping[str, str]) -> str | None:
             return f"{name}의 url이 정한 꼴이 아닙니다."
         return _blank(name, row, ("part", "ref_seq", "verdict", "belief", "compared", "hits"))
     if kind is RowKind.COMPARED:
-        if len(text) > _EVIDENCE_MAX:
-            return f"{name}의 text가 너무 깁니다."
         if row["part"] not in _PART_TITLES:
             return f"{name}의 part가 정한 값이 아닙니다."
         if _INTEGER.fullmatch(row["ref_seq"]) is None:
