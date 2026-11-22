@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from acceptance.m3_support import fill_trade_fields, trade_fields_exist
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -48,6 +49,7 @@ from coin_report_trader.core import (
     SettingsView,
     SourceItem,
     TokenUsage,
+    TradeSettings,
     UiContext,
     Verdict,
 )
@@ -58,6 +60,13 @@ AAA, BBB = "KRW-AAA", "KRW-BBB"
 COINS = (AAA, BBB)
 CLOSE = datetime(2026, 1, 5, 4, tzinfo=UTC)
 START_REASON = "코인, 봉 단위, 알림 보관 기간과 여덟 칸의 모델·노력 값을 고르면 누를 수 있습니다."
+# 3단계의 처음 설정(M3 명세 3.11.3, 3.17.5. 17번부터 있다)의 글이다. 화면에 3단계 칸이 있으면
+# 이 글을 쓴다.
+START_REASON_M3 = "꼭 넣는 칸을 모두 채우고 '꼭 읽을 글을 읽었습니다'를 고르면 누를 수 있습니다."
+START_TEXT = "저장하고 시작"
+START_TEXT_M3 = "모의매매 시작"
+NOTICE_NA = "PC가 꺼져 있으면 손절이 없습니다."
+NOTICE_RA = "주문 전에 확인하는 단계 없이, 판단에 따라 자동으로 주문합니다."
 NOTICE_MA = (
     "프로그램이나 PC가 꺼져 있거나 인터넷이 끊기면 디스코드 알림도 가지 않습니다. 인터넷이 끊긴 "
     "동안 보내지 못한 알림은 다시 이어져도 디스코드로 가지 않습니다(알림센터에서 봅니다)."
@@ -224,16 +233,21 @@ def test_c28_the_eight_slots_are_blank_combo_boxes_and_start_needs_all_of_them(
     window: Any, actions: Actions
 ) -> None:
     screen = first_setup(window)
+    later = trade_fields_exist(
+        screen
+    )  # 17번 뒤의 화면이면 3단계의 칸과 글이다(화면에 있는 것을 본다)
     boxes = combos(screen)
     assert len(boxes) == 8
     assert all(box.currentText() == "" for box in boxes)  # 처음에는 빈 항목이다
     start = find(screen, QPushButton, "firstSetupStart")
     reason = find(screen, QLabel, "firstSetupStartReason")
+    assert start.text() == (START_TEXT_M3 if later else START_TEXT)
     for box in boxes[:-1]:
         box.setCurrentIndex(1)
     assert not start.isEnabled()  # 하나라도 비면 눌리지 않는다
     assert reason.isVisibleTo(screen)
-    assert reason.text() == START_REASON  # 단추 곁의 까닭(3.12.2)
+    # 단추 곁의 까닭(2단계는 3.12.2, 3단계는 3.11.3)
+    assert reason.text() == (START_REASON_M3 if later else START_REASON)
     start.click()
     assert actions.saves == []
     # 여덟 칸에 서로 다른 값을 넣는다: 어느 칸의 어느 값이 저장되는지 본다. 목록은 빈 항목, 모델
@@ -247,10 +261,15 @@ def test_c28_the_eight_slots_are_blank_combo_boxes_and_start_needs_all_of_them(
     for slot, (model, effort) in picks.items():
         find(screen, QComboBox, f"firstSetupAiModel_{slot.value}").setCurrentIndex(model)
         find(screen, QComboBox, f"firstSetupAiEffort_{slot.value}").setCurrentIndex(effort)
+    if later:  # 3단계의 칸이 비어 있고 확인란을 고르기 전에는 여덟 칸을 다 골라도 눌리지 않는다
+        assert not start.isEnabled()
+        assert reason.isVisibleTo(screen)
+        assert fill_trade_fields(screen) > 0
     assert start.isEnabled()
     assert not reason.isVisibleTo(screen)  # 누를 수 있으면 보이지 않는다
     start.click()
     (saved,) = actions.saves
+    assert isinstance(saved.get("trade"), TradeSettings) if later else saved.get("trade") is None
     choices = saved["ai_choices"]
     assert len(choices) == 4
     assert all(isinstance(choice, AiChoice) for choice in choices)
@@ -345,19 +364,27 @@ def test_c28_an_ok_report_with_a_last_judgment_shows_the_sections_without_opinio
 
 
 @pytest.mark.scenario("C28")
-def test_c28_the_read_first_icon_carries_the_five_notices_that_are_not_in_any_label(
+def test_c28_the_read_first_icon_carries_the_notices_that_are_not_in_any_label(
     window: Any,
 ) -> None:
     screen = first_setup(window)
     icon = find(screen, InfoIcon, "firstSetupNoticesInfo")
     assert icon.accessibleDescription() == icon.toolTip()  # 읽는 설명이 툴팁과 같다
     lines = icon.toolTip().split("\n")
-    assert len(lines) == 5  # 가, 마, 바, 사, 아
-    assert "투자 자문이 아닙니다" in lines[0]  # 가
-    assert lines[1].removeprefix("• ") == NOTICE_MA  # 마(설계서 10.2)
-    assert lines[2].removeprefix("• ") == NOTICE_BA  # 바(설계서 10.2)
-    assert lines[3].endswith(NOTICE_SA)  # 사
-    assert lines[4].endswith(NOTICE_A)  # 아
+    if trade_fields_exist(screen):  # 17번 뒤: 가, 나, 라, 마, 바, 사, 아(M3 명세 3.17.5)
+        assert len(lines) == 7
+        assert "투자 자문이 아닙니다" in lines[0]  # 가
+        assert lines[1].removeprefix("• ") == NOTICE_NA  # 나
+        assert lines[2].removeprefix("• ") == NOTICE_RA  # 라
+        lines_after = lines[3:]
+    else:  # 17번 앞: 가, 마, 바, 사, 아(M2 명세 3.12.3)
+        assert len(lines) == 5
+        assert "투자 자문이 아닙니다" in lines[0]  # 가
+        lines_after = lines[1:]
+    assert lines_after[0].removeprefix("• ") == NOTICE_MA  # 마(설계서 10.2)
+    assert lines_after[1].removeprefix("• ") == NOTICE_BA  # 바(설계서 10.2)
+    assert lines_after[2].endswith(NOTICE_SA)  # 사
+    assert lines_after[3].endswith(NOTICE_A)  # 아
     shown = "\n".join(visible_texts(screen))
     for line in lines:
         assert line.lstrip("• ") not in shown  # 늘 보이는 라벨에 없다
