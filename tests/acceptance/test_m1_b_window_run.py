@@ -89,9 +89,7 @@ def choose_ai_slots(window: Any) -> int:
     """처음 설정의 여덟 칸(M2 명세 3.12.2. 13번부터 있다)이 있으면 모두 빈 항목이 아닌 첫 값을
     고른다. 고른 칸의 수(0이나 8)를 돌려준다. 일부만 있으면 13번이 덜 된 것이라 실패로 본다.
     """
-    names = [
-        f"firstSetupAi{kind}_{slot.value}" for slot in AiSlot for kind in ("Model", "Effort")
-    ]
+    names = [f"firstSetupAi{kind}_{slot.value}" for slot in AiSlot for kind in ("Model", "Effort")]
     combos = [combo for name in names if (combo := window.findChild(QComboBox, name)) is not None]
     assert len(combos) in (0, len(names)), f"처음 설정의 여덟 칸 가운데 {len(combos)}칸만 있다"
     for combo in combos:
@@ -183,6 +181,12 @@ def run_app(
         poll.stop()
         safety.stop()
         monkeypatch.setattr(ui, "create_main_window", real_create)
+        # 부모 없는 타이머와, 창이 자기 `apply`를 감싼 고리는 순환 참조로 남아 나중의 가비지 수집이
+        # 다른 스레드에서 지울 수 있다. 여기서(주 스레드) 끊는다.
+        poll.deleteLater()
+        safety.deleteLater()
+        if app.window is not None:
+            vars(app.window).pop("apply", None)
     if failure:
         raise failure[0]
     assert not pending, f"끝내지 못한 차례가 {len(pending)}개 남았다"

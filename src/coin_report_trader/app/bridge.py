@@ -29,6 +29,17 @@ class UiBridge(QObject):
         """값을 받을 함수(`MainWindow.apply`). 주 스레드에서 정한다."""
         self._apply = apply
 
+    def release(self) -> None:
+        """끝낼 때(주 스레드) 닫고, 값을 받을 함수를 놓고, 주 스레드에서 지우도록 맡긴다.
+
+        다리를 붙든 자료 스레드와 창은 서로를 붙든 순환 참조라 가비지 수집이 지운다. 그 수집이 다른
+        스레드에서 돌면 이 `QObject`가 그 스레드에서 지워져 Windows에서 `access violation`으로 죽을
+        수 있다. `deleteLater`로 C++ 쪽을 주 스레드가 지우게 하면 그 뒤의 수집은 빈 껍데기만 만진다.
+        """
+        self.close()
+        self._apply = None
+        self.deleteLater()
+
     def post(self, update: UiUpdate) -> None:
         with self._lock:
             if self._open:
