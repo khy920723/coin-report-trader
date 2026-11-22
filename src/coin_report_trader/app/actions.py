@@ -9,7 +9,15 @@
 
 from datetime import date
 
-from coin_report_trader.core import AiChoice, AlertCategory, CandleUnit, HistoryTab, TradeSettings
+from coin_report_trader.core import (
+    AiChoice,
+    AlertCategory,
+    CandleUnit,
+    HistoryTab,
+    LiveSettings,
+    Mode,
+    TradeSettings,
+)
 
 from .data_thread import DataWorker
 from .send_thread import SendWorker
@@ -37,6 +45,7 @@ class AppActions:
         autostart: bool | None = None,
         trade: TradeSettings | None = None,
         accept_below_stop: tuple[str, ...] = (),
+        live: LiveSettings | None = None,
     ) -> None:
         self._data.save_settings(
             coins,
@@ -48,10 +57,11 @@ class AppActions:
             autostart=autostart,
             trade=trade,
             accept_below_stop=accept_below_stop,
+            live=live,
         )
 
-    def load_reports(self, market: str) -> None:
-        self._data.load_reports(market)
+    def load_reports(self, market: str, mode: Mode | None = None) -> None:
+        self._data.load_reports(market, mode)
 
     def load_report(self, report_id: int) -> None:
         self._data.load_report(report_id)
@@ -89,11 +99,34 @@ class AppActions:
     def resume_error(self) -> None:
         self._data.resume_error()
 
-    def load_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
-        self._data.load_history(tab, market, day)
+    def load_history(
+        self, tab: HistoryTab, market: str | None, day: date, mode: Mode | None = None
+    ) -> None:
+        self._data.load_history(tab, market, day, mode)
 
     def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None:
         self._data.export_history(tab, market, path)
+
+    def save_upbit_key(self, access: str, secret: str, created: date) -> None:
+        self._data.save_upbit_key(access, secret, created)
+
+    def delete_upbit_key(self) -> None:
+        self._data.delete_upbit_key()
+
+    def prepare_live_on(self) -> None:
+        self._data.prepare_live_on()
+
+    def turn_live_on(self) -> None:
+        self._data.turn_live_on()
+
+    def turn_live_off(self) -> None:
+        self._data.turn_live_off()
+
+    def account_visible(self, visible: bool) -> None:
+        self._data.account_visible(visible)
+
+    def refresh_account(self) -> None:
+        self._data.refresh_account()
 
     def __repr__(self) -> str:
         return "AppActions()"

@@ -266,7 +266,7 @@ def test_the_account_and_order_types_have_the_fields_of_the_spec() -> None:
 def test_the_views_have_the_fields_of_the_spec_in_order_with_the_defaults() -> None:
     assert names(TradeStatusView) == [
         "user_paused", "error_paused", "error_cause", "error_detail", "stop_loss_off",
-        "starting_step", "next_round_utc", "blocked_until", "uncanceled", "as_of",
+        "starting_step", "next_round_utc", "blocked_until", "uncanceled", "as_of", "mode",
     ]  # fmt: skip
     status = TradeStatusView(False, False, None, None, False, None, None)
     assert (status.blocked_until, status.uncanceled, status.as_of) == (None, (), None)
@@ -290,6 +290,7 @@ def test_the_views_have_the_fields_of_the_spec_in_order_with_the_defaults() -> N
         ("ORDERS", "orders"),
         ("FILLS", "fills"),
         ("PAUSES", "pauses"),
+        ("EXTERNAL", "external"),
     ]
     assert names(HistoryRow) == ["key", "cells", "detail", "report_id", "market"]
     assert HistoryRow("k", ("a",), (("이름", "값"),), None).market is None
@@ -315,7 +316,7 @@ def test_the_new_views_are_ui_updates_and_the_helper_rows_are_not() -> None:
 
 def test_the_old_views_get_the_new_fields_last_with_defaults() -> None:
     assert names(ReportView)[-3:] == ["order_summary", "no_order_reason", "elapsed_order_seconds"]
-    assert names(SettingsView)[-1] == "trade"
+    assert names(SettingsView)[-2] == "trade"
     assert SettingsView().trade is None
     assert names(SaveResult)[-1] == "field_errors"
     plain = SaveResult("settings", True)
