@@ -42,9 +42,9 @@ def _tree(root: Path, files: dict[str, str]) -> Path:
 ORDERS = {f"{PKG}/trading/orders/__init__.py": '__all__ = ["decide", "OrderPlan"]\n'}
 
 
-def test_the_item_is_the_eighth_and_last_of_run_all() -> None:
+def test_the_item_is_the_eighth_of_run_all() -> None:
     text = (CHECKS_DIR / "run_all.py").read_text(encoding="utf-8")
-    assert '    "claude_credentials",\n    "trade_code_location",\n)' in text
+    assert '    "claude_credentials",\n    "trade_code_location",\n' in text
 
 
 def test_the_title_and_the_folders(checker) -> None:
