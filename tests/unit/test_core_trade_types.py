@@ -356,6 +356,11 @@ class _Book:
 def test_the_book_source_port_and_the_minute_candle() -> None:
     assert isinstance(_Book(), BookSource)
     assert not isinstance(object(), BookSource)
+    methods = ("get_best_prices", "get_tick_size", "get_minute_candles")
+    assert {name for name in dir(BookSource) if name.startswith("get_")} == set(methods)
+    for missing in methods:  # 셋 가운데 하나라도 빠지면 이 경계가 아니다
+        partial = type("Partial", (), {n: getattr(_Book, n) for n in methods if n != missing})
+        assert not isinstance(partial(), BookSource), missing
     assert names(MinuteCandle) == ["market", "start", "high", "low", "close"]
     candle = MinuteCandle("KRW-AAA", NOW, D("3"), D("1"), D("2"))
     assert candle.close == D("2")
