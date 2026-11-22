@@ -8,7 +8,8 @@
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -39,7 +40,10 @@ from coin_report_trader.core.texts import (
     kst_datetime_text,
     kst_when_text,
 )
+from coin_report_trader.ui import theme
 from coin_report_trader.ui.alert_center import AlertCenter
+from coin_report_trader.ui.cards import Card, CardGrid, title_row
+from coin_report_trader.ui.info_icon import InfoIcon
 from coin_report_trader.ui.screens import TITLE_NAME, screen_object_name, title_label
 from coin_report_trader.ui.state import Message
 from coin_report_trader.ui.texts import (
@@ -58,7 +62,7 @@ from coin_report_trader.ui.texts import (
     stats_short_header_text,
     stats_summary_text,
 )
-from coin_report_trader.ui.widgets import make_label, show_message
+from coin_report_trader.ui.widgets import make_label, set_role, set_trend, show_message
 
 MESSAGE_NAME = "statusMessage"
 CONTENT_NAME = "statusContent"
@@ -212,46 +216,124 @@ def table_rows(stats: BarStats) -> tuple[tuple[str, str], ...]:
     return tuple(rows)
 
 
-class CoinCard(QWidget):
-    """고른 코인 하나의 칸: 코인, 값 자리의 글, 봉 통계의 요소, 미완성 봉 글, 보장 아님 글.
+_TREND_COLUMNS = frozenset({"change", "slope", "vs_mean"})
+"""부호가 있어 오름·내림 색을 입히는 요소(M1 명세 3.14.7)."""
 
-    `objectName`(`<m>`은 마켓 코드): `statusCoin_<m>`(칸), `statusCoinName_<m>`(코인 글),
+
+def element_pairs(stats: BarStats) -> tuple[tuple[str, str, bool], ...]:
+    """코인 칸의 다섯 요소 (이름, 값, 오름·내림 색을 입히는지)."""
+    return tuple(
+        (
+            BAR_STATS_TITLES[column],
+            format_percent(getattr(stats, column), signed=signed),
+            column in _TREND_COLUMNS,
+        )
+        for column, signed in _CARD_ELEMENTS
+    )
+
+
+class ElementRow(QLabel):
+    """코인 칸의 요소 한 줄. 글은 "{이름} {값}"(`text()`)이고, 이름은 왼쪽 보조 글, 값은 오른쪽 맞춤
+    글 색으로 그린다. 부호가 있는 값은 오름·내림 색이다."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__("")
+        self.setObjectName(name)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self._name = ""
+        self._value = ""
+        self._trend = False
+
+    def set_row(self, name: str, value: str, *, trend: bool) -> None:
+        self._name, self._value, self._trend = name, value, trend
+        self.setText(indicator_row_text(name, value))
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 24, self._height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 24, self._height())
+
+    def _height(self) -> int:
+        return max(self.fontMetrics().height() + 2 * theme.UNIT, theme.ROW_HEIGHT - 2 * theme.UNIT)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        enabled = self.isEnabled()
+        sub = QColor(theme.TEXT_SUB if enabled else theme.TEXT_DISABLED)
+        plain = QColor(theme.TEXT if enabled else theme.TEXT_DISABLED)
+        if enabled and self._trend and self._value.startswith("+"):
+            plain = QColor(theme.RISE)
+        elif enabled and self._trend and self._value.startswith("-"):
+            plain = QColor(theme.FALL)
+        rect = self.rect()
+        painter.setPen(sub)
+        painter.drawText(
+            rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self._name
+        )
+        painter.setPen(plain)
+        painter.drawText(
+            rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, self._value
+        )
+        painter.setPen(QColor(theme.DIVIDER))
+        painter.drawLine(rect.bottomLeft(), rect.bottomRight())
+
+
+class CoinCard(Card):
+    """고른 코인 하나의 카드: 코인(큰 값), 값 자리의 글, 봉 통계의 요소, 미완성 봉 글.
+
+    `objectName`(`<m>`은 마켓 코드): `statusCoin_<m>`(카드), `statusCoinName_<m>`(코인 글),
     `statusCoinNote_<m>`(값 자리의 글), `statusCoinRetry_<m>`("다시 시도"),
-    `statusCoinStats_<m>`(봉 통계 묶음. 흐리게 남기면 `isEnabled()`가 거짓),
-    `statusCoinStatsHeader_<m>`(첫 줄 "60분봉 200개"), `statusCoinStatsRow_<m>_<0~4>`(요소 한 줄
-    "이름 값"), `statusCoinIncomplete_<m>`, `statusCoinDisclaimer_<m>`(보장 아님 글).    """
+    `statusCoinStatsHeader_<m>`(첫 줄 "60분봉 200개"), `statusCoinDisclaimer_<m>`(첫 줄 옆 'ⓘ'.
+    툴팁이 보장 아님 글), `statusCoinStats_<m>`(다섯 요소 묶음. 흐리게 남기면 `isEnabled()`가 거짓),
+    `statusCoinStatsRow_<m>_<0~4>`(요소 한 줄 "이름 값". 이름은 왼쪽 보조 글, 값은 오른쪽 맞춤),
+    `statusCoinIncomplete_<m>`.
+    """
 
     retry_requested = Signal()
 
     def __init__(self, market: str) -> None:
-        super().__init__()
+        super().__init__(f"statusCoin_{market}")
         self.market = market
-        self.setObjectName(f"statusCoin_{market}")
-        layout = QVBoxLayout(self)
-        layout.addWidget(title_label(coin_label(market), f"statusCoinName_{market}"))
+        layout = self.body
+        name = title_label(coin_label(market), f"statusCoinName_{market}")
+        set_role(name, theme.ROLE_BIG)
+        layout.addWidget(name)
         self._note = make_label("", f"statusCoinNote_{market}")
         layout.addWidget(self._note)
         self._retry = QPushButton(RETRY_TEXT)
         self._retry.setObjectName(f"statusCoinRetry_{market}")
         self._retry.clicked.connect(self.retry_requested)
-        layout.addWidget(self._retry)
+        layout.addWidget(self._retry, 0, Qt.AlignmentFlag.AlignLeft)
+        # 첫 줄 "60분봉 200개"와 그 옆 'ⓘ'(M1 명세 3.14.7).
+        # 'ⓘ'는 옛 보장 아님 글이 보이던 때 보인다.
+        self._stats_header = make_label("", f"statusCoinStatsHeader_{market}")
+        set_role(self._stats_header, theme.ROLE_GROUP)
+        self._info = InfoIcon("", INDICATOR_DISCLAIMER, f"statusCoinDisclaimer_{market}")
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(theme.ICON_GAP)
+        header_row.addWidget(self._stats_header)
+        header_row.addWidget(self._info)
+        header_row.addStretch(1)
+        layout.addLayout(header_row)
         self._stats_box = QWidget()
         self._stats_box.setObjectName(f"statusCoinStats_{market}")
         stats_layout = QVBoxLayout(self._stats_box)
         stats_layout.setContentsMargins(0, 0, 0, 0)
-        self._stats_header = make_label("", f"statusCoinStatsHeader_{market}")
-        stats_layout.addWidget(self._stats_header)
+        stats_layout.setSpacing(0)
         self._stats_rows = [
-            make_label("", f"statusCoinStatsRow_{market}_{index}")
+            ElementRow(f"statusCoinStatsRow_{market}_{index}")
             for index in range(len(_CARD_ELEMENTS))
         ]
         for row in self._stats_rows:
             stats_layout.addWidget(row)
         layout.addWidget(self._stats_box)
         self._incomplete = make_label(LAST_CANDLE_INCOMPLETE, f"statusCoinIncomplete_{market}")
+        set_role(self._incomplete, theme.ROLE_SUB)
         layout.addWidget(self._incomplete)
-        self._disclaimer = make_label(INDICATOR_DISCLAIMER, f"statusCoinDisclaimer_{market}")
-        layout.addWidget(self._disclaimer)
         layout.addStretch(1)
         self.render(None)
 
@@ -260,41 +342,49 @@ class CoinCard(QWidget):
         show_message(self._note, Message(look.note) if look.note else None)
         self._retry.setVisible(look.retry)
         stats = view.stats if view is not None else None
-        self._stats_box.setVisible(look.values and stats is not None)
+        shown = look.values and stats is not None
+        self._stats_box.setVisible(shown)
         self._stats_box.setEnabled(not look.dim)
+        self._stats_header.setVisible(shown)
+        self._stats_header.setEnabled(not look.dim)
+        self._info.setVisible(look.disclaimer)
         if stats is not None and look.values:
             unit_title = CANDLE_UNIT_TITLES[stats.unit]
-            self._stats_header.setText(
+            header = (
                 stats_short_header_text(unit_title, stats.bar_count, stats.requested_count)
                 if is_short(stats)
                 else stats_header_text(unit_title, stats.requested_count)
             )
-            for label, text in zip(self._stats_rows, element_rows(stats), strict=True):
-                label.setText(text)
+            self._stats_header.setText(header)
+            self._info.set_info(INDICATOR_DISCLAIMER, header)
+            for row, (name, value, trend) in zip(
+                self._stats_rows, element_pairs(stats), strict=True
+            ):
+                row.set_row(name, value, trend=trend)
         self._incomplete.setVisible(look.incomplete)
-        self._disclaimer.setVisible(look.disclaimer)
 
 
-class StatsPanel(QWidget):
-    """봉 통계 자리(설계서 4.2의 8, M1 명세 3.14.5): 코인 고르기, 표, 표 아래 글과 "다시 시도".
+class StatsPanel(Card):
+    """봉 통계 카드(설계서 4.2의 8, M1 명세 3.14.5, 3.14.7): 제목과 'ⓘ', 코인 고르기, 표.
 
-    `objectName`: `statusStats`(묶음), `statusStatsCoin`(코인 고르기 `QComboBox`. 글은 코인 글, 현재
-    값은 마켓 코드가 아니라 인덱스), `statusStatsNote`(표 자리의 글), `statusStatsSummary`(표 위
-    "60분봉 · 고른 개수 200개"), `statusStatsTable`(표 묶음. 흐리게 남기면 `isEnabled()`가 거짓),
-    `statusStatsHeader_<0~1>`(머리 칸 "항목", "값"), `statusStatsCell_<줄 0~12>_<칸 0~1>`(칸. 칸 0은
-    항목, 칸 1은 값), `statusStatsDisclaimer`(보장 아님 글), `statusStatsFetched`("마지막으로 받은
-    때"), `statusStatsIncomplete`, `statusStatsRetry`(표 아래의 하나뿐인 "다시 시도").
+    `objectName`: `statusStats`(카드), `statusStatsTitle`(제목 "봉 통계"),
+    `statusStatsDisclaimer`(제목 옆 'ⓘ'. 툴팁이 보장 아님 글), `statusStatsCoin`(코인 고르기
+    `QComboBox`. 글은 코인 글, 현재 값은 마켓 코드가 아니라 인덱스), `statusStatsNote`(표 자리의
+    글), `statusStatsSummary`(표 위 "60분봉 · 고른 개수 200개"), `statusStatsTable`(표 묶음. 흐리게
+    남기면 `isEnabled()`가 거짓), `statusStatsHeader_<0~1>`(머리 칸 "항목", "값". 보조 글),
+    `statusStatsCell_<줄 0~12>_<칸 0~1>`(칸. 칸 0은 항목, 칸 1은 값, 오른쪽 맞춤),
+    `statusStatsFetched`("마지막으로 받은 때"), `statusStatsIncomplete`,
+    `statusStatsRetry`(표 아래의 하나뿐인 "다시 시도").
     """
 
     retry_requested = Signal()
     chosen = Signal()
 
     def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName(STATS_NAME)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(title_label(STATS_TITLE, "statusStatsTitle"))
+        super().__init__(STATS_NAME)
+        layout = self.body
+        self._info = InfoIcon(STATS_TITLE, INDICATOR_DISCLAIMER, STATS_DISCLAIMER_NAME)
+        layout.addLayout(title_row(STATS_TITLE, "statusStatsTitle", self._info))
         self._chooser = QComboBox()
         self._chooser.setObjectName(STATS_CHOOSER_NAME)
         self._chooser.currentIndexChanged.connect(lambda _index: self.chosen.emit())
@@ -303,30 +393,40 @@ class StatsPanel(QWidget):
         layout.addWidget(self._note)
 
         self._summary = make_label("", STATS_SUMMARY_NAME)
+        set_role(self._summary, theme.ROLE_SUB)
         layout.addWidget(self._summary)
         self._table = QWidget()
         self._table.setObjectName(STATS_TABLE_NAME)
         self._grid = QGridLayout(self._table)
         self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(theme.FIELD_GAP)
+        self._grid.setVerticalSpacing(0)
+        self._grid.setColumnStretch(0, 1)
         for column, title in enumerate(STATS_TABLE_COLUMNS):
-            self._grid.addWidget(make_label(title, f"statusStatsHeader_{column}"), 0, column)
-        self._cells: list[list[QLabel]] = [
-            [
-                make_label("", f"statusStatsCell_{row}_{column}")
-                for column in range(len(STATS_TABLE_COLUMNS))
-            ]
-            for row in range(len(_TABLE_ROWS))
-        ]
-        for row, cells in enumerate(self._cells, start=1):
-            for column, cell in enumerate(cells):
-                self._grid.addWidget(cell, row, column)
+            head = make_label(title, f"statusStatsHeader_{column}")
+            set_role(head, theme.ROLE_SUB)
+            if column == 1:
+                head.setAlignment(Qt.AlignmentFlag.AlignRight)
+            self._grid.addWidget(head, 0, column)
+        self._cells: list[list[QLabel]] = []
+        for row in range(len(_TABLE_ROWS)):
+            cells = []
+            for column in range(len(STATS_TABLE_COLUMNS)):
+                cell = make_label("", f"statusStatsCell_{row}_{column}")
+                cell.setProperty("cell", True)
+                if column == 1:
+                    cell.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                else:
+                    cell.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                cells.append(cell)
+                self._grid.addWidget(cell, row + 1, column)
+            self._cells.append(cells)
         layout.addWidget(self._table)
-        self._disclaimer = make_label(INDICATOR_DISCLAIMER, STATS_DISCLAIMER_NAME)
-        layout.addWidget(self._disclaimer)
 
         self._fetched = make_label("", STATS_FETCHED_NAME)
         layout.addWidget(self._fetched)
         self._incomplete = make_label(LAST_CANDLE_INCOMPLETE, STATS_INCOMPLETE_NAME)
+        set_role(self._incomplete, theme.ROLE_SUB)
         layout.addWidget(self._incomplete)
         row_of_buttons = QHBoxLayout()
         self._retry = QPushButton(RETRY_TEXT)
@@ -364,10 +464,16 @@ class StatsPanel(QWidget):
             self._summary.setText(
                 stats_summary_text(CANDLE_UNIT_TITLES[stats.unit], stats.requested_count)
             )
-            for cells, (name, value) in zip(self._cells, table_rows(stats), strict=True):
+            for cells, column, (name, value) in zip(
+                self._cells, (c for c, _ in _TABLE_ROWS), table_rows(stats), strict=True
+            ):
                 cells[0].setText(name)
                 cells[1].setText(value)
-        self._disclaimer.setVisible(look.disclaimer)
+                if column in _TREND_COLUMNS:
+                    set_trend(cells[1], value)
+                else:
+                    set_trend(cells[1], "")
+        self._info.setVisible(look.disclaimer)
         fetched = _fetched_line(view) if look.fetched else None
         show_message(self._fetched, Message(fetched) if fetched else None)
         self._incomplete.setVisible(look.incomplete)
@@ -386,6 +492,8 @@ class StatusScreen(QWidget):
         self._cards: dict[str, CoinCard] = {}
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
+        layout.setSpacing(theme.CARD_GAP)
         layout.addWidget(title_label(SCREEN_TITLES[ScreenId.STATUS], TITLE_NAME))
         self._message = make_label("", MESSAGE_NAME)
         self._message.hide()
@@ -395,10 +503,9 @@ class StatusScreen(QWidget):
         self._content.setObjectName(CONTENT_NAME)
         content_layout = QVBoxLayout(self._content)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        self._cards_holder = QWidget()
+        content_layout.setSpacing(theme.CARD_GAP)
+        self._cards_holder = CardGrid(max_columns=MAX_COINS)
         self._cards_holder.setObjectName(COINS_NAME)
-        self._cards_layout = QHBoxLayout(self._cards_holder)
-        self._cards_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.addWidget(self._cards_holder)
         self._stats = StatsPanel()
         self._stats.retry_requested.connect(self.retry_requested)
@@ -407,7 +514,9 @@ class StatusScreen(QWidget):
         layout.addWidget(self._content)
         # 알림센터는 글 하나만 보이는 모습(설정을 불러오는 중 등)에서도 그대로 보인다(설계서 4.5).
         self.alert_center = AlertCenter()
-        layout.addWidget(self.alert_center)
+        alert_card = Card("statusAlertCard")
+        alert_card.body.addWidget(self.alert_center)
+        layout.addWidget(alert_card)
         layout.addStretch(1)
         self._content.hide()
 
@@ -442,10 +551,7 @@ class StatusScreen(QWidget):
                 card = CoinCard(market)
                 card.retry_requested.connect(self.retry_requested)
                 self._cards[market] = card
-        for market in self._coins:
-            self._cards_layout.removeWidget(self._cards[market])
-        for market in self._coins:
-            self._cards_layout.addWidget(self._cards[market])
+        self._cards_holder.set_cards([self._cards[market] for market in self._coins])
 
     def _render_stats(self) -> None:
         market = self._stats.chosen_market()

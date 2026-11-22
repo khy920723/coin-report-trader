@@ -33,6 +33,7 @@ from coin_report_trader.core import (
 from coin_report_trader.ui import MainWindow, create_main_window, current_screen, screen_widget
 from coin_report_trader.ui import main_window as main_window_module
 from coin_report_trader.ui.dialogs import build_confirm_box
+from coin_report_trader.ui.info_icon import InfoIcon
 
 AAA = Market("KRW-AAA", "가짜에이", caution=False)
 BBB = Market("KRW-BBB", "가짜비", caution=True)
@@ -155,6 +156,25 @@ def _first(window: MainWindow) -> QWidget:
 
 def _settings(window: MainWindow) -> QWidget:
     return screen_widget(window, ScreenId.SETTINGS)
+
+
+def _tip(screen: QWidget, name: str) -> str | None:
+    """'ⓘ'가 보이면 그 툴팁 글, 숨겨져 있으면 `None`. 읽는 설명도 같아야 한다."""
+    icon = _find(screen, InfoIcon, name)
+    assert icon.accessibleDescription() == icon.toolTip()
+    return None if icon.isHidden() else icon.toolTip()
+
+
+def _flat(layout) -> list[str]:
+    """레이아웃 안 위젯의 `objectName`을 놓인 차례대로(안쪽 레이아웃까지)."""
+    names: list[str] = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        if item.widget() is not None:
+            names.append(item.widget().objectName())
+        elif item.layout() is not None:
+            names.extend(_flat(item.layout()))
+    return names
 
 
 def _shown_text(screen: QWidget, name: str) -> str | None:
@@ -678,24 +698,23 @@ def test_first_setup_after_it_is_done_shows_the_texts_and_the_settings_button(ma
 
 def test_first_setup_read_first_texts_are_the_design_texts(make_window):
     first = _first(make_window())
-    assert _find(first, QLabel, "screenNotice").text() == (
-        "이 프로그램은 투자 자문이 아닙니다. AI 판단은 틀릴 수 있습니다."
+    # 세 글은 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이고, 옛 글 라벨은 없다(M1 명세 3.14.6).
+    assert _find(first, QLabel, "firstSetupNoticesTitle").text() == "꼭 읽을 글"
+    assert _tip(first, "firstSetupNoticesInfo") == "\n".join(
+        (
+            "• 이 프로그램은 투자 자문이 아닙니다. AI 판단은 틀릴 수 있습니다.",
+            "• 프로그램이나 PC가 꺼져 있거나 인터넷이 끊기면 디스코드 알림도 가지 않습니다. "
+            "인터넷이 끊긴 동안 보내지 못한 알림은 다시 이어져도 디스코드로 가지 않습니다"
+            "(알림센터에서 봅니다).",
+            "• 디스코드 주소를 넣지 않은 분류의 알림은 디스코드로 가지 않습니다"
+            "(오류 알림의 주소가 비어 있으면 오류 멈춤의 "
+            '"지금 손절이 동작하지 않음"도 가지 않습니다).',
+        )
     )
-    assert _find(first, QLabel, "noticeDiscordOffline").text() == (
-        "프로그램이나 PC가 꺼져 있거나 인터넷이 끊기면 디스코드 알림도 가지 않습니다. "
-        "인터넷이 끊긴 동안 보내지 못한 알림은 다시 이어져도 디스코드로 가지 않습니다"
-        "(알림센터에서 봅니다)."
-    )
-    assert _find(first, QLabel, "noticeDiscordNoAddress").text() == (
-        "디스코드 주소를 넣지 않은 분류의 알림은 디스코드로 가지 않습니다"
-        '(오류 알림의 주소가 비어 있으면 오류 멈춤의 "지금 손절이 동작하지 않음"도 가지 않습니다).'
-    )
-    layout = _find(first, QWidget, "firstSetupNotices").layout()
-    assert [layout.itemAt(i).widget().objectName() for i in range(layout.count())] == [
-        "screenNotice",
-        "noticeDiscordOffline",
-        "noticeDiscordNoAddress",
-    ]
+    for old in ("screenNotice", "noticeDiscordOffline", "noticeDiscordNoAddress"):
+        assert first.findChild(QLabel, old) is None
+    names = _flat(_find(first, QWidget, "firstSetupNotices").layout())
+    assert names == ["firstSetupNoticesTitle", "firstSetupNoticesInfo"]
     # 이 마일스톤에 없는 글과 칸은 없다.
     texts = [label.text() for label in first.findChildren(QLabel)]
     assert not any("모의매매를 시작합니다" in text for text in texts)
@@ -712,12 +731,13 @@ def test_retention_choice_has_three_options_and_the_two_notices(make_window, pre
     ]
     assert options == ["7일", "30일", "90일"]
     assert _days(screen, prefix) is None  # 미리 고른 값이 없다
-    assert _find(screen, QLabel, f"{prefix}RetentionNoticeKeep").text() == (
-        "생긴 때부터 고른 기간이 지난 알림은 영구히 지워집니다."
+    # 두 글은 제목 옆 'ⓘ'의 툴팁이고, 옛 글 라벨은 없다(M1 명세 3.14.6).
+    assert _tip(screen, f"{prefix}RetentionInfo") == (
+        "• 생긴 때부터 고른 기간이 지난 알림은 영구히 지워집니다.\n"
+        "• 기간을 줄이면 새 기간이 지난 알림도 지워집니다."
     )
-    assert _find(screen, QLabel, f"{prefix}RetentionNoticeShorten").text() == (
-        "기간을 줄이면 새 기간이 지난 알림도 지워집니다."
-    )
+    assert screen.findChild(QLabel, f"{prefix}RetentionNoticeKeep") is None
+    assert screen.findChild(QLabel, f"{prefix}RetentionNoticeShorten") is None
     required = _find(screen, QLabel, f"{prefix}RetentionTitle").text()
     assert required == ("알림 보관 기간*" if prefix == "firstSetup" else "알림 보관 기간")
     assert _find(screen, QLabel, f"{prefix}CoinsTitle").text() == (

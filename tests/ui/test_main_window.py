@@ -3,7 +3,7 @@
 import os
 
 import pytest
-from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow, QWidget
+from PySide6.QtWidgets import QLabel, QListWidget, QMainWindow
 
 from coin_report_trader.core import SCREEN_TITLES, WINDOW_TITLE, ScreenId, UiContext
 from coin_report_trader.ui import (
@@ -16,6 +16,7 @@ from coin_report_trader.ui import (
     select_screen,
     status_line_text,
 )
+from coin_report_trader.ui.info_icon import InfoIcon
 
 # QApplication은 qapp 픽스처가 처음 쓸 때 만들어지므로, 그 전에 offscreen을 고른다.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -78,16 +79,19 @@ def test_only_first_setup_shows_advice_notice(window):
     assert ADVICE_NOTICE == "이 프로그램은 투자 자문이 아닙니다. AI 판단은 틀릴 수 있습니다."
     for screen_id in ScreenId:
         widget = screen_widget(window, screen_id)
-        notice = widget.findChild(QLabel, "screenNotice")
+        # 늘 보이는 글 라벨은 없고, 처음 설정의 '꼭 읽을 글' 제목 옆 'ⓘ'의 툴팁이 가장 앞에 둔다
+        # (M1 명세 3.14.6). 10 자리의 글은 가(투자 자문), 마, 바 순서다(설계서 10.2).
+        assert widget.findChild(QLabel, "screenNotice") is None
+        info = widget.findChild(InfoIcon, "firstSetupNoticesInfo")
         if screen_id is ScreenId.FIRST_SETUP:
-            assert notice is not None
-            assert notice.text() == ADVICE_NOTICE
-            # 10 자리의 글은 가(투자 자문), 마, 바 순서다(설계서 10.2).
-            layout = widget.findChild(QWidget, "firstSetupNotices").layout()
-            names = [layout.itemAt(i).widget().objectName() for i in range(layout.count())]
-            assert names == ["screenNotice", "noticeDiscordOffline", "noticeDiscordNoAddress"]
+            assert info is not None
+            lines = info.toolTip().split("\n")
+            assert lines[0] == f"• {ADVICE_NOTICE}"
+            assert len(lines) == 3
+            assert info.accessibleDescription() == info.toolTip()
+            assert info.accessibleName() == "꼭 읽을 글 설명"
         else:
-            assert notice is None
+            assert info is None
 
 
 def test_first_screen_is_first_setup(window):

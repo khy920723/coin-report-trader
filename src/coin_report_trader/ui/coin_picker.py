@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from coin_report_trader.core import Market, coin_label
+from coin_report_trader.ui import theme
+from coin_report_trader.ui.icons import search_icon
 from coin_report_trader.ui.state import PickerKind, PickerMode, Tone
 from coin_report_trader.ui.texts import (
     CAUTION_LABEL,
@@ -39,7 +41,7 @@ from coin_report_trader.ui.texts import (
     SEARCH_LABEL,
     SEARCH_PLACEHOLDER,
 )
-from coin_report_trader.ui.widgets import make_label
+from coin_report_trader.ui.widgets import make_label, set_role
 
 MAX_COINS = 3
 _MESSAGE_PAGE = 0
@@ -72,12 +74,18 @@ class CoinPicker(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(make_label(title, f"{prefix}CoinsTitle"))
+        layout.setSpacing(theme.FIELD_GAP)
+        coins_title = make_label(title, f"{prefix}CoinsTitle")
+        set_role(coins_title, theme.ROLE_GROUP)
+        layout.addWidget(coins_title)
         search_row = QHBoxLayout()
-        search_row.addWidget(make_label(SEARCH_LABEL, f"{prefix}CoinSearchTitle"))
+        search_title = make_label(SEARCH_LABEL, f"{prefix}CoinSearchTitle")
+        set_role(search_title, theme.ROLE_SUB)
+        search_row.addWidget(search_title)
         self._search = QLineEdit()
         self._search.setObjectName(f"{prefix}CoinSearch")
         self._search.setPlaceholderText(SEARCH_PLACEHOLDER)
+        self._search.addAction(search_icon(), QLineEdit.ActionPosition.LeadingPosition)
         self._search.textChanged.connect(self._apply_filter)
         search_row.addWidget(self._search, 1)
         layout.addLayout(search_row)
@@ -216,11 +224,11 @@ class CoinPicker(QWidget):
             box.clicked.connect(lambda checked, code=market.market: self._on_clicked(code, checked))
             row_layout.addWidget(box)
             if market.caution:
-                row_layout.addWidget(
-                    make_label(
-                        CAUTION_LABEL, f"{self._prefix}CoinCaution_{market.market}", Tone.WARNING
-                    )
+                caution = make_label(
+                    CAUTION_LABEL, f"{self._prefix}CoinCaution_{market.market}", Tone.WARNING
                 )
+                caution.setStyleSheet(f"color: {theme.CAUTION};")  # '주의' 색(5-1 판 2)
+                row_layout.addWidget(caution)
             row_layout.addStretch(1)
             self._rows_layout.insertWidget(self._rows_layout.count() - 1, row)
             self._rows[market.market] = row

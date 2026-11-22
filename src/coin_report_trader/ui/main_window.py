@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QScrollArea,
     QStackedWidget,
@@ -43,8 +44,10 @@ from coin_report_trader.core.texts import (
     blocked_markets_text,
     kst_when_text,
 )
+from coin_report_trader.ui import theme
 from coin_report_trader.ui.dialogs import ask_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
+from coin_report_trader.ui.icons import screen_icon
 from coin_report_trader.ui.screens import build_screen, screen_object_name
 from coin_report_trader.ui.settings_screen import SettingsScreen
 from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
@@ -142,6 +145,7 @@ class MainWindow(QMainWindow):
 
         self.setObjectName(WINDOW_NAME)
         self.setWindowTitle(WINDOW_TITLE)
+        self.setStyleSheet(theme.app_stylesheet())
 
         nav = QListWidget()
         nav.setObjectName(NAV_NAME)
@@ -151,7 +155,7 @@ class MainWindow(QMainWindow):
         self._settings = SettingsScreen()
         self._status = StatusScreen()
         for screen_id in ScreenId:
-            nav.addItem(SCREEN_TITLES[screen_id])
+            nav.addItem(QListWidgetItem(screen_icon(screen_id), SCREEN_TITLES[screen_id]))
             if screen_id is ScreenId.FIRST_SETUP:
                 stack.addWidget(_scroll_page(screen_id, self._first_setup))
             elif screen_id is ScreenId.SETTINGS:
@@ -164,11 +168,15 @@ class MainWindow(QMainWindow):
         nav.itemClicked.connect(self._on_nav_clicked)
         nav.setCurrentRow(0)
         nav.setMaximumWidth(160)
+        nav.setIconSize(QSize(theme.ICON_SIZE, theme.ICON_SIZE))
+        nav.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._nav = nav
         self._stack = stack
 
         central = QWidget()
         layout = QHBoxLayout(central)
+        layout.setContentsMargins(theme.FIELD_GAP, theme.FIELD_GAP, 0, 0)
+        layout.setSpacing(0)
         layout.addWidget(nav)
         layout.addWidget(stack, 1)
         self.setCentralWidget(central)

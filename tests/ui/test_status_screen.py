@@ -23,6 +23,7 @@ from coin_report_trader.core import (
     UiContext,
 )
 from coin_report_trader.ui import MainWindow, create_main_window, current_screen, screen_widget
+from coin_report_trader.ui.info_icon import InfoIcon
 
 LOADING = "불러오는 중"
 CANDLES_LOADING = "봉을 받는 중입니다."
@@ -166,6 +167,25 @@ def _tone(screen: QWidget, name: str) -> str:
 
 def _shown(screen: QWidget, name: str) -> bool:
     return not _find(screen, QWidget, name).isHidden()
+
+
+def _tip(screen: QWidget, name: str) -> str | None:
+    """'ⓘ'(옮긴 보장 아님 글)가 보이면 그 툴팁 글, 숨겨져 있으면 `None`. 읽는 설명도 같아야 한다."""
+    icon = _find(screen, InfoIcon, name)
+    assert icon.accessibleDescription() == icon.toolTip()
+    return None if icon.isHidden() else icon.toolTip()
+
+
+def _flat(layout) -> list[str]:
+    """레이아웃 안 위젯의 `objectName`을 놓인 차례대로(안쪽 레이아웃까지)."""
+    names: list[str] = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        if item.widget() is not None:
+            names.append(item.widget().objectName())
+        elif item.layout() is not None:
+            names.extend(_flat(item.layout()))
+    return names
 
 
 def _card_names(screen: QWidget) -> list[str]:
@@ -322,7 +342,7 @@ def test_no_data_without_values_and_never_fetched(make_window):
     assert _text(screen, "statusStatsFetched") is None
     assert not _shown(screen, "statusCoinRetry_KRW-AAA")
     assert _shown(screen, "statusStatsRetry")
-    assert _text(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
+    assert _tip(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
 
 
 def test_no_data_without_values_but_fetched_says_insufficient_with_the_fetched_line(make_window):
@@ -334,7 +354,7 @@ def test_no_data_without_values_but_fetched_says_insufficient_with_the_fetched_l
     assert not _shown(screen, "statusStatsTable")
     assert _text(screen, "statusStatsFetched") == FETCHED_LINE
     assert not _shown(screen, "statusCoinRetry_KRW-AAA")
-    assert _text(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
+    assert _tip(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
 
 
 def test_no_data_with_a_short_stats_draws_the_rows_with_insufficient(make_window):
@@ -520,7 +540,7 @@ def test_the_no_values_table_of_the_design(make_window, index, incomplete):
     assert _text(screen, "statusCoinIncomplete_KRW-AAA") == expected
     assert _shown(screen, "statusStatsRetry")
     assert _shown(screen, "statusCoinRetry_KRW-AAA") is indicator_retry
-    assert _text(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
+    assert _tip(screen, "statusCoinDisclaimer_KRW-AAA") == DISCLAIMER
 
 
 # --- 다시 시도 ---
