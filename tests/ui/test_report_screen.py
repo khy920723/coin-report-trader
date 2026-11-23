@@ -613,14 +613,11 @@ def test_no_empty_section_titles_are_left_when_there_is_nothing_to_show(window):
 # --- 'ⓘ'와 색 ---
 
 
-def test_the_three_icons_hold_the_moved_texts(window):
+def test_the_two_icons_hold_the_moved_texts(window):
     screen = _show(window, _round(12))
+    # 판단의 'ⓘ'(`reportDecisionInfo`)는 3단계에서 없앴다(M3 명세 3.17.3).
+    assert screen.findChild(InfoIcon, "reportDecisionInfo") is None
     for name, title, text in (
-        (
-            "reportDecisionInfo",
-            "판단",
-            "예측 가격은 보여 주는 값이고 주문을 정하는 데 쓰지 않습니다.",
-        ),
         ("reportUsageInfo", "사용량과 걸린 시간", "부분마다의 토큰은 나눠 재지 못했습니다."),
         (
             "reportNoticesInfo",

@@ -36,12 +36,16 @@ from coin_report_trader.core import (
     CoinView,
     LoadState,
     MarketsView,
+    PerformanceView,
     ReportListView,
     ReportView,
+    RoundNowView,
     SaveResult,
     ScreenId,
     SettingsView,
+    TodayView,
     TradeSettings,
+    TradeStatusView,
     UiActions,
     UiContext,
     UiUpdate,
@@ -80,17 +84,23 @@ from coin_report_trader.ui.texts import (
     REPORT_BEFORE_FIRST_SETUP,
     REPORT_NONE,
     RETENTION_SHRINK_TITLE,
+    SELL_ALL_BODY,
+    SELL_ALL_TITLE,
     SETTINGS_BEFORE_FIRST_SETUP,
     STATUS_BEFORE_FIRST_SETUP,
+    STATUS_BEFORE_SETUP_MIDDLE,
+    STATUS_PAUSED_MIDDLE,
     WEBHOOK_DELETE_TITLE,
     alert_clear_body,
     below_stop_body,
     holding_remove_body,
     price_text,
     retention_shrink_body,
-    status_nav_text,
+    status_line,
+    status_next_round_middle,
     webhook_delete_body,
 )
+from coin_report_trader.ui.trade_band import TradeBand
 
 WINDOW_NAME = "mainWindow"
 NAV_NAME = "screenNav"
@@ -101,6 +111,11 @@ HELP_KEY = "F1"
 STACK_NAME = "screenStack"
 STATUS_LINE_NAME = "statusLine"
 
+COIN_CARD_CODES = (
+    "A-1", "A-2", "A-3", "A-4", "A-8", "A-9", "A-10", "A-11", "A-13", "A-17", "A-24", "A-25",
+    "A-30",
+)  # fmt: skip
+"""누르면 현황 화면의 그 코인 칸으로 가는 알림(M2 명세 3.12.6, M3 명세 3.17.6)."""
 SAVED_MESSAGE_MS = 3000
 """설정 화면의 "저장했습니다."가 보이는 시간(밀리초). 시험은 이 값을 줄여 쓴다."""
 
@@ -139,8 +154,27 @@ def _scroll_page(screen_id: ScreenId, screen: QWidget) -> QScrollArea:
     return page
 
 
-def status_line_text(context: UiContext) -> str:
-    return f"판 v{context.version} · 매매 기능 없음 · 자료 폴더 {context.data_dir_display}"
+def status_line_text(
+    context: UiContext, status: TradeStatusView | None = None, *, before_setup: bool = False
+) -> str:
+    """상태 줄(SCR-00-2. M3 명세 3.17.1): "판 v{판} · 다음 예정 시각 {시각} · 자료 폴더 {경로}".
+
+    멈춤이나 오류 멈춤이면 가운데가 "멈춤 동안 회차를 돌리지 않음", 처음 설정 전이면 "처음 설정
+    전"이다. 값이 오기 전의 시각은 "-"다.
+    """
+    if before_setup:
+        middle = STATUS_BEFORE_SETUP_MIDDLE
+    elif status is not None and (status.user_paused or status.error_paused):
+        middle = STATUS_PAUSED_MIDDLE
+    else:
+        when = None
+        if status is not None and status.next_round_utc is not None:
+            try:
+                when = kst_when_text(status.next_round_utc, status.as_of)
+            except ValueError:
+                when = None
+        middle = status_next_round_middle(when)
+    return status_line(context.version, middle, context.data_dir_display)
 
 
 class MainWindow(QMainWindow):
@@ -179,6 +213,10 @@ class MainWindow(QMainWindow):
         self._report_wanted: int | None = None
         """다른 화면에서 열 때 고를 `report_id`. 받은 목록에 있을 때만 쓴다."""
         self._trade_views: dict[str, CoinTradeView] = {}
+        self._trade_status: TradeStatusView | None = None
+        self._today: TodayView | None = None
+        self._round_now: RoundNowView | None = None
+        self._performance: PerformanceView | None = None
         self._last_save: dict[str, object] | None = None
         """마지막으로 부른 `save_settings`의 인자. 손절선 아래 확인 뒤 다시 저장할 때 쓴다."""
         self._accepted_below_stop: tuple[str, ...] = ()
@@ -234,18 +272,29 @@ class MainWindow(QMainWindow):
         self._help_button = help_button
         self._help: HelpWindow | None = None
 
+        # 오른쪽: 상태 띠(화면 자리와 함께 넘기지 않고 늘 보인다) 아래에 화면 자리(M3 명세 3.17.1).
+        self._band = TradeBand()
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(theme.FIELD_GAP)
+        right_layout.addWidget(self._band)
+        right_layout.addWidget(stack, 1)
+
         central = QWidget()
         layout = QHBoxLayout(central)
         layout.setContentsMargins(theme.FIELD_GAP, theme.FIELD_GAP, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(left)
-        layout.addWidget(stack, 1)
+        layout.addWidget(right, 1)
         self.setCentralWidget(central)
 
+        self._context = context
         status = QLabel(status_line_text(context))
         status.setObjectName(STATUS_LINE_NAME)
         status.setTextFormat(Qt.TextFormat.PlainText)
         self.statusBar().addWidget(status, 1)
+        self._status_label = status
 
         self._auto_size = QSize()
         self._fit_to_screen()
@@ -274,6 +323,11 @@ class MainWindow(QMainWindow):
         center.delete_webhook_requested.connect(self._on_webhook_delete)
         center.send_test_requested.connect(self._on_send_test)
         center.go_requested.connect(self._go_alert)
+        self._band.pause_requested.connect(self._on_pause)
+        self._band.sell_all_requested.connect(self._on_sell_all)
+        self._band.resume_user_requested.connect(self._on_resume_user)
+        self._band.resume_error_requested.connect(self._on_resume_error)
+        self._band.alerts_requested.connect(lambda: self._open_screen(ScreenId.STATUS))
         stack.currentChanged.connect(self._on_screen_changed)
         for index, screen_id in enumerate(ScreenId):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
@@ -338,9 +392,22 @@ class MainWindow(QMainWindow):
         elif isinstance(update, ReportView):
             self._on_report_view(update)
         elif isinstance(update, CoinTradeView):
-            self._trade_views[update.market] = update  # 보유 코인을 뺄 때의 확인에 쓴다(3.11.4)
+            self._trade_views[update.market] = update  # 코인 칸과 보유 코인을 뺄 때의 확인(3.11.4)
+            self._update()
         elif isinstance(update, BelowStopView):
             self._on_below_stop(update)
+        elif isinstance(update, TradeStatusView):
+            self._trade_status = update
+            self._update()
+        elif isinstance(update, TodayView):
+            self._today = update
+            self._update()
+        elif isinstance(update, RoundNowView):
+            self._round_now = update
+            self._update()
+        elif isinstance(update, PerformanceView):
+            self._performance = update
+            self._update()
 
     def set_confirm_handler(self, handler: ConfirmHandler | None) -> None:
         """확인 창 대신 `handler(제목, 본문)`을 부르게 한다. `None`이면 진짜 확인 창을 띄운다.
@@ -603,6 +670,26 @@ class MainWindow(QMainWindow):
             **arguments,  # type: ignore[arg-type]
         )
 
+    def _on_pause(self) -> None:
+        """"멈춤": 확인 창 없이 바로 멈춘다(M3 명세 3.10.1)."""
+        if self._actions is not None:
+            self._actions.pause()
+
+    def _on_sell_all(self) -> None:
+        """"멈추고 전량 매도": SCR-06-7 뒤에 `pause_and_sell_all()`(M3 명세 3.10.3)."""
+        if self._actions is None:
+            return
+        if self._ask_confirm(SELL_ALL_TITLE, SELL_ALL_BODY):
+            self._actions.pause_and_sell_all()
+
+    def _on_resume_user(self) -> None:
+        if self._actions is not None:
+            self._actions.resume_user()
+
+    def _on_resume_error(self) -> None:
+        if self._actions is not None:
+            self._actions.resume_error()
+
     def _on_nav_clicked(self, item) -> None:
         """사용자가 화면 이름 목록의 줄을 눌렀다. 현황이면 보지 않은 알림이 있는 맨 앞 탭을 연다."""
         if self._nav.row(item) == list(ScreenId).index(ScreenId.STATUS):
@@ -824,8 +911,20 @@ class MainWindow(QMainWindow):
         code = alert.code
         done = self._first_setup_done()
         setup = ScreenId.SETTINGS if done else ScreenId.FIRST_SETUP
-        if code in ("A-1", "A-2", "A-17", "A-30"):
+        if code in COIN_CARD_CODES:
             self._go_status_coin(alert.coin)
+        elif code == "A-12":  # 현황 화면의 오늘 요약(M3 명세 3.17.6)
+            select_screen(self, ScreenId.STATUS)
+            self._scroll_page_to(self._status, self._status.today_widget())
+        elif code == "A-23":  # 현황 화면 맨 위
+            select_screen(self, ScreenId.STATUS)
+            self._scroll_page_to(self._status, None)
+        elif code == "A-15":  # 설정 화면의 걸린 칸
+            select_screen(self, ScreenId.SETTINGS)
+            self._scroll_page_to(self._settings, self._settings.first_error_widget())
+        elif code == "A-16":  # 설정 화면의 코인과 예산
+            select_screen(self, ScreenId.SETTINGS)
+            self._scroll_page_to(self._settings, self._settings.coins_widget())
         elif code in ("A-18", "A-19"):
             select_screen(self, ScreenId.REPORTS)
         elif code == "A-26":
@@ -852,7 +951,12 @@ class MainWindow(QMainWindow):
         self._scroll_status_to(card)
 
     def _scroll_status_to(self, widget: QWidget | None) -> None:
-        page = self._status.parentWidget()
+        self._scroll_page_to(self._status, widget)
+
+    @staticmethod
+    def _scroll_page_to(screen: QWidget, widget: QWidget | None) -> None:
+        """그 화면의 자리를 `widget`이 보이게(없으면 맨 위로) 넘긴다."""
+        page = screen.parentWidget()
         scroll = page.parentWidget() if page is not None else None
         if not isinstance(scroll, QScrollArea):
             return
@@ -959,11 +1063,22 @@ class MainWindow(QMainWindow):
             message=self._status_message(),
             coins=self._saved.coins if self._saved is not None else (),
             views=self._coin_views,
+            trade_views=self._trade_views,
+            today=self._today,
+            round_now=self._round_now,
+            performance=self._performance,
+            status=self._trade_status,
         )
-        status_index = list(ScreenId).index(ScreenId.STATUS)
+        # 화면 이름 목록에는 " ({n})"이 없고, 보지 않은 알림의 수는 상태 띠의 "알림 {n}건"이다.
         unseen = sum(self._alerts.unseen.values()) if self._alerts is not None else 0
-        self._nav.item(status_index).setText(
-            status_nav_text(SCREEN_TITLES[ScreenId.STATUS], unseen)
+        self._band.render(self._trade_status, setup_done=done, unseen=unseen)
+        self._reports.set_paused(
+            self._trade_status is not None
+            and (self._trade_status.user_paused or self._trade_status.error_paused)
+        )
+        before_setup = self._saved is not None and not done
+        self._status_label.setText(
+            status_line_text(self._context, self._trade_status, before_setup=before_setup)
         )
         active = current_screen(self) is ScreenId.STATUS
         pressed = bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
@@ -1119,7 +1234,18 @@ def create_main_window(context: UiContext) -> MainWindow:
       (`QListWidget`), 회차 `reportRounds`(`QListWidget`), 글 하나만 보이는 모습 `reportMessage`,
       `reportAiMark`, 오른쪽 `reportDetailScroll`(`QScrollArea`)의 묶음 `reportLastResult`,
       `reportChecks`, `reportDecision`, `reportEvidence`, `reportSources`, `reportUsage`,
-      `reportNotices`, 'ⓘ' `reportDecisionInfo`, `reportUsageInfo`, `reportNoticesInfo`.
+      `reportNotices`, 'ⓘ' `reportUsageInfo`, `reportNoticesInfo`(판단의 'ⓘ'는 3단계에서 없앴다).
+    - 3단계의 공통 틀(M3 명세 3.17.1): 화면 자리 위의 상태 띠 `tradeBand`(칸 `tradeBandMode`,
+      `tradeBandPause`, `tradeBandStopOff`, `tradeBandStarting`, 누르는 칸 `tradeBandAlerts`
+      "알림 {n}건"), 단추 `pauseButton`, `sellAllButton`(SCR-06-7 뒤에 `pause_and_sell_all`),
+      `resumeUserButton`, `resumeErrorButton`, 곁의 글 `tradeBandResumeNote`,
+      `tradeBandSellAllNote`. 화면 이름 목록에는 " ({n})"이 없다.
+    - 3단계의 현황(M3 명세 3.17.2): 제목 옆 'ⓘ' `statusIntroInfo`, 오류 멈춤의 줄
+      `statusErrorPause`, 오늘 요약 `statusToday`, 코인 칸의 3단계 줄 `statusCoinTrade_<m>`,
+      지금 회차 `statusRoundNow`, 모의 성적 `statusPerformance`와 'ⓘ' `statusPerformanceInfo`
+      (이름은 `trade_status.py`의 문서 문자열에 모두 있다).
+    - 3단계의 보고서(M3 명세 3.17.3): 판단으로 낸 주문 `reportOrder`, 주문까지 걸린 시간
+      `reportOrderElapsed`, 멈춤의 맨 위 줄 `reportPause`.
     - 현황 자리의 "다시 시도"는 `retry_candles()`를 부른다. 처음 설정을 마치고 설정을 읽은 뒤에만
       불리고, 그 밖의 때에는 단추가 보이지 않는다.
     """

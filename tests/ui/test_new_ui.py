@@ -259,8 +259,8 @@ def test_the_first_setup_and_settings_cards_are_the_eight_and_the_seven(window):
     # 코인, 예산과 투자 비율, 매수 비율, 손절과 한도, 봉 단위·봉 개수, Claude 모델, 그 밖의 값
     assert len(settings.findChildren(Card)) == 7
     status = _filled(window) and screen_widget(window, ScreenId.STATUS)
-    # 코인 카드 둘, 봉 통계 카드, 알림센터 카드.
-    assert len(status.findChildren(Card)) == 4
+    # 오늘 요약, 코인 카드 둘, 지금 회차, 모의 성적, 봉 통계 카드, 알림센터 카드(M3 명세 3.17.2).
+    assert len(status.findChildren(Card)) == 7
 
 
 # --- 단추와 글의 모양 ---

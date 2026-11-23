@@ -8,8 +8,9 @@
 `reportCoin`, `reportRounds`, 상태별 글 `reportMessage`, `reportAiMark`(4),
 `reportLastResult`(5), `reportChecks`(11), `reportDecision`(6), `reportEvidence`(8),
 `reportSources`(9), `reportUsage`(12), `reportNotices`(10), 4~12를 담는 넘김 `reportDetailScroll`.
-'ⓘ'는 `reportDecisionInfo`, `reportUsageInfo`, `reportNoticesInfo`다. AI가 쓴 글과 출처는 서식 없는
-글로만 보인다(링크로 바꾸지 않는다).
+'ⓘ'는 `reportUsageInfo`, `reportNoticesInfo`다(판단의 'ⓘ'는 3단계에서 없앴다).
+판단 아래 `reportOrder`, 사용량의 `reportOrderElapsed`, 맨 위의 멈춤 줄 `reportPause`는 3단계의
+자리다. AI가 쓴 글과 출처는 서식 없는 글로만 보인다(링크로 바꾸지 않는다).
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -57,13 +58,14 @@ from coin_report_trader.ui.texts import (
     REPORT_CHECK_COLUMNS,
     REPORT_CHECKS_TITLE,
     REPORT_COIN_TITLE,
-    REPORT_DECISION_NOTE,
     REPORT_DECISION_TITLE,
+    REPORT_DISCARDED,
     REPORT_EVIDENCE_TITLE,
     REPORT_FINAL_PART,
     REPORT_INTERRUPTED,
     REPORT_LAST_RESULT_TITLE,
     REPORT_NOTICES_TITLE,
+    REPORT_PAUSE_LINE,
     REPORT_PROGRAM_VALUES,
     REPORT_ROUNDS_TITLE,
     REPORT_RUNNING,
@@ -74,6 +76,9 @@ from coin_report_trader.ui.texts import (
     report_elapsed_text,
     report_failed_text,
     report_last_price_text,
+    report_no_order_text,
+    report_order_elapsed_text,
+    report_order_text,
     report_round_text,
     report_skipped_text,
     report_tokens_text,
@@ -102,6 +107,8 @@ def round_end_text(item: RoundItem) -> str:
         return "쉼"
     if state is ReportState.INTERRUPTED:
         return "끊김"
+    if state is ReportState.DISCARDED:
+        return "멈춤으로 버림"
     return "만드는 중"
 
 
@@ -180,6 +187,14 @@ class ReportScreen(QWidget):
         self._ai_status = make_label("", "reportAiStatus")
         self._ai_status.hide()
         layout.addWidget(self._ai_status)
+        # 멈춤이나 오류 멈춤이면 맨 위 줄(SCR-03-13. M3 명세 3.17.3). 'caution' 테두리와 글이다.
+        self._pause_line = make_label(REPORT_PAUSE_LINE, "reportPause")
+        self._pause_line.setStyleSheet(
+            f"color: {theme.CAUTION}; border: 1px solid {theme.CAUTION};"
+            f" border-radius: {theme.BUTTON_RADIUS}px; padding: 2px {theme.FIELD_GAP}px;"
+        )
+        self._pause_line.hide()
+        layout.addWidget(self._pause_line)
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
@@ -236,11 +251,10 @@ class ReportScreen(QWidget):
         column.addLayout(mark_row)
         self._last = _Section("reportLastResult", REPORT_LAST_RESULT_TITLE)
         self._checks = _Section("reportChecks", REPORT_CHECKS_TITLE)
-        self._decision = _Section(
-            "reportDecision",
-            REPORT_DECISION_TITLE,
-            InfoIcon(REPORT_DECISION_TITLE, REPORT_DECISION_NOTE, "reportDecisionInfo"),
-        )
+        # 판단의 'ⓘ'(`reportDecisionInfo`)는 3단계에서 없앤다(M3 명세 3.17.3).
+        self._decision = _Section("reportDecision", REPORT_DECISION_TITLE)
+        self._order = make_label("", "reportOrder")  # SCR-03-14. 판단 바로 아래
+        self._order.hide()
         self._evidence = _Section("reportEvidence", REPORT_EVIDENCE_TITLE)
         self._sources = _Section("reportSources", REPORT_SOURCES_TITLE)
         self._usage = _Section(
@@ -264,6 +278,8 @@ class ReportScreen(QWidget):
         )
         for section in self._sections:
             column.addWidget(section)
+            if section is self._decision:
+                column.addWidget(self._order)
         column.addStretch(1)
         scroll.setWidget(detail)
         self._hide_detail()
@@ -284,6 +300,10 @@ class ReportScreen(QWidget):
         self._ai_status.setStyleSheet(f"color: {theme.ERROR};" if warning else "")
         self._ai_status.setProperty("tone", "warning" if warning else "normal")
         self._ai_status.show()
+
+    def set_paused(self, paused: bool) -> None:
+        """멈춤이나 오류 멈춤이면 맨 위에 "멈춤 동안 새 보고서를 받지 않습니다."가 보인다."""
+        self._pause_line.setVisible(paused)
 
     def set_coins(self, coins: tuple[str, ...]) -> None:
         """코인 고르기를 채운다(신호를 내지 않는다). 고르던 코인이 아직 있으면 그대로 둔다."""
@@ -357,6 +377,12 @@ class ReportScreen(QWidget):
         elif state is ReportState.INTERRUPTED:
             self._show_message(Message(REPORT_INTERRUPTED))
             self._hide_detail()
+        elif state is ReportState.DISCARDED:
+            # 4~12 대신 이 글 하나. 12(사용량과 걸린 시간)는 보인다(M3 명세 3.17.3).
+            self._show_message(Message(REPORT_DISCARDED))
+            self._hide_detail()
+            self._fill_usage(view)
+            self._usage.show()
         else:
             self._show_message(None)
             self._fill_detail(view)
@@ -387,6 +413,7 @@ class ReportScreen(QWidget):
 
     def _hide_detail(self) -> None:
         self._ai_mark.hide()
+        self._order.hide()
         for section in self._sections:
             section.hide()
 
@@ -395,6 +422,7 @@ class ReportScreen(QWidget):
         self._fill_last(view)
         self._fill_checks(view)
         self._fill_decision(view)
+        self._fill_order(view)
         self._fill_evidence(view)
         self._fill_sources(view)
         self._fill_usage(view)
@@ -466,6 +494,16 @@ class ReportScreen(QWidget):
         body.addWidget(_line(f"매수 제안가: {_price_text(view.buy_price)}"))
         body.addWidget(_line(f"매도 제안가: {_price_text(view.sell_price)}"))
 
+    def _fill_order(self, view: ReportView) -> None:
+        """SCR-03-14: "이 판단으로 낸 주문: …"나 "주문하지 않은 까닭: …"(둘 다 없으면 숨김)."""
+        if view.order_summary:
+            self._order.setText(report_order_text(view.order_summary))
+        elif view.no_order_reason:
+            self._order.setText(report_no_order_text(view.no_order_reason))
+        else:
+            self._order.setText("")
+        self._order.setVisible(bool(self._order.text()))
+
     def _fill_evidence(self, view: ReportView) -> None:
         self._evidence.setVisible(bool(view.evidence))
         if not view.evidence:
@@ -517,3 +555,7 @@ class ReportScreen(QWidget):
             body.addWidget(_line(f"보고서까지 걸린 시간: {NO_VALUE}"))
         else:
             body.addWidget(_line(report_elapsed_text(view.elapsed_report_seconds)))
+        if view.elapsed_order_seconds is not None:  # 없으면 이 줄을 보이지 않는다(REQ-PERF-001)
+            order = _line(report_order_elapsed_text(view.elapsed_order_seconds))
+            order.setObjectName("reportOrderElapsed")
+            body.addWidget(order)

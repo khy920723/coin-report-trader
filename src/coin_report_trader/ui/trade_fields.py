@@ -562,6 +562,22 @@ class TradeFields(QObject):
 
     # --- 칸 아래 글 ---
 
+    def first_error_widget(self) -> QWidget | None:
+        """칸 아래 글이 보이는 칸 가운데 맨 위의 것(카드 차례대로). 없으면 `None`."""
+        head = [self.budget, *self._ratio_fields.values()]
+        tail = [self.first_ratio, self.mr_first_ratio, self.add_ratio, self.tolerance]
+        tail += [self.stop_ratio, self.daily_loss, self.order_interval, self.mr_loss]
+        tail += [self.paper_funds, self.backup_days]
+        for field in head:
+            if not field.error.isHidden():
+                return field
+        if not self._sum_error.isHidden():  # 합의 글은 투자 비율 줄 바로 아래다
+            return self._sum_error
+        for field in tail:
+            if not field.error.isHidden():
+                return field
+        return None
+
     def clear_errors(self) -> None:
         for field in (*self._number_fields, *self._ratio_fields.values()):
             field.set_error(None)

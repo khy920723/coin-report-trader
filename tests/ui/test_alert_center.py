@@ -337,7 +337,7 @@ def test_only_the_chosen_tabs_alerts_are_listed_newest_first(make_window):
     assert screen.findChild(QWidget, "alertRow_5") is None
 
 
-# --- 화면 이름 목록의 "현황 ({n})" ---
+# --- 화면 이름 목록에는 " ({n})"이 없고 상태 띠의 "알림 {n}건"이다(M3 명세 3.17.1) ---
 
 
 def _nav_text(window: MainWindow) -> str:
@@ -345,18 +345,38 @@ def _nav_text(window: MainWindow) -> str:
     return nav.item(list(ScreenId).index(ScreenId.STATUS)).text()
 
 
-def test_the_status_name_carries_the_total_unseen_count(make_window):
+def _chip(window: MainWindow) -> QPushButton:
+    return _find(window, QPushButton, "tradeBandAlerts")
+
+
+def test_the_total_unseen_count_is_in_the_band_and_not_in_the_status_name(make_window):
     window = make_window(FakeActions())
     assert _nav_text(window) == "현황"
+    assert _chip(window).isHidden()  # 0건이면 보이지 않는다
     _open(window)
     window.apply(_view(unseen={AlertCategory.ERROR: 2, AlertCategory.OTHER: 1}))
-    assert _nav_text(window) == "현황 (3)"
+    assert _nav_text(window) == "현황"
+    assert not _chip(window).isHidden()
+    assert _chip(window).text() == "알림 3건"
     window.apply(_view(unseen={}))
-    assert _nav_text(window) == "현황"
+    assert _chip(window).isHidden()
     window.apply(_view(unseen={AlertCategory.TRADE: 0}))
-    assert _nav_text(window) == "현황"
+    assert _chip(window).isHidden()
     nav = _find(window, QListWidget, "screenNav")
-    assert [nav.item(i).text() for i in (0, 2, 3, 4)] == ["처음 설정", "보고서", "기록", "설정"]
+    assert [nav.item(i).text() for i in range(5)] == ["처음 설정", "현황", "보고서", "기록", "설정"]
+
+
+def test_a_click_on_the_alert_chip_opens_the_status_screen_at_the_first_unseen_tab(
+    make_window, actions
+):
+    window = make_window(actions)
+    screen = _open(
+        window, _view(_alert(1, AlertCategory.TRADE), _alert(2, AlertCategory.ERROR, seen=False))
+    )
+    select_screen(window, ScreenId.SETTINGS)
+    _chip(window).click()
+    assert current_screen(window) is ScreenId.STATUS
+    assert _tab(screen, AlertCategory.ERROR).font().bold()  # 보지 않은 알림이 있는 맨 앞 탭
 
 
 def test_a_click_on_the_status_name_opens_the_first_tab_with_unseen_alerts(make_window, actions):

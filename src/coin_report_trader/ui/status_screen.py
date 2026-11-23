@@ -26,9 +26,14 @@ from coin_report_trader.core import (
     INSUFFICIENT_TEXT,
     SCREEN_TITLES,
     BarStats,
+    CoinTradeView,
     CoinView,
     LoadState,
+    PerformanceView,
+    RoundNowView,
     ScreenId,
+    TodayView,
+    TradeStatusView,
     coin_label,
     format_percent,
     format_price,
@@ -51,6 +56,7 @@ from coin_report_trader.ui.texts import (
     LAST_CANDLE_INCOMPLETE,
     LOADING_TEXT,
     NO_CANDLES_YET,
+    NOTICE_STOP_OFF,
     REPORT_VIEW_TEXT,
     RETRY_TEXT,
     STATS_TABLE_COLUMNS,
@@ -62,6 +68,13 @@ from coin_report_trader.ui.texts import (
     stats_header_text,
     stats_short_header_text,
     stats_summary_text,
+)
+from coin_report_trader.ui.trade_status import (
+    CoinTradeBox,
+    PerformancePanel,
+    RoundNowPanel,
+    TodayPanel,
+    error_pause_text,
 )
 from coin_report_trader.ui.widgets import make_label, set_role, set_trend, show_message
 
@@ -307,7 +320,16 @@ class CoinCard(Card):
         layout = self.body
         name = title_label(coin_label(market), f"statusCoinName_{market}")
         set_role(name, theme.ROLE_BIG)
-        layout.addWidget(name)
+        # 3단계 줄과 이름 옆 '유의·주의'(M3 명세 3.17.2)
+        self._trade = CoinTradeBox(market)
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(theme.FIELD_GAP)
+        name_row.addWidget(name)
+        name_row.addWidget(self._trade.caution)
+        name_row.addStretch(1)
+        layout.addLayout(name_row)
+        layout.addWidget(self._trade)
         self._note = make_label("", f"statusCoinNote_{market}")
         layout.addWidget(self._note)
         self._retry = QPushButton(RETRY_TEXT)
@@ -362,6 +384,10 @@ class CoinCard(Card):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def render_trade(self, view: CoinTradeView | None) -> None:
+        """코인 칸의 3단계 줄(현재가, 보유, 지난 판단, 걸린 주문 …)."""
+        self._trade.render(view)
 
     def render(self, view: CoinView | None) -> None:
         look = look_of(view)
@@ -530,7 +556,24 @@ class StatusScreen(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
         layout.setSpacing(theme.CARD_GAP)
-        layout.addWidget(title_label(SCREEN_TITLES[ScreenId.STATUS], TITLE_NAME))
+        # 위쪽 글(SCR-02-7): "PC가 꺼져 있으면 손절이 없습니다."는 제목 옆 'ⓘ'
+        # (`statusIntroInfo`)이고, 오류 멈춤이면 그 줄(`statusErrorPause`)이 늘 보인다.
+        title_line = QHBoxLayout()
+        title_line.setContentsMargins(0, 0, 0, 0)
+        title_line.setSpacing(theme.ICON_GAP)
+        title_line.addWidget(title_label(SCREEN_TITLES[ScreenId.STATUS], TITLE_NAME))
+        title_line.addWidget(
+            InfoIcon(SCREEN_TITLES[ScreenId.STATUS], NOTICE_STOP_OFF, "statusIntroInfo")
+        )
+        title_line.addStretch(1)
+        layout.addLayout(title_line)
+        self._error_pause = make_label("", "statusErrorPause")
+        self._error_pause.setStyleSheet(
+            f"color: {theme.ERROR}; border: 1px solid {theme.ERROR};"
+            f" border-radius: {theme.BUTTON_RADIUS}px; padding: 4px {theme.FIELD_GAP}px;"
+        )
+        self._error_pause.hide()
+        layout.addWidget(self._error_pause)
         self._message = make_label("", MESSAGE_NAME)
         self._message.hide()
         layout.addWidget(self._message)
@@ -540,9 +583,15 @@ class StatusScreen(QWidget):
         content_layout = QVBoxLayout(self._content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(theme.CARD_GAP)
+        self._today = TodayPanel()
+        content_layout.addWidget(self._today)
         self._cards_holder = CardGrid(max_columns=MAX_COINS)
         self._cards_holder.setObjectName(COINS_NAME)
         content_layout.addWidget(self._cards_holder)
+        self._round_now = RoundNowPanel()
+        content_layout.addWidget(self._round_now)
+        self._performance = PerformancePanel()
+        content_layout.addWidget(self._performance)
         self._stats = StatsPanel()
         self._stats.retry_requested.connect(self.retry_requested)
         self._stats.chosen.connect(self._render_stats)
@@ -562,10 +611,24 @@ class StatusScreen(QWidget):
         message: Message | None,
         coins: tuple[str, ...],
         views: dict[str, CoinView],
+        trade_views: dict[str, CoinTradeView] | None = None,
+        today: TodayView | None = None,
+        round_now: RoundNowView | None = None,
+        performance: PerformanceView | None = None,
+        status: TradeStatusView | None = None,
     ) -> None:
-        """`message`가 있으면 그 글 하나만 보인다. 없으면 고른 코인의 칸과 표를 그린다."""
+        """`message`가 있으면 그 글 하나만 보인다. 없으면 고른 코인의 칸과 표를 그린다.
+
+        3단계의 값(`trade_views`부터 `status`)이 없으면 그 자리는 보이지 않는다. 오류 멈춤의 줄은
+        글 하나만 보이는 모습에서도 보인다(설계서 4.5)."""
         show_message(self._message, message)
         self._content.setVisible(message is None)
+        error_text = error_pause_text(status) if status is not None else None
+        self._error_pause.setText(error_text or "")
+        self._error_pause.setVisible(error_text is not None)
+        self._today.render(today)
+        self._round_now.render(round_now)
+        self._performance.render(performance)
         coins = coins[:MAX_COINS]
         self._views = views
         if coins != self._coins:
@@ -574,6 +637,7 @@ class StatusScreen(QWidget):
             self._stats.set_coins(coins)
         for market, card in self._cards.items():
             card.render(views.get(market))
+            card.render_trade((trade_views or {}).get(market))
         self._render_stats()
 
     def _rebuild_cards(self) -> None:
@@ -590,6 +654,10 @@ class StatusScreen(QWidget):
                 card.chosen.connect(self._stats.choose)
                 self._cards[market] = card
         self._cards_holder.set_cards([self._cards[market] for market in self._coins])
+
+    def today_widget(self) -> QWidget:
+        """오늘 요약 카드(알림 A-12가 가는 곳)."""
+        return self._today
 
     def card_of(self, market: str) -> QWidget | None:
         """그 코인의 칸. 고른 코인에 없으면 `None`."""

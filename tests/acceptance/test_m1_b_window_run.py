@@ -286,14 +286,17 @@ def test_b18_seen_alerts_stay_seen_after_a_restart_and_threads_keep_to_their_wor
         if not app.idle():
             return False
         nav = find(app.window, QListWidget, "screenNav")
-        shown["status"] = nav.item(list(ScreenId).index(ScreenId.STATUS)).text()
-        # 자료 스레드가 쉬어도 `AlertsView`가 주 스레드에 닿기 전일 수 있어 보일 때까지 본다.
-        return shown["status"] != "현황"
+        assert nav.item(list(ScreenId).index(ScreenId.STATUS)).text() == "현황"  # " ({n})"은 없다
+        # 보지 않은 알림의 수는 상태 띠의 "알림 {n}건"이다(M3 명세 3.17.1). 자료 스레드가 쉬어도
+        # `AlertsView`가 주 스레드에 닿기 전일 수 있어 보일 때까지 본다.
+        chip = find(app.window, QAbstractButton, "tradeBandAlerts")
+        shown["status"] = chip.text() if not chip.isHidden() else ""
+        return bool(shown["status"])
 
     code, _ = run_app(monkeypatch, services(), [look])
     assert code == 0
     assert read("SELECT id FROM alerts WHERE seen = 1") == [(i,) for i in ids[:2]]
-    assert shown["status"].endswith(" (1)")
+    assert shown["status"] == "알림 1건"
 
 
 # --- B19: 창을 띄우기 전의 오류 ------------------------------------------------------------------
