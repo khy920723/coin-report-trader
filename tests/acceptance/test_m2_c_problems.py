@@ -246,7 +246,9 @@ def test_c32_a_memory_alert_has_a_negative_id_and_a_moved_old_line_is_app_startu
         raise StorageError("만든 쓰기 실패")
 
     monkeypatch.setattr(data_thread.alert_store, "insert_alert", broken)
-    rig.quote.script(QuoteError(ERROR_NETWORK), kind="price", market=AAA)
+    # 23번 뒤에는 1분 점검도 현재가를 읽어 실패 몇 개를 먼저 쓴다(알림 없음. 3.9). 회차의 읽기가
+    # 늘 실패하도록 넉넉히 정한다(C20과 같다).
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 20, kind="price", market=AAA)
     rig.round()
     memory = [r for r in rig.problem_rows() if r["code"] == "A-29"]
     assert len(memory) == 1

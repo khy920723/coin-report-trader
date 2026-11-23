@@ -323,8 +323,8 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
         assert (view.state, view.error_name, view.blocked_until) == (
             LoadState.FAILED, ERROR_BLOCKED, until,
         )  # fmt: skip
-    new = rig.alerts()[alerts_before:]
-    assert [(a.code, a.detail.error_name if a.detail else None) for a in new] == [
+    new = codes(rig)[alerts_before:]  # 센 기준과 자르는 기준이 같다(A-27, A-28을 뺀 목록)
+    assert [(code, name) for code, _coin, name in new] == [
         ("A-31", ERROR_BLOCKED)
     ]  # 고른 코인의 A-1은 생기지 않는다
     requests = len(rig.quote.requests)
