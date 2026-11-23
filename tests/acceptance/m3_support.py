@@ -10,10 +10,13 @@
 이 파일은 시험을 담지 않는다(`test_`로 시작하지 않아 모으지 않는다).
 """
 
+from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
 from PySide6.QtWidgets import QAbstractButton, QCheckBox, QLineEdit, QWidget
+
+from coin_report_trader.core import PauseStopLoss, TradeMethod, TradeSettings, TradeStatusView
 
 PREFIX = "firstSetup"
 COIN_RATIO = "CoinRatio_"
@@ -38,6 +41,55 @@ BUTTONS = ("Method_trend", "PauseStop_keep", "MrSell_no")
 """둥근 단추(매매 방식, '멈춤' 중 손절, '팔지')의 이름 뒤쪽. 값은 3.11.1의 값이다."""
 READ = "Read"
 TRADE_NAMES = (*(name for name, _ in LINE_VALUES), *BUTTONS, READ)
+
+
+PLANTED_PRICE = Decimal(1000)
+"""고른 코인의 만든 현재가(1,000 근처의 정수. M3 명세 3.19). 23번 뒤의 손절 점검이 읽는다(3.9)."""
+
+
+def planted_trade(coins: Iterable[str]) -> TradeSettings:
+    """'처음 설정을 마친 DB'에 심는 3단계 값(3.11.1. 위의 만든 값과 같다).
+
+    `write_settings`가 이 값이 든 설정을 쓰면 `first_setup_level`이 "3"이 되고 `paper_accounts`에
+    가상 계정(가상 자금 1,000,000원)이 한 줄 생긴다(3.11.3, 3.12). 투자 비율은 고른 코인마다 나눈다.
+    """
+    markets = tuple(coins)
+    ratios = dict(zip(markets, _shares(len(markets)), strict=True)) if markets else {}
+    return TradeSettings(
+        budget=Decimal(1_000_000),
+        coin_ratios=ratios,
+        first_ratio=Decimal(20),
+        mr_first_ratio=Decimal(20),
+        add_ratio=Decimal(10),
+        tolerance=Decimal(1),
+        stop_ratio=Decimal(5),
+        daily_loss_limit=Decimal(3000),
+        order_interval_s=60,
+        method=TradeMethod.TREND,
+        pause_stop_loss=PauseStopLoss.KEEP,
+        mr_sell_unknown_fee=False,
+        mr_tolerable_loss=Decimal(5),
+        paper_funds=Decimal(1_000_000),
+        backup_days=7,
+    )
+
+
+def plant_prices(quote: Any, coins: Iterable[str]) -> None:
+    """가짜 시세에 고른 코인의 현재가를 정한다(정하지 않으면 가짜가 `KeyError`를 낸다. 3.19)."""
+    quote.set_prices(dict.fromkeys(coins, PLANTED_PRICE))
+
+
+def release_error_pause(rig: Any) -> bool:
+    """다시 켠 뒤 오류 멈춤이면 푼다(`resume_error`. 앱의 `resumeErrorButton`을 누르는 것과 같다).
+
+    오류 멈춤이 아니거나 멈춤의 값이 아직 없으면(25번 앞) 아무것도 하지 않고 거짓이다.
+    """
+    views = rig.sink.of(TradeStatusView)
+    if not views or not views[-1].error_paused:
+        return False
+    rig.data.resume_error()
+    rig.settle()
+    return True
 
 
 def trade_fields_exist(parent: QWidget, *, prefix: str = PREFIX) -> bool:

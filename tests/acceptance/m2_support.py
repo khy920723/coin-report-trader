@@ -21,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from acceptance.m3_support import planted_trade
 from fakes.ai import FakeAiRunner
 from fakes.clock import FakeClock
 from fakes.discord import FakeDiscord
@@ -61,6 +62,8 @@ FIRST_CLOSE = datetime(2026, 1, 5, 4, tzinfo=UTC)
 """첫 (라)의 봉 마감 시각 T(04:00:10에 받는다)."""
 FOUR = tuple(AiChoice(slot, "haiku", Effort.LOW) for slot in AiSlot)
 PRICE = Decimal("100")
+TRADE_CODES = ("A-27", "A-28")
+"""3단계의 매매 알림(체결과 주문). 알림의 수나 목록을 보는 시험은 세지 않는다(M3 명세 4절 31번)."""
 
 
 def webhook_url(tag: str = "c") -> str:
@@ -176,7 +179,8 @@ class Rig:
         return list(reversed(self._read(list_alerts)))
 
     def codes(self) -> list[str]:
-        return [alert.code for alert in self.alerts()]
+        """알림 번호. 23번 뒤에 OK 보고서마다 나는 매매 알림(A-27, A-28)은 세지 않는다."""
+        return [code for code in (alert.code for alert in self.alerts()) if code not in TRADE_CODES]
 
     def reports(self, market: str = AAA) -> tuple[RoundItem, ...]:
         """그 코인의 회차 줄(새것이 앞)."""
@@ -215,7 +219,17 @@ def seed_db(
     conn = open_database(db)
     try:
         migrate(conn)
-        view = SettingsView(coins, 30, True, candle_unit=HOUR, candle_count=100, ai_choices=choices)
+        # 3단계로 마친 DB: `first_setup_level` "3", 3단계 키, 가상 계정(M3 명세 4절 31번).
+        # `choices`가 빈 튜플이면 네 칸의 모델과 노력 값만 없다(C27).
+        view = SettingsView(
+            coins,
+            30,
+            True,
+            candle_unit=HOUR,
+            candle_count=100,
+            ai_choices=choices,
+            trade=planted_trade(coins),
+        )
         write_settings(conn, view)
         if seed is not None:
             seed(conn)
