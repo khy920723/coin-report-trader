@@ -1,7 +1,7 @@
 """창 하나와 다섯 화면의 자리, 그리고 조립(`app`)과의 연결점(`MainWindow.apply`)."""
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from coin_report_trader.core import (
     ALERT_CATEGORY_TITLES,
+    KST,
     SAVE_TARGET_ALERT_DELETE,
     SAVE_TARGET_EXPORT,
     SAVE_TARGET_REPORT,
@@ -39,8 +40,12 @@ from coin_report_trader.core import (
     CoinView,
     HistoryTab,
     HistoryView,
+    LiveConfirmView,
+    LiveSettings,
+    LiveStatusView,
     LoadState,
     MarketsView,
+    Mode,
     PerformanceView,
     ReportListView,
     ReportView,
@@ -54,6 +59,7 @@ from coin_report_trader.core import (
     UiActions,
     UiContext,
     UiUpdate,
+    UpbitKeyView,
     WebhookView,
     coin_label,
 )
@@ -70,11 +76,12 @@ from coin_report_trader.core.texts import (
     kst_when_text,
 )
 from coin_report_trader.ui import theme
-from coin_report_trader.ui.dialogs import ask_confirm
+from coin_report_trader.ui.dialogs import ask_confirm, ask_live_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
 from coin_report_trader.ui.help import HelpWindow, guide_path
 from coin_report_trader.ui.history_screen import HistoryScreen, history_day_of
 from coin_report_trader.ui.icons import screen_icon
+from coin_report_trader.ui.live_cards import UpbitKeyDialog
 from coin_report_trader.ui.report_screen import ReportScreen
 from coin_report_trader.ui.screens import build_screen, screen_object_name
 from coin_report_trader.ui.settings_screen import SettingsScreen
@@ -89,6 +96,14 @@ from coin_report_trader.ui.texts import (
     HISTORY_EXPORT_TEXT,
     HISTORY_NONE,
     HOLDING_REMOVE_TITLE,
+    KEY_DELETE_CONFIRM_BODY,
+    KEY_DELETE_CONFIRM_OK,
+    KEY_DELETE_CONFIRM_TITLE,
+    LIVE_CONFIRM_BODY,
+    LIVE_CONFIRM_TITLE,
+    LIVE_OFF_CONFIRM_BODY,
+    LIVE_OFF_CONFIRM_OK,
+    LIVE_OFF_CONFIRM_TITLE,
     LOADING_TEXT,
     REPORT_BEFORE_FIRST_SETUP,
     REPORT_NONE,
@@ -130,6 +145,10 @@ SAVED_MESSAGE_MS = 3000
 
 ConfirmHandler = Callable[[str, str], bool]
 """확인 창을 대신하는 함수. `(제목, 본문)`을 받아 "확인"이면 참, "취소"면 거짓을 돌려준다."""
+SAVE_TARGET_UPBIT_KEY = "upbit_key"
+"""업비트 키 넣기와 지우기의 결과(`SaveResult.target`. M5 명세 3.4)."""
+SAVE_TARGET_LIVE_ON = "live_on"
+"""실거래 켜기의 결과(`SaveResult.target`. M5 명세 3.4)."""
 SaveDialogHandler = Callable[[str], str]
 """파일 저장 창을 대신하는 함수. 처음 이름을 받아 고른 경로(고르지 않으면 빈 글)를 돌려준다."""
 
@@ -234,6 +253,15 @@ class MainWindow(QMainWindow):
         self._accepted_below_stop: tuple[str, ...] = ()
         self._report_coins: tuple[str, ...] | None = None
         self._report_rounds_key: object = None
+        self._live_status: LiveStatusView | None = None
+        self._key_view: UpbitKeyView | None = None
+        self._key_message: Message | None = None
+        self._mode_message: Message | None = None
+        self._live_asked = False
+        """"실거래 켜기"를 눌러 `prepare_live_on`을 불렀고 `LiveConfirmView`를 기다린다."""
+        self._live_turning = False
+        """SCR-06-9를 확인해 `turn_live_on`을 불렀다(그 사이 `BelowStopView`가 올 수 있다)."""
+        self._key_dialog: UpbitKeyDialog | None = None
         self._history_view: HistoryView | None = None
         self._history_pending = False
         """기록을 부르려 했는데 아직 부를 수 없었다(처음 설정 전이거나 설정을 읽기 전)."""
@@ -333,6 +361,11 @@ class MainWindow(QMainWindow):
         self._status.report_requested.connect(self._open_report)
         self._reports.coin_chosen.connect(self._on_report_coin)
         self._reports.round_chosen.connect(self._on_report_round)
+        self._settings.key_set_requested.connect(self._on_key_set)
+        self._settings.key_delete_requested.connect(self._on_key_delete)
+        self._settings.live_on_requested.connect(self._on_live_on)
+        self._settings.live_off_requested.connect(self._on_live_off)
+        self._reports.mode_chosen.connect(self._on_report_mode)
         self._history.selection_changed.connect(self._on_history_selection)
         self._history.report_requested.connect(self._open_report)
         self._history.export_requested.connect(self._on_history_export)
@@ -432,6 +465,16 @@ class MainWindow(QMainWindow):
         elif isinstance(update, HistoryView):
             self._history_view = update
             self._update()
+        elif isinstance(update, LiveStatusView):
+            self._live_asked = False  # 막힌 까닭이 왔으면 확인 창 없이 끝난 것이다
+            self._live_status = update
+            self._update()
+        elif isinstance(update, LiveConfirmView):
+            self._on_live_confirm(update)
+        elif isinstance(update, UpbitKeyView):
+            self._key_view = update
+            self._key_message = Message(update.message, Tone.WARNING) if update.message else None
+            self._update()
 
     def set_confirm_handler(self, handler: ConfirmHandler | None) -> None:
         """확인 창 대신 `handler(제목, 본문)`을 부르게 한다. `None`이면 진짜 확인 창을 띄운다.
@@ -468,6 +511,7 @@ class MainWindow(QMainWindow):
             view.autostart,
             view.ai_choices,
             view.trade,
+            view.live,
         )
         old_key = (
             None
@@ -481,6 +525,7 @@ class MainWindow(QMainWindow):
                 old.autostart,
                 old.ai_choices,
                 old.trade,
+                old.live,
             )
         )
         if key != old_key:
@@ -500,6 +545,7 @@ class MainWindow(QMainWindow):
                 view.autostart,
                 view.ai_choices,
                 view.trade,
+                view.live,
             )
         self._settings.set_autostart_state(view.autostart_supported, view.autostart_error)
         # 고른 코인에 없는 코인의 마지막 `CoinView`는 버린다(다시 고르면 새 값이 올 때까지
@@ -535,6 +581,24 @@ class MainWindow(QMainWindow):
             # 지우기의 결과: 지우지 못했으면 알림센터 아래에 경고 색으로 보이고, 지웠으면 지운다.
             failed = not result.ok and bool(result.message)
             self._delete_message = Message(result.message, Tone.WARNING) if failed else None
+            self._update()
+            return
+        if result.target == SAVE_TARGET_UPBIT_KEY:
+            # 키 넣기와 지우기의 결과: 묶음 아래의 글. 키의 값은 이 값에도 들지 않는다.
+            self._key_message = (
+                Message(result.message, Tone.NORMAL if result.ok else Tone.WARNING)
+                if result.message
+                else None
+            )
+            self._update()
+            return
+        if result.target == SAVE_TARGET_LIVE_ON:
+            self._live_turning = False
+            self._mode_message = (
+                Message(result.message, Tone.NORMAL if result.ok else Tone.WARNING)
+                if result.message
+                else None
+            )
             self._update()
             return
         if result.target == SAVE_TARGET_EXPORT:
@@ -603,6 +667,7 @@ class MainWindow(QMainWindow):
         autostart: bool | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
         trade: TradeSettings | None = None,
+        live: LiveSettings | None = None,
     ) -> None:
         saved_days = self._saved.retention_days if self._saved is not None else None
         # 저장된 값이 없을 때(처음 고를 때)와 같거나 길게 바꿀 때는 확인 창이 없다.
@@ -615,7 +680,9 @@ class MainWindow(QMainWindow):
         for market in self._removed_held_coins(coins):
             if not self._ask_confirm(HOLDING_REMOVE_TITLE, holding_remove_body(coin_label(market))):
                 return
-        self._submit(ScreenId.SETTINGS, coins, days, unit, count, autostart, ai_choices, trade)
+        self._submit(
+            ScreenId.SETTINGS, coins, days, unit, count, autostart, ai_choices, trade, live
+        )
 
     def _removed_held_coins(self, coins: tuple[str, ...]) -> list[str]:
         if self._saved is None:
@@ -638,6 +705,7 @@ class MainWindow(QMainWindow):
         autostart: bool | None = None,
         ai_choices: tuple[AiChoice, ...] | None = None,
         trade: TradeSettings | None = None,
+        live: LiveSettings | None = None,
     ) -> None:
         first_setup = origin is ScreenId.FIRST_SETUP
         if (
@@ -658,6 +726,8 @@ class MainWindow(QMainWindow):
             extra["ai_choices"] = ai_choices
         if trade is not None:  # 3단계 칸이 있을 때만 넘긴다(M3 명세 3.11.2)
             extra["trade"] = trade
+        if live is not None:  # 실거래 설정 칸을 채웠을 때만 넘긴다(M5 명세 3.7.5)
+            extra["live"] = live
         self._last_save = {
             "coins": coins,
             "retention_days": days,
@@ -676,6 +746,14 @@ class MainWindow(QMainWindow):
         """손절선 아래인 보유(3.11.4): 저장하지 않고 SCR-06-5를 띄운다. "확인"이면 그 코인을
         `accept_below_stop`에 넣어 다시 저장하고, "취소"면 아무것도 저장하지 않고 고친 값은 칸에
         남긴다(그 뒤의 모습은 M3 명세 7절의 물을 것 2)."""
+        if self._live_turning and self._actions is not None:
+            # 실거래를 켜는 중의 손절선 아래 보유(M5 명세 3.7.2의 뒤 차례 2): "취소"면 켜지 않는다.
+            if not self._ask_confirm(BELOW_STOP_TITLE, self._below_stop_text(view)):
+                self._live_turning = False
+                self._update()
+                return
+            self._actions.turn_live_on()
+            return
         pending = self._last_save
         if pending is None or self._actions is None:
             return
@@ -703,6 +781,106 @@ class MainWindow(QMainWindow):
             accept_below_stop=self._accepted_below_stop,
             **arguments,  # type: ignore[arg-type]
         )
+
+    def _below_stop_text(self, view: BelowStopView) -> str:
+        return below_stop_body(
+            coin_label(view.market),
+            price_text(view.avg_price),
+            price_text(view.price),
+            price_text(view.stop_line),
+        )
+
+    # --- 업비트 키와 모드(M5 명세 3.8, 3.11) ---
+
+    def _today_kst(self) -> date:
+        return datetime.now(KST).date()
+
+    def _mode(self) -> Mode:
+        """지금 모드: 상태 띠의 값(`TradeStatusView.mode`)이 있으면 그것, 없으면 `LiveStatusView`의
+        것, 둘 다 없으면 모의매매다."""
+        if self._trade_status is not None:
+            return self._trade_status.mode
+        if self._live_status is not None:
+            return self._live_status.mode
+        return Mode.PAPER
+
+    def _settings_mode(self) -> Mode:
+        """설정 화면이 보이는 모드. 모드를 바꾸는 쪽이므로 `LiveStatusView`가 있으면 그것을 먼저
+        본다."""
+        if self._live_status is not None:
+            return self._live_status.mode
+        return self._mode()
+
+    def _on_key_set(self) -> None:
+        """"키 넣기": 키 넣기 창을 연다(모달). 저장하면 `save_upbit_key`를 부른다."""
+        if self._actions is None or self._phase is not Phase.READY:
+            return
+        dialog = UpbitKeyDialog(self, self._today_kst())
+        dialog.key_chosen.connect(self._on_key_chosen)
+        dialog.finished.connect(lambda _result, d=dialog: self._drop_key_dialog(d))
+        self._key_dialog = dialog
+        dialog.open()
+
+    def _drop_key_dialog(self, dialog: UpbitKeyDialog) -> None:
+        if self._key_dialog is dialog:
+            self._key_dialog = None
+        dialog.deleteLater()
+
+    def _on_key_chosen(self, access: str, secret: str, created: date) -> None:
+        if self._actions is None:
+            return
+        self._key_message = None
+        self._actions.save_upbit_key(access, secret, created)
+        self._update()
+
+    def _on_key_delete(self) -> None:
+        """"키 지우기": SCR-06-11 뒤에 지운다."""
+        if self._actions is None or self._phase is not Phase.READY:
+            return
+        if not self._ask_confirm(
+            KEY_DELETE_CONFIRM_TITLE, KEY_DELETE_CONFIRM_BODY, KEY_DELETE_CONFIRM_OK
+        ):
+            return
+        self._key_message = None
+        self._actions.delete_upbit_key()
+        self._update()
+
+    def _on_live_on(self) -> None:
+        """"실거래 켜기": `prepare_live_on`을 부른다. 통과하면 `LiveConfirmView`가 와서 SCR-06-9가
+        뜬다."""
+        if self._actions is None or self._phase is not Phase.READY:
+            return
+        self._mode_message = None
+        self._live_asked = True
+        self._actions.prepare_live_on()
+        self._update()
+
+    def _on_live_confirm(self, view: LiveConfirmView) -> None:
+        """SCR-06-9: "실거래 켜기"를 눌렀을 때만 `turn_live_on`을 부른다. "취소"면 그대로
+        모의매매다."""
+        if not self._live_asked or self._actions is None:
+            return
+        self._live_asked = False
+        if self._confirm is not None:
+            confirmed = self._confirm(LIVE_CONFIRM_TITLE, LIVE_CONFIRM_BODY)
+        else:
+            confirmed = ask_live_confirm(self, view)
+        if not confirmed:
+            return
+        self._live_turning = True
+        self._actions.turn_live_on()
+
+    def _on_live_off(self) -> None:
+        """"모의매매로 바꾸기": SCR-06-10 뒤에 `turn_live_off`를 부른다."""
+        if self._actions is None or self._phase is not Phase.READY:
+            return
+        if not self._ask_confirm(
+            LIVE_OFF_CONFIRM_TITLE, LIVE_OFF_CONFIRM_BODY, LIVE_OFF_CONFIRM_OK
+        ):
+            return
+        self._mode_message = None
+        self._actions.turn_live_off()
+        self._update()
 
     def _on_pause(self) -> None:
         """"멈춤": 확인 창 없이 바로 멈춘다(M3 명세 3.10.1)."""
@@ -779,10 +957,12 @@ class MainWindow(QMainWindow):
             return
         self._actions.retry_candles()
 
-    def _ask_confirm(self, title: str, body: str) -> bool:
+    def _ask_confirm(self, title: str, body: str, ok_text: str | None = None) -> bool:
         if self._confirm is not None:
             return self._confirm(title, body)
-        return ask_confirm(self, title, body)
+        if ok_text is None:
+            return ask_confirm(self, title, body)
+        return ask_confirm(self, title, body, ok_text)
 
     def _request_markets(self) -> None:
         if self._actions is None:
@@ -816,7 +996,11 @@ class MainWindow(QMainWindow):
         if market is None or self._actions is None:
             return
         self._report_unreadable = False
-        self._actions.load_reports(market)
+        chosen = self._reports.chosen_mode()
+        if chosen is self._mode():
+            self._actions.load_reports(market)
+        else:  # 지금 모드가 아닌 기록(M5 명세 3.11)
+            self._actions.load_reports(market, mode=chosen)
 
     def _request_report(self, report_id: int) -> None:
         if self._actions is None or self._phase is not Phase.READY:
@@ -830,6 +1014,19 @@ class MainWindow(QMainWindow):
         self._report_wanted = None
         self._request_reports()
         self._update()
+
+    def _on_report_mode(self, _mode: object) -> None:
+        """"모의매매 기록" / "실거래 기록"을 골랐다: 받아 둔 목록과 보고서를 버리고 다시 부른다."""
+        self._clear_report_cache()
+        self._request_reports()
+        self._update()
+
+    def _clear_report_cache(self) -> None:
+        self._report_lists = {}
+        self._report_views = {}
+        self._report_selected = None
+        self._report_wanted = None
+        self._report_rounds_key = None
 
     def _on_report_round(self, report_id: int) -> None:
         """사용자가 회차를 골랐다."""
@@ -901,12 +1098,15 @@ class MainWindow(QMainWindow):
             return
         self._history_pending = False
         history = self._history
-        self._actions.load_history(
-            history.chosen_tab(), history.chosen_market(), history.chosen_day()
-        )
+        arguments = (history.chosen_tab(), history.chosen_market(), history.chosen_day())
+        if history.chosen_mode() is self._mode():
+            self._actions.load_history(*arguments)
+        else:  # 지금 모드가 아닌 기록(M5 명세 3.11)
+            self._actions.load_history(*arguments, mode=history.chosen_mode())
 
     def _on_history_selection(self) -> None:
-        """사용자가 코인, 날짜, 탭을 골랐다."""
+        """사용자가 코인, 날짜, 탭, 모드를 골랐다. 받아 둔 값은 다른 고르기의 것이다."""
+        self._history_view = None
         self._request_history()
         self._update()
 
@@ -925,9 +1125,12 @@ class MainWindow(QMainWindow):
                 HistoryTab(tab), market if isinstance(market, str) else None, path
             )
 
-    def _open_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
-        """다른 화면(알림센터)에서 기록 화면을 연다: 그 탭, 코인, 날짜를 고른다."""
-        self._history.choose(tab, market, day)
+    def _open_history(
+        self, tab: HistoryTab, market: str | None, day: date, mode: Mode | None = None
+    ) -> None:
+        """다른 화면(알림센터)에서 기록 화면을 연다: 그 탭, 코인, 날짜(와 알림의 모드)를 고른다."""
+        self._history_view = None
+        self._history.choose(tab, market, day, mode)
         if current_screen(self) is ScreenId.HISTORY:
             self._request_history()
             self._update()
@@ -943,6 +1146,19 @@ class MainWindow(QMainWindow):
         if self._actions is None or not self._first_setup_done():
             return Message(HISTORY_NONE)
         return None
+
+    def _sync_record_modes(self) -> None:
+        """지금 모드의 기록이 먼저 골라져 있다(사용자가 고르기 전에만. M5 명세 3.11)."""
+        mode = self._mode()
+        shown = current_screen(self)
+        if self._reports.set_default_mode(mode):
+            self._clear_report_cache()
+            if shown is ScreenId.REPORTS:
+                self._request_reports()
+        if self._history.set_default_mode(mode):
+            self._history_view = None
+            if shown is ScreenId.HISTORY:
+                self._request_history()
 
     def _render_history(self) -> None:
         coins = self._saved.coins if self._saved is not None and self._first_setup_done() else ()
@@ -1029,7 +1245,7 @@ class MainWindow(QMainWindow):
             self._scroll_page_to(self._settings, self._settings.coins_widget())
         elif code in ("A-27", "A-28"):  # 기록 화면의 주문·체결 탭(그 알림의 날짜, 그 코인)
             tab = HistoryTab.ORDERS if code == "A-27" else HistoryTab.FILLS
-            self._open_history(tab, alert.coin, history_day_of(alert.created_at))
+            self._open_history(tab, alert.coin, history_day_of(alert.created_at), alert.mode)
         elif code in ("A-18", "A-19"):
             select_screen(self, ScreenId.REPORTS)
         elif code == "A-26":
@@ -1160,11 +1376,24 @@ class MainWindow(QMainWindow):
             message=self._first_setup_message(),
             legacy=self._legacy_record(),
         )
+        self._sync_record_modes()
+        self._render_reports()
+        self._render_history()
+        paused = self._trade_status is not None and (
+            self._trade_status.user_paused or self._trade_status.error_paused
+        )
+        self._settings.set_live_state(
+            mode=self._settings_mode(),
+            live_status=self._live_status,
+            key=self._key_view,
+            paused=paused,
+            today=self._today_kst(),
+            key_message=self._key_message,
+            mode_message=self._mode_message,
+        )
         self._settings.render(
             phase=self._phase, done=done, picker=mode, message=self._settings_message()
         )
-        self._render_reports()
-        self._render_history()
         self._status.render(
             message=self._status_message(),
             coins=self._saved.coins if self._saved is not None else (),
@@ -1174,6 +1403,7 @@ class MainWindow(QMainWindow):
             round_now=self._round_now,
             performance=self._performance,
             status=self._trade_status,
+            live=self._mode() is Mode.LIVE,
         )
         # 화면 이름 목록에는 " ({n})"이 없고, 보지 않은 알림의 수는 상태 띠의 "알림 {n}건"이다.
         unseen = sum(self._alerts.unseen.values()) if self._alerts is not None else 0
@@ -1358,6 +1588,29 @@ def create_main_window(context: UiContext) -> MainWindow:
       "보고서 보기" `historyReport`, "CSV로 내보내기" `historyExport`와 결과 글
       `historyExportMessage`. 파일 저장 창은 `window.set_save_dialog_handler(handler)`로
       `handler(처음 이름) -> 경로`를 걸어 대신한다(빈 글이면 취소).
+    - 5단계의 설정(M5 명세 3.11): 업비트 키 묶음 `settingsUpbitKey`(제목 옆 'ⓘ'
+      `settingsUpbitKeyInfo`, 상태 `settingsUpbitKeyState`, 만든 날
+      `settingsUpbitKeyCreated`, 만료일 `settingsUpbitKeyExpires`, 단추 `settingsUpbitKeySet`,
+      `settingsUpbitKeyDelete`, 곁의 글 `settingsUpbitKeyLockNote`, 결과 글
+      `settingsUpbitKeyMessage`), 키 넣기 창 `upbitKeyDialog`(칸
+      `upbitKeyAccess`, `upbitKeySecret`, `upbitKeyCreated`, 칸 아래 글 `<칸 이름>Error`, 단추
+      `upbitKeySave`, `upbitKeyCancel`. 창의 `findChild`로 `upbitKeyDialog`를 찾는다),
+      실거래 설정 묶음 `settingsLive`('ⓘ' `settingsLiveInfo`, 칸 `settingsLiveBudget`,
+      `settingsLiveCoinRatio_<m>`, `settingsLiveCoinBudget_<m>`, `settingsLiveCoinRatioSum`,
+      `settingsLiveDailyLoss`, 칸 아래 글 `<칸 이름>Error`, 흐릴 때 곁의 글 `settingsLiveLockNote`),
+      모드 묶음 `settingsMode`('ⓘ' `settingsModeInfo`, 글 `settingsModeState`, 단추
+      `settingsLiveOn`, `settingsLiveOff`, 막힌 까닭 `settingsLiveBlocks`, 센 수
+      `settingsLiveCounts`, 전량 매도 기록 `settingsLiveSellAll`, N `settingsLiveRoundsN`, 결과 글
+      `settingsModeMessage`). 실거래 중의 곁의 글은 `settingsCoinsLiveNote`,
+      `settingsMethodLockNote`, `settingsCandleLockNote`다. SCR-06-9는 `ui/dialogs.py`의
+      `build_live_confirm_box`가 만들고 표 `liveConfirmTable`, "{시각}에 읽은 값"
+      `liveConfirmReadAt`, 단추 `confirmOk`와 `confirmCancel`이 있다. 확인 창 대신
+      `set_confirm_handler`를 걸면 SCR-06-9~06-11도 그 `handler(제목, 본문)`이 답한다.
+    - 5단계의 기록과 보고서(M5 명세 3.11): 모드 고르기 `historyMode_<paper|live>`,
+      `reportsMode_<paper|live>`, 기록의 외부 변동 탭 `historyTab_external`. 실거래 기록이면 기록
+      화면의 표 카드 `historyCard`와 보고서 화면의 목록 카드 `reportLeftCard`가 `error` 테두리다.
+      실거래이면 상태 띠 `tradeBand`와 현황의 코인 칸 `statusCoin_<m>`도 같고, 오늘 요약의
+      `statusTodayKrw`는 "원화 {금액}원"이며 모의 성적 `statusPerformanceCard`는 숨는다.
     - 현황 자리의 "다시 시도"는 `retry_candles()`를 부른다. 처음 설정을 마치고 설정을 읽은 뒤에만
       불리고, 그 밖의 때에는 단추가 보이지 않는다.
     """

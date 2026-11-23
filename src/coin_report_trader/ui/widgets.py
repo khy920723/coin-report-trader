@@ -81,6 +81,11 @@ def set_role(widget: QWidget, role: str) -> None:
     widget.style().polish(widget)
 
 
+def live_border_style(name: str) -> str:
+    """실거래 모드의 눈에 띄는 테두리: `error` 색 2px(M5 명세 3.11. 설계서 2.2, 4.5)."""
+    return f"QFrame#{name} {{ border: {theme.DANGER_BORDER}px solid {theme.ERROR}; }}"
+
+
 def trend_of(text: str) -> str:
     """값의 글이 가리키는 오름·내림: `theme.TREND_RISE`, `theme.TREND_FALL`, 아니면 빈 글.
 

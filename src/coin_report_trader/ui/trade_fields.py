@@ -473,6 +473,15 @@ class TradeFields(QObject):
         self._refresh_labels()
         self._recompute()
 
+    def set_method_locked(self, locked: bool, *, usable: bool = True) -> None:
+        """실거래 중에는 매매 방식을 바꿀 수 없다(M5 명세 3.7.4). 칸이 흐리고 `set_dim`이 다시 켜지
+        못한다. `usable`은 칸을 쓸 수 있는 때다. 곁의 글은 화면이 보인다."""
+        self._method.setProperty(LOCK_PROPERTY, locked)
+        self._method.setEnabled(usable and not locked)
+
+    def method_widget(self) -> QWidget:
+        return self._method
+
     def set_funds_locked(self, locked: bool) -> None:
         """가상 자금 칸을 흐리게 하고 고칠 수 없게 한다(M3 명세 3.7.1). `set_dim`도 못 켠다."""
         self.paper_funds.setProperty(LOCK_PROPERTY, locked)
