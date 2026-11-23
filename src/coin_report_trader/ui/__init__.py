@@ -8,6 +8,7 @@
 from coin_report_trader.ui.main_window import (
     ConfirmHandler,
     MainWindow,
+    SaveDialogHandler,
     create_main_window,
     current_screen,
     screen_order,
@@ -22,6 +23,7 @@ __all__ = [
     "EMPTY_BODY",
     "ConfirmHandler",
     "MainWindow",
+    "SaveDialogHandler",
     "create_main_window",
     "current_screen",
     "screen_order",
