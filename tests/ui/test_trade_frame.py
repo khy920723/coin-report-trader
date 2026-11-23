@@ -221,13 +221,40 @@ def test_the_pause_tag_and_the_resume_buttons(window, actions, user, error, text
 
 def test_the_stop_loss_off_tag_and_the_starting_tag(window):
     _done(window)
+    stop_off = _find(window, QLabel, "tradeBandStopOff")
+    starting = _find(window, QLabel, "tradeBandStarting")
+    assert stop_off.isHidden()
+    assert starting.isHidden()
     window.apply(_view(stop_loss_off=True, starting_step="켜는 중: 손절 점검"))
-    assert _text(window, "tradeBandStopOff") == "지금 손절이 동작하지 않음"
-    assert not _find(window, QLabel, "tradeBandStopOff").isHidden()
-    assert _text(window, "tradeBandStarting") == "켜는 중: 손절 점검"
+    assert not stop_off.isHidden()
+    assert stop_off.text() == "지금 손절이 동작하지 않음"
+    assert not starting.isHidden()
+    assert starting.text() == "켜는 중: 손절 점검"
+    window.apply(_view(starting_step="켜는 중: 거래소와 맞춰 보는 중"))
+    assert starting.text() == "켜는 중: 거래소와 맞춰 보는 중"
+    assert stop_off.isHidden()
     window.apply(_view())
-    assert _find(window, QLabel, "tradeBandStopOff").isHidden()
-    assert _find(window, QLabel, "tradeBandStarting").isHidden()
+    assert stop_off.isHidden()
+    assert starting.isHidden()
+
+
+def test_the_band_tags_have_the_decided_colors_weights_and_corners(window):
+    _done(window)
+    window.apply(_view(user_paused=True, stop_loss_off=True, starting_step="켜는 중: 손절 점검"))
+    style = {
+        name: _find(window, QLabel, name).styleSheet()
+        for name in ("tradeBandMode", "tradeBandPause", "tradeBandStopOff", "tradeBandStarting")
+    }
+    for name, text in style.items():
+        assert "border-radius: 12px" in text, name  # 꼬리표 모서리 12px
+        assert "background: #1A3529" in text, name  # '고른 칸' 바탕
+    assert "color: #EDD05A" in style["tradeBandPause"]  # `caution`
+    assert "font-weight: bold" in style["tradeBandPause"]
+    assert "color: #FF9548" in style["tradeBandStopOff"]  # `error`
+    assert "font-weight: bold" in style["tradeBandStopOff"]
+    for name in ("tradeBandMode", "tradeBandStarting"):
+        assert "color: #EEF5F1" in style[name], name  # `text`
+        assert "font-weight: normal" in style[name], name
 
 
 def test_a_blocked_error_pause_cannot_be_resumed_until_the_time_with_the_note(window):
@@ -573,6 +600,23 @@ def test_a_coin_card_without_a_holding_shows_one_line_instead_of_four(window):
     assert _text(status, "statusCoinOrder_KRW-AAA_0") == "지정가 매수 대기 990원 × 6.0"
     window.apply(_coin(holding=None, open_orders=()))
     assert _text(status, "statusCoinOrder_KRW-AAA_0") == "걸린 주문 없음"
+
+
+def test_a_holding_row_with_zero_quantity_counts_as_no_holding(window):
+    _done(window)
+    status = _status(window)
+    zero = _holding(qty="0", avg="1000")  # 줄은 남고 수량이 0이다(3.12)
+    window.apply(_coin(holding=zero, sellable_qty=Decimal(0), value=Decimal(0)))
+    assert _coin_text(status, "statusCoinHolding_") == "보유 없음"
+    for prefix in ("statusCoinAvg_", "statusCoinValue_", "statusCoinStop_", "statusCoinDust_"):
+        assert _coin_text(status, prefix) is None, prefix
+
+
+def test_sellable_quantity_is_the_views_value_and_not_the_holding_quantity(window):
+    _done(window)
+    status = _status(window)
+    window.apply(_coin(holding=_holding(qty="10"), sellable_qty=Decimal("7.5")))
+    assert _coin_text(status, "statusCoinHolding_") == "보유 10 · 팔 수 있음 7.5"
 
 
 def test_error_colored_and_caution_colored_lines(window):
