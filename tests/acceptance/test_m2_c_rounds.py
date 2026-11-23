@@ -82,13 +82,6 @@ def table(text: str) -> tuple[tuple[str, ...], list[list[str]]]:
     return tuple(header), [list(row) for row in rows]
 
 
-def order_rows(rig: Rig) -> int:
-    """주문에 관한 표(이름에 order나 fill이 든 표)의 줄 수. 2단계에는 표도 줄도 없다."""
-    names = [n for (n,) in rig.rows("SELECT name FROM sqlite_master WHERE type = 'table'")]
-    found = [n for n in names if "order" in n or "fill" in n]
-    return sum(rig.rows(f'SELECT COUNT(*) FROM "{name}"')[0][0] for name in found)
-
-
 def two_coin_round(build: Callable[..., Rig], **kwargs: Any) -> Rig:
     """C1: 코인 둘, 저장된 완성된 봉이 고른 개수 이상, 두 코인에 정상 답. 회차 1을 돌린다."""
     rig = build(coins=(AAA, BBB), **kwargs)
@@ -125,9 +118,10 @@ def test_c1_a_round_of_two_coins_runs_two_sessions_together_and_ends_done(
         assert item.close_utc == FIRST_CLOSE  # T는 그 봉의 마감 시각이다
     done = [a for a in rig.alerts() if a.code == "A-26"]
     assert sorted(a.coin for a in done) == [AAA, BBB]  # 코인마다 하나씩 둘
-    assert rig.codes() == ["A-26", "A-26"]
-    assert rig.quote.book_requests() == []  # 주문에 관한 요청이 없다
-    assert order_rows(rig) == 0
+    assert rig.codes() == [
+        "A-26",
+        "A-26",
+    ]  # 주문은 D1이 본다(3단계에서 바뀌는 약속. M3 명세 4절 31번)
 
 
 # --- C2 ---------------------------------------------------------------------------------------
@@ -192,7 +186,9 @@ def test_c20_a_failed_price_read_skips_only_that_coin_with_one_a2(
 ) -> None:
     rig = build(coins=(AAA, BBB))
     rig.start()
-    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 5, kind="price", market=AAA)
+    # 23번 뒤에는 1분 점검도 현재가를 읽어 실패 몇 개를 먼저 쓴다(알림 없음. 3.9). 회차의 읽기가 늘
+    # 실패하도록 넉넉히 정한다.
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 20, kind="price", market=AAA)
     rig.round()
     (aaa,) = rig.reports(AAA)
     assert (aaa.state, aaa.failure) == (ReportState.SKIPPED, "현재가를 읽지 못함")
@@ -212,12 +208,13 @@ def test_c21_a_failed_fetch_skips_the_coin_without_a_price_request_and_only_the_
 ) -> None:
     rig = build()
     rig.start()
-    prices_before = len(rig.quote.price_requests(AAA))
+    # 회차의 현재가 요청이 없다: 읽었다면 아래 실패로 A-2가 생긴다. 23번 뒤의 1분 점검도 현재가를
+    # 읽지만(3.9) 그 실패에는 알림이 없다. 점검이 몇 개를 먼저 써도 남도록 넉넉히 정한다.
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 20, kind="price", market=AAA)
     rig.quote.script(QuoteError(ERROR_NETWORK), kind="candles", market=AAA)
     rig.round()
     (item,) = rig.reports(AAA)
     assert (item.state, item.failure) == (ReportState.SKIPPED, "봉 통계를 만들지 못함")
-    assert len(rig.quote.price_requests(AAA)) == prices_before  # 현재가 요청이 없다
     assert rig.runner.requests == []  # 세션이 없다
     assert rig.codes() == ["A-1"]  # 알림은 그 받기의 A-1뿐이다
 
@@ -233,11 +230,10 @@ def test_c21_too_few_complete_candles_skip_the_coin_with_only_the_a1(
     rig.start()
     rig.data.wait_idle(SAFETY)
     codes_before = rig.codes()
-    prices_before = len(rig.quote.price_requests(AAA))
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 20, kind="price", market=AAA)  # 위와 같다
     rig.round()
     (item,) = rig.reports(AAA)
     assert (item.state, item.failure) == (ReportState.SKIPPED, "봉 통계를 만들지 못함")
-    assert len(rig.quote.price_requests(AAA)) == prices_before
     assert rig.runner.requests == []
     new = rig.codes()[len(codes_before) :]
     assert set(new) <= {"A-1"}  # 새 알림이 있다면 그 받기의 A-1뿐이다

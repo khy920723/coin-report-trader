@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from acceptance.m2_support import AAA, BBB, HOUR, Rig, make_rig, restart, token_of, webhook_url
+from acceptance.m3_support import release_error_pause
 from fakes.ai import FakeAiRunner, answered, good_answers, wrong_header_answers
 from fakes.clock import FakeClock
 from fakes.quote import make_candles
@@ -121,6 +122,7 @@ def test_c31_the_problem_table_follows_the_spec_columns_time_source_and_repeat_c
     rig = build.track(restart(rig))  # type: ignore[attr-defined]
     fresh_candles(rig, AAA, BBB)
     rig.start()
+    release_error_pause(rig)  # 25번 뒤에는 A-30이 오류 멈춤이라 앱처럼 풀어야 회차가 돈다
     second = first + timedelta(minutes=61)
     round_failing_at(rig, second)
     # 다시 켜고 둘째 예외 + 25시간에 같은 예외.
@@ -128,6 +130,7 @@ def test_c31_the_problem_table_follows_the_spec_columns_time_source_and_repeat_c
     rig.clock.set_now(second + timedelta(hours=24, minutes=10))
     fresh_candles(rig, AAA, BBB)
     rig.start()
+    release_error_pause(rig)
     third = second + timedelta(hours=25)
     round_failing_at(rig, third)
     rows = [r for r in rig.problem_rows() if r["code"] == "A-30"]
@@ -243,7 +246,9 @@ def test_c32_a_memory_alert_has_a_negative_id_and_a_moved_old_line_is_app_startu
         raise StorageError("만든 쓰기 실패")
 
     monkeypatch.setattr(data_thread.alert_store, "insert_alert", broken)
-    rig.quote.script(QuoteError(ERROR_NETWORK), kind="price", market=AAA)
+    # 23번 뒤에는 1분 점검도 현재가를 읽어 실패 몇 개를 먼저 쓴다(알림 없음. 3.9). 회차의 읽기가
+    # 늘 실패하도록 넉넉히 정한다(C20과 같다).
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 20, kind="price", market=AAA)
     rig.round()
     memory = [r for r in rig.problem_rows() if r["code"] == "A-29"]
     assert len(memory) == 1

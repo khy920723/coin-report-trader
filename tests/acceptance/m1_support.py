@@ -17,6 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from acceptance.m3_support import plant_prices, planted_trade
 from fakes.clock import DEFAULT_START, FakeClock
 from fakes.discord import FakeDiscord
 from fakes.quote import FakeQuoteSource
@@ -239,10 +240,21 @@ def make_rig(
     logs = tmp_path / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     if fresh:
-        settings = SettingsView(coins, days, done, candle_unit=unit, candle_count=count)
+        # 1단계 보완 전의 기록("1")은 봉 단위나 개수가 없는 설정이다. 그 밖의 마친 DB는 3단계로
+        # 심는다: `first_setup_level` "3", 3단계 키, 가상 계정(M3 명세 4절 31번).
+        stage3 = done and unit is not None and count is not None
+        settings = SettingsView(
+            coins,
+            days,
+            done,
+            candle_unit=unit,
+            candle_count=count,
+            trade=planted_trade(coins) if stage3 else None,
+        )
         prepare_db(db, settings=settings, candles=candles)
     clock = clock or FakeClock()
     quote = quote or FakeQuoteSource(markets=markets(AAA, BBB), clock=clock)
+    plant_prices(quote, coins)  # 23번 뒤의 손절 점검이 고른 코인의 현재가를 읽는다(M3 명세 3.9)
     discord = discord or FakeDiscord()
     if vault is None:
         vault = FakeVault({webhook_secret_name(c): url for c, url in (saved or {}).items()})
