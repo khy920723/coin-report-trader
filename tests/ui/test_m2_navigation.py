@@ -65,6 +65,8 @@ class Actions:
     def load_report(self, report_id) -> None:
         self.report.append(report_id)
 
+    def load_history(self, tab, market, day, mode=None) -> None: ...
+
     def retry_candles(self) -> None:
         self.calls.append("retry_candles")
 

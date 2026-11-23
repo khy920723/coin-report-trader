@@ -7,7 +7,7 @@
 from decimal import Decimal
 from typing import Final
 
-from coin_report_trader.core import CANDLE_COUNTS, INSUFFICIENT_TEXT, CandleUnit
+from coin_report_trader.core import CANDLE_COUNTS, INSUFFICIENT_TEXT, CandleUnit, HistoryTab
 
 # --- 빈 화면(M0 명세 2절) ---
 EMPTY_BODY: Final = "이 화면은 아직 비어 있습니다."
@@ -531,3 +531,35 @@ ERROR_PAUSE_KINDS: Final = {
     "save": "저장 실패",
 }
 """오류 멈춤의 {오류 종류}(`ErrorPauseCause`의 값에서. M3 명세 3.10.2)."""
+
+# --- 3단계의 기록 화면(M3 명세 3.15, 3.17.4) ---
+HISTORY_COIN_CAPTION: Final = "코인"
+HISTORY_DAY_CAPTION: Final = "날짜"
+HISTORY_ALL_COINS: Final = "모든 코인"
+HISTORY_ALL_COINS_FILE: Final = "모든코인"
+"""내보내기 파일 이름의 "모든코인"(M3 명세 3.15.2)."""
+HISTORY_EXPORT_TEXT: Final = "CSV로 내보내기"
+HISTORY_EXPORT_OK: Final = "내보냈습니다."
+HISTORY_EXPORT_FAILED: Final = "내보내지 못했습니다."
+"""결과 글은 `SaveResult.message`가 오면 그것이고, 오지 않을 때만 쓴다(`ok`로 가른다)."""
+HISTORY_EXPORT_FILTER: Final = "CSV (*.csv)"
+HISTORY_TAB_TITLES: Final = {
+    HistoryTab.ROUNDS: "회차",
+    HistoryTab.JUDGMENTS: "판단",
+    HistoryTab.ORDERS: "주문",
+    HistoryTab.FILLS: "체결",
+    HistoryTab.PAUSES: "멈춤",
+}
+"""탭 다섯의 글(SCR-04-4). 외부 변동 탭은 4단계에 생긴다."""
+HISTORY_LOADING: Final = "불러오는 중"
+HISTORY_NONE: Final = "이 날의 기록이 없습니다."
+HISTORY_FAILED: Final = "기록을 읽지 못했습니다."
+HISTORY_REPORT_TEXT: Final = "보고서 보기"
+HISTORY_STILL_PAUSED: Final = "멈춰 있음"
+HISTORY_BEFORE_NEXT: Final = "다음 회차 전"
+
+
+def history_export_name(tab_title: str, market_symbol: str | None, today_text: str) -> str:
+    """파일 저장 창의 처음 이름: "{탭 이름}-{코인 기호 또는 모든코인}-{YYYYMMDD}.csv"."""
+    symbol = market_symbol if market_symbol else HISTORY_ALL_COINS_FILE
+    return f"{tab_title}-{symbol}-{today_text}.csv"

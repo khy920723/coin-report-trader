@@ -62,18 +62,13 @@ def test_each_screen_shows_its_title(window):
         assert _text(widget, "screenTitle") == SCREEN_TITLES[screen_id]
 
 
-def test_only_unfilled_screens_show_the_empty_body(window):
+def test_no_screen_keeps_the_empty_body_any_more(window):
     assert EMPTY_BODY == "이 화면은 아직 비어 있습니다."
     for screen_id in ScreenId:
         widget = screen_widget(window, screen_id)
-        body = widget.findChild(QLabel, "screenBody")
-        # M1 명세 3.1: 처음 설정, 현황, 설정은 채워져 빈 글이 없다. 보고서도 2단계에서 채워진다
-        # (M2 명세 3.12.1). 기록만 그대로다.
-        if screen_id is not ScreenId.HISTORY:
-            assert body is None
-        else:
-            assert body is not None
-            assert body.text() == EMPTY_BODY
+        # M1 명세 3.1: 처음 설정, 현황, 설정은 채워져 있고, 보고서는 2단계(M2 명세 3.12.1), 기록은
+        # 3단계(M3 명세 3.17.4)에서 채워진다. 빈 글이 남은 자리는 없다.
+        assert widget.findChild(QLabel, "screenBody") is None
 
 
 def test_only_first_setup_shows_advice_notice(window):

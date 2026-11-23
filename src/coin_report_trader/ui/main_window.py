@@ -1,11 +1,13 @@
 """창 하나와 다섯 화면의 자리, 그리고 조립(`app`)과의 연결점(`MainWindow.apply`)."""
 
 from collections.abc import Callable
+from datetime import date
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
 from coin_report_trader.core import (
     ALERT_CATEGORY_TITLES,
     SAVE_TARGET_ALERT_DELETE,
+    SAVE_TARGET_EXPORT,
     SAVE_TARGET_REPORT,
     SAVE_TARGET_SETTINGS,
     SCREEN_TITLES,
@@ -34,6 +37,8 @@ from coin_report_trader.core import (
     CandleUnit,
     CoinTradeView,
     CoinView,
+    HistoryTab,
+    HistoryView,
     LoadState,
     MarketsView,
     PerformanceView,
@@ -68,6 +73,7 @@ from coin_report_trader.ui import theme
 from coin_report_trader.ui.dialogs import ask_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
 from coin_report_trader.ui.help import HelpWindow, guide_path
+from coin_report_trader.ui.history_screen import HistoryScreen, history_day_of
 from coin_report_trader.ui.icons import screen_icon
 from coin_report_trader.ui.report_screen import ReportScreen
 from coin_report_trader.ui.screens import build_screen, screen_object_name
@@ -79,6 +85,9 @@ from coin_report_trader.ui.texts import (
     ALERT_DELETE_BODY,
     ALERT_DELETE_TITLE,
     BELOW_STOP_TITLE,
+    HISTORY_EXPORT_FILTER,
+    HISTORY_EXPORT_TEXT,
+    HISTORY_NONE,
     HOLDING_REMOVE_TITLE,
     LOADING_TEXT,
     REPORT_BEFORE_FIRST_SETUP,
@@ -121,6 +130,8 @@ SAVED_MESSAGE_MS = 3000
 
 ConfirmHandler = Callable[[str, str], bool]
 """확인 창을 대신하는 함수. `(제목, 본문)`을 받아 "확인"이면 참, "취소"면 거짓을 돌려준다."""
+SaveDialogHandler = Callable[[str], str]
+"""파일 저장 창을 대신하는 함수. 처음 이름을 받아 고른 경로(고르지 않으면 빈 글)를 돌려준다."""
 
 
 SCROLL_PREFIX = "screenScroll_"
@@ -187,6 +198,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._actions: UiActions | None = context.actions
         self._confirm: ConfirmHandler | None = None
+        self._save_dialog: SaveDialogHandler | None = None
 
         # 조립이 보낸 것을 모아 둔 값. 화면은 이 값에서 매번 새로 그린다.
         self._phase = Phase.READY if self._actions is None else Phase.WAITING
@@ -222,6 +234,9 @@ class MainWindow(QMainWindow):
         self._accepted_below_stop: tuple[str, ...] = ()
         self._report_coins: tuple[str, ...] | None = None
         self._report_rounds_key: object = None
+        self._history_view: HistoryView | None = None
+        self._history_pending = False
+        """기록을 부르려 했는데 아직 부를 수 없었다(처음 설정 전이거나 설정을 읽기 전)."""
 
         self.setObjectName(WINDOW_NAME)
         self.setWindowTitle(WINDOW_TITLE)
@@ -235,6 +250,7 @@ class MainWindow(QMainWindow):
         self._settings = SettingsScreen()
         self._status = StatusScreen()
         self._reports = ReportScreen()
+        self._history = HistoryScreen()
         for screen_id in ScreenId:
             nav.addItem(QListWidgetItem(screen_icon(screen_id), SCREEN_TITLES[screen_id]))
             if screen_id is ScreenId.FIRST_SETUP:
@@ -245,6 +261,8 @@ class MainWindow(QMainWindow):
                 stack.addWidget(_scroll_page(screen_id, self._status))
             elif screen_id is ScreenId.REPORTS:
                 stack.addWidget(_scroll_page(screen_id, self._reports))
+            elif screen_id is ScreenId.HISTORY:
+                stack.addWidget(_scroll_page(screen_id, self._history))
             else:
                 stack.addWidget(_scroll_page(screen_id, build_screen(screen_id)))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
@@ -315,6 +333,9 @@ class MainWindow(QMainWindow):
         self._status.report_requested.connect(self._open_report)
         self._reports.coin_chosen.connect(self._on_report_coin)
         self._reports.round_chosen.connect(self._on_report_round)
+        self._history.selection_changed.connect(self._on_history_selection)
+        self._history.report_requested.connect(self._open_report)
+        self._history.export_requested.connect(self._on_history_export)
         center = self._status.alert_center
         center.seen_requested.connect(self._on_seen)
         center.delete_alert_requested.connect(self._on_alert_delete)
@@ -408,6 +429,9 @@ class MainWindow(QMainWindow):
         elif isinstance(update, PerformanceView):
             self._performance = update
             self._update()
+        elif isinstance(update, HistoryView):
+            self._history_view = update
+            self._update()
 
     def set_confirm_handler(self, handler: ConfirmHandler | None) -> None:
         """확인 창 대신 `handler(제목, 본문)`을 부르게 한다. `None`이면 진짜 확인 창을 띄운다.
@@ -415,6 +439,13 @@ class MainWindow(QMainWindow):
         시험이 모달 창에서 멈추지 않고 "확인"이나 "취소"를 고르는 길이다.
         """
         self._confirm = handler
+
+    def set_save_dialog_handler(self, handler: SaveDialogHandler | None) -> None:
+        """파일 저장 창 대신 `handler(처음 이름)`을 부르게 한다. `None`이면 진짜 저장 창을 띄운다.
+
+        시험이 모달 창에서 멈추지 않고 경로를 고르거나(경로를 돌려줌) 취소하는(빈 글) 길이다.
+        """
+        self._save_dialog = handler
 
     # --- 조립이 보낸 값 ---
 
@@ -505,6 +536,9 @@ class MainWindow(QMainWindow):
             failed = not result.ok and bool(result.message)
             self._delete_message = Message(result.message, Tone.WARNING) if failed else None
             self._update()
+            return
+        if result.target == SAVE_TARGET_EXPORT:
+            self._history.set_export_result(result)  # 단추 아래의 결과 글(M3 명세 3.15.2)
             return
         if result.target == SAVE_TARGET_REPORT:
             # 보고서를 읽지 못함: 오른쪽에 글 하나가 보인다. 다시 고르면 다시 부른다(3.12.1).
@@ -759,6 +793,9 @@ class MainWindow(QMainWindow):
     def _on_screen_changed(self, index: int) -> None:
         if list(ScreenId)[index] is ScreenId.REPORTS:
             self._request_reports()  # 보고서 화면이 보일 때 부른다(M2 명세 3.12.1)
+        elif list(ScreenId)[index] is ScreenId.HISTORY:
+            self._history.reset_day()  # 처음에는 오늘(M3 명세 3.17.4)
+            self._request_history()  # 화면을 열 때 지금 고른 것으로 한 번 부른다
         self._update()
 
     # --- 보고서 화면(M2 명세 3.12.1) ---
@@ -850,6 +887,71 @@ class MainWindow(QMainWindow):
         else:
             select_screen(self, ScreenId.REPORTS)
 
+    # --- 기록 화면(M3 명세 3.15, 3.17.4) ---
+
+    def _history_ready(self) -> bool:
+        return (
+            self._actions is not None and self._phase is Phase.READY and self._first_setup_done()
+        )
+
+    def _request_history(self) -> None:
+        """지금 고른 탭, 코인, 날짜로 `load_history`를 부른다. 아직 부를 수 없으면 벼른다."""
+        if not self._history_ready() or self._actions is None:
+            self._history_pending = True
+            return
+        self._history_pending = False
+        history = self._history
+        self._actions.load_history(
+            history.chosen_tab(), history.chosen_market(), history.chosen_day()
+        )
+
+    def _on_history_selection(self) -> None:
+        """사용자가 코인, 날짜, 탭을 골랐다."""
+        self._request_history()
+        self._update()
+
+    def _on_history_export(self, tab: str, market: object, default_name: str) -> None:
+        """"CSV로 내보내기": 파일 저장 창에서 경로를 고르면 `export_history`를 부른다."""
+        if self._actions is None or self._phase is not Phase.READY:
+            return
+        if self._save_dialog is not None:
+            path = self._save_dialog(default_name)
+        else:
+            path, _filter = QFileDialog.getSaveFileName(
+                self, HISTORY_EXPORT_TEXT, default_name, HISTORY_EXPORT_FILTER
+            )
+        if path:
+            self._actions.export_history(
+                HistoryTab(tab), market if isinstance(market, str) else None, path
+            )
+
+    def _open_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
+        """다른 화면(알림센터)에서 기록 화면을 연다: 그 탭, 코인, 날짜를 고른다."""
+        self._history.choose(tab, market, day)
+        if current_screen(self) is ScreenId.HISTORY:
+            self._request_history()
+            self._update()
+        else:
+            select_screen(self, ScreenId.HISTORY)
+
+    def _history_message(self) -> Message | None:
+        """표 자리에 글 하나만 보이는 모습. 없으면 `None`(받은 값으로 그린다)."""
+        if self._phase is Phase.WAITING:
+            return Message(LOADING_TEXT)
+        if self._phase is Phase.UNREADABLE:
+            return Message(SETTINGS_UNREADABLE, Tone.WARNING)
+        if self._actions is None or not self._first_setup_done():
+            return Message(HISTORY_NONE)
+        return None
+
+    def _render_history(self) -> None:
+        coins = self._saved.coins if self._saved is not None and self._first_setup_done() else ()
+        coin_lost = self._history.set_coins(coins)
+        shown = current_screen(self) is ScreenId.HISTORY
+        if shown and (coin_lost or self._history_pending):
+            self._request_history()
+        self._history.render(message=self._history_message(), view=self._history_view)
+
     def _open_help(self) -> None:
         """ "도움말" 단추와 F1: 도움말 창을 연다(열려 있으면 앞으로 낸다). 처음 설정 전에도 된다."""
         if self._help is None:
@@ -925,6 +1027,9 @@ class MainWindow(QMainWindow):
         elif code == "A-16":  # 설정 화면의 코인과 예산
             select_screen(self, ScreenId.SETTINGS)
             self._scroll_page_to(self._settings, self._settings.coins_widget())
+        elif code in ("A-27", "A-28"):  # 기록 화면의 주문·체결 탭(그 알림의 날짜, 그 코인)
+            tab = HistoryTab.ORDERS if code == "A-27" else HistoryTab.FILLS
+            self._open_history(tab, alert.coin, history_day_of(alert.created_at))
         elif code in ("A-18", "A-19"):
             select_screen(self, ScreenId.REPORTS)
         elif code == "A-26":
@@ -1059,6 +1164,7 @@ class MainWindow(QMainWindow):
             phase=self._phase, done=done, picker=mode, message=self._settings_message()
         )
         self._render_reports()
+        self._render_history()
         self._status.render(
             message=self._status_message(),
             coins=self._saved.coins if self._saved is not None else (),
@@ -1111,7 +1217,7 @@ def create_main_window(context: UiContext) -> MainWindow:
     - 자리의 순서: `screen_order(window)`. `ScreenId` 순서의 튜플이다.
     - 자리 위젯: `screen_widget(window, screen_id)`. `objectName`은 `screen_<ScreenId 값>`이다.
       다섯 자리 모두 제목 라벨 `screenTitle`(글은 `SCREEN_TITLES`)이 있다.
-      보고서, 기록 자리에는 빈 화면 문구 라벨 `screenBody`가 있다(처음 설정, 현황, 설정에는 없다).
+      빈 화면 문구 라벨 `screenBody`는 어느 자리에도 없다(다섯 자리 모두 채워졌다).
     - 지금 보이는 자리: `current_screen(window)`. 켰을 때는 `ScreenId.FIRST_SETUP`이다.
       자리를 바꾸려면 `select_screen(window, screen_id)`나 `screenNav` 목록에서 고른다.
     - 경고 색: 글 라벨의 동적 속성 `tone`("normal" 또는 "warning")으로 알아본다
@@ -1246,6 +1352,12 @@ def create_main_window(context: UiContext) -> MainWindow:
       (이름은 `trade_status.py`의 문서 문자열에 모두 있다).
     - 3단계의 보고서(M3 명세 3.17.3): 판단으로 낸 주문 `reportOrder`, 주문까지 걸린 시간
       `reportOrderElapsed`, 멈춤의 맨 위 줄 `reportPause`.
+    - 기록 자리(`screen_history`, M3 명세 3.17.4): 코인 `historyCoin`(`QComboBox`), 날짜
+      `historyDay`(`QDateEdit`), 탭 `historyTab_<rounds|judgments|orders|fills|pauses>`, 표
+      `historyTable`(`QTableWidget`), 표 자리의 글 하나 `historyMessage`, 자세한 글 `historyDetail`,
+      "보고서 보기" `historyReport`, "CSV로 내보내기" `historyExport`와 결과 글
+      `historyExportMessage`. 파일 저장 창은 `window.set_save_dialog_handler(handler)`로
+      `handler(처음 이름) -> 경로`를 걸어 대신한다(빈 글이면 취소).
     - 현황 자리의 "다시 시도"는 `retry_candles()`를 부른다. 처음 설정을 마치고 설정을 읽은 뒤에만
       불리고, 그 밖의 때에는 단추가 보이지 않는다.
     """

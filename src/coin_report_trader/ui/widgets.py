@@ -81,15 +81,26 @@ def set_role(widget: QWidget, role: str) -> None:
     widget.style().polish(widget)
 
 
+def trend_of(text: str) -> str:
+    """값의 글이 가리키는 오름·내림: `theme.TREND_RISE`, `theme.TREND_FALL`, 아니면 빈 글.
+
+    "+"나 "▲ "로 시작하면 오름, "-"나 "▼ "로 시작하면 내림이다(M3 명세 3.17). 0이나 부호가 없는
+    값(예: "0.00%", "다음 회차 전")과, 값이 없다는 뜻의 "-"는 빈 글이다. 표(기록 화면)도 이 규칙으로
+    칠한다.
+    """
+    if text == "-":  # 값이 없다는 뜻의 "-"는 내림이 아니다
+        return ""
+    if text.startswith(("+", "▲ ")):
+        return theme.TREND_RISE
+    if text.startswith(("-", "▼ ")):
+        return theme.TREND_FALL
+    return ""
+
+
 def set_trend(label: QLabel, text: str) -> None:
     """부호가 있는 값(+, -)의 오름·내림 색. "▲ "나 "▼ "로 시작하는 값(3단계의 손익과 차이. M3
     명세 3.17)은 그 부호대로 칠한다. 0이나 부호가 없는 값은 칠하지 않는다."""
-    if text.startswith(("+", "▲ ")):
-        trend = theme.TREND_RISE
-    elif text.startswith(("-", "▼ ")):
-        trend = theme.TREND_FALL
-    else:
-        trend = ""
+    trend = trend_of(text)
     if label.property(theme.TREND_PROPERTY) != trend:
         label.setProperty(theme.TREND_PROPERTY, trend)
         label.style().unpolish(label)

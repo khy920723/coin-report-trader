@@ -653,13 +653,12 @@ def test_other_updates_do_not_disturb_the_status_screen(make_window, actions):
     assert actions.calls == []
 
 
-def test_only_the_history_screen_keeps_the_empty_body(make_window):
+def test_no_screen_keeps_the_empty_body(make_window):
     window = make_window(FakeActions())
     window.apply(SettingsView(("KRW-AAA",), 30, True))
     assert current_screen(window) is ScreenId.STATUS
-    # 보고서 화면은 2단계(M2 명세 3.12.1)에서 채워져 빈 글이 없다. 기록 화면만 비어 있다.
-    label = _find(screen_widget(window, ScreenId.HISTORY), QLabel, "screenBody")
-    assert label.text() == "이 화면은 아직 비어 있습니다."
+    # 보고서 화면은 2단계(M2 명세 3.12.1), 기록 화면은 3단계(M3 명세 3.17.4)에서 채워진다.
+    assert screen_widget(window, ScreenId.HISTORY).findChild(QLabel, "screenBody") is None
     assert screen_widget(window, ScreenId.REPORTS).findChild(QLabel, "screenBody") is None
     assert _status(window).findChild(QLabel, "screenBody") is None
 

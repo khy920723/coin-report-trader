@@ -20,8 +20,15 @@ OBJECT_NAMES = [
 ]
 
 
-# M1 명세 3.1: 처음 설정, 현황, 설정은 설계서대로 채운다(17번 뒤). 보고서와 기록은 빈 글 그대로다.
-FILLED_SCREENS = (ScreenId.FIRST_SETUP, ScreenId.STATUS, ScreenId.SETTINGS, ScreenId.REPORTS)
+# M1 명세 3.1: 처음 설정, 현황, 설정은 설계서대로 채운다(17번 뒤). 보고서는 2단계, 기록은 3단계
+# (M3 명세 3.17.4)에서 채워져 빈 글이 남은 자리가 없다.
+FILLED_SCREENS = (
+    ScreenId.FIRST_SETUP,
+    ScreenId.STATUS,
+    ScreenId.SETTINGS,
+    ScreenId.REPORTS,
+    ScreenId.HISTORY,
+)
 # 설계서 4.5: `actions` 없이 만든 창의 현황 자리는 "처음 설정 전"의 글 하나만 보인다.
 STATUS_BEFORE_SETUP = "처음 설정을 마치면 여기에 코인별 현황이 보입니다."
 
@@ -55,7 +62,7 @@ def test_a5_window_has_five_empty_screens_in_order(qapp: QApplication) -> None:
             texts = _texts(widget)
             assert title in texts
             # M1 명세 3.1: 처음 설정, 현황, 설정 자리는 설계서대로 채워져 빈 글이 없다.
-            # 보고서도 2단계에서 채워진다.
+            # 보고서도 2단계에서, 기록도 3단계에서 채워진다.
             assert (EMPTY_BODY in texts) is (screen_id not in FILLED_SCREENS)
             assert (STATUS_BEFORE_SETUP in texts) is (screen_id is ScreenId.STATUS)
             # 투자 자문 글은 처음 설정과 보고서(M2 명세 3.12.1)의 '꼭 읽을 글' 옆 'ⓘ'에 있다.
