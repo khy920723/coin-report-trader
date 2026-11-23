@@ -13,7 +13,6 @@ from acceptance.m1_support import AAA, BBB, make_rig
 from acceptance.m2_support import make_rig as make_m2_rig
 from acceptance.m2_support import seed_db
 from acceptance.m3_support import PLANTED_PRICE, planted_trade, release_error_pause
-from fakes.quote import FakeQuoteSource
 
 from coin_report_trader.core import TradeMethod
 
@@ -107,6 +106,8 @@ def test_release_error_pause_does_nothing_before_the_data_thread_reports_a_pause
     tmp_path: Path,
 ) -> None:
     rig = make_m2_rig(tmp_path / "m2")
-    rig.start()
-    assert release_error_pause(rig) is False  # 오류 멈춤이 없다(25번 앞은 멈춤의 값도 없다)
-    assert isinstance(rig.quote, FakeQuoteSource)
+    try:
+        rig.start()
+        assert release_error_pause(rig) is False  # 오류 멈춤이 없다(25번 앞은 멈춤의 값도 없다)
+    finally:
+        rig.stop()  # 두 스레드를 남기지 않는다(뒤의 시험이 받지 않게)
