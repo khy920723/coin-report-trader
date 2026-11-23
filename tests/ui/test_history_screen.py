@@ -316,6 +316,28 @@ def test_the_day_starts_as_today_and_follows_the_clock_until_it_is_chosen(window
     assert screen.chosen_day() == date(2025, 12, 30)
 
 
+def test_opening_the_screen_after_nine_moves_an_unchosen_day_to_the_new_day(window, actions):
+    _done(window)
+    screen = _history(window)
+    screen.set_clock(lambda: datetime(2026, 1, 2, 8, 59, tzinfo=KST))
+    select_screen(window, ScreenId.HISTORY)
+    assert screen.chosen_day() == date(2026, 1, 1)
+    select_screen(window, ScreenId.STATUS)
+    actions.history.clear()
+    screen.set_clock(lambda: datetime(2026, 1, 2, 9, 1, tzinfo=KST))
+    assert screen.chosen_day() == date(2026, 1, 1)  # 시계만 옮겼다고 날짜가 바뀌지는 않는다
+    select_screen(window, ScreenId.HISTORY)
+    assert _find(screen, QDateEdit, "historyDay").date() == QDate(2026, 1, 2)
+    assert actions.history == [(HistoryTab.ROUNDS, None, date(2026, 1, 2))]
+    # 사용자가 날짜를 고른 뒤에는 옮겨지지 않는다.
+    _find(screen, QDateEdit, "historyDay").setDate(QDate(2025, 12, 31))
+    select_screen(window, ScreenId.STATUS)
+    screen.set_clock(lambda: datetime(2026, 1, 3, 9, 1, tzinfo=KST))
+    actions.history.clear()
+    select_screen(window, ScreenId.HISTORY)
+    assert actions.history == [(HistoryTab.ROUNDS, None, date(2025, 12, 31))]
+
+
 def test_opening_the_screen_calls_load_history_once_with_what_is_chosen(window, actions):
     _done(window)
     assert actions.history == []
@@ -763,6 +785,9 @@ def test_the_alert_day_follows_the_nine_oclock_edge(window, actions):
 def test_an_alert_for_a_coin_that_is_not_listed_opens_all_coins(window, actions):
     _done(window, ("KRW-AAA",))
     window._go_alert(_alert("A-27", "KRW-ZZZ", datetime(2026, 1, 2, 1, 0, tzinfo=UTC)))
+    combo = _find(_history(window), QComboBox, "historyCoin")
+    assert combo.currentIndex() == 0
+    assert combo.currentText() == "모든 코인"
     assert _history(window).chosen_market() is None
     assert actions.history[-1] == (HistoryTab.ORDERS, None, date(2026, 1, 2))
 

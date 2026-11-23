@@ -285,9 +285,8 @@ class HistoryScreen(QWidget):
     # --- 창이 부르는 것 ---
 
     def set_clock(self, now: Callable[[], datetime]) -> None:
-        """"오늘"을 읽는 시계를 바꾼다(시험). 날짜를 아직 고르지 않았으면 오늘로 다시 맞춘다."""
+        """"오늘"을 읽는 시계를 바꾼다(시험). 날짜는 바꾸지 않는다(`reset_day`가 맞춘다)."""
         self._now = now
-        self.reset_day()
 
     def reset_day(self) -> None:
         """사용자가 날짜를 고르기 전이면 날짜를 오늘로 맞춘다(신호 없이). 화면을 열 때 부른다."""
