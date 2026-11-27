@@ -25,6 +25,11 @@ from coin_report_trader.core import (
     Effort,
     Market,
     Mode,
+    OrderKind,
+    OrderPlan,
+    OrderReason,
+    OrderSide,
+    OrderState,
     PaperHolding,
     PauseStopLoss,
     SettingsView,
@@ -34,6 +39,8 @@ from coin_report_trader.core import (
 from coin_report_trader.storage import trading as trade_store
 from coin_report_trader.storage.alerts import list_alerts
 from coin_report_trader.storage.database import migrate, open_database
+from coin_report_trader.storage.settings import write_settings
+from coin_report_trader.trading.paper import lock_order
 from fakes.ai import FakeAiRunner, answered, good_answers
 from fakes.clock import FakeClock
 from fakes.quote import FakeQuoteSource, make_candles
@@ -159,6 +166,35 @@ def holding_seed(market: str, qty: str, avg: str) -> Callable[[Any], None]:
     return seed
 
 
+SEED_AT = datetime(2026, 1, 5, 2, tzinfo=UTC)
+
+
+def order_seed(
+    market: str, side: OrderSide, kind: OrderKind, price: Decimal | None, qty: str
+) -> Callable[[Any], None]:
+    """걸린 주문 하나를 심는다(지정가는 묶음도 쓴다)."""
+
+    def seed(conn: Any) -> None:
+        amount = (price or Decimal(0)) * Decimal(qty)
+        plan = OrderPlan(market, side, kind, OrderReason.JUDGMENT, price, Decimal(qty), amount)
+        order = trade_store.insert_order(
+            conn,
+            plan,
+            mode=Mode.PAPER,
+            uid=f"seed-{market}-{side.value}-{kind.value}-{qty}",
+            round_id=None,
+            created_at=SEED_AT,
+            judged_until=SEED_AT,
+        )
+        trade_store.update_order(conn, order.order_id, state=OrderState.OPEN, sent=True)
+        if kind is OrderKind.LIMIT:
+            account = trade_store.read_paper_account(conn, Mode.PAPER)
+            assert account is not None
+            trade_store.write_paper_account(conn, Mode.PAPER, lock_order(account, order))
+
+    return seed
+
+
 def seeds(*items: Callable[[Any], None]) -> Callable[[Any], None]:
     def seed(conn: Any) -> None:
         for item in items:
@@ -175,6 +211,7 @@ def make_rig(
     seed: Callable[[Any], None] | None = None,
     backup_days: int = 7,
     clock: FakeClock | None = None,
+    done: bool = True,
 ) -> Rig:
     db = tmp_path / "app.db"
     logs = tmp_path / "logs"
@@ -182,13 +219,16 @@ def make_rig(
     conn = open_database(db)
     try:
         migrate(conn)
-        view = SettingsView(coins, 30, True, candle_unit=HOUR, candle_count=100, ai_choices=FOUR)
+        view = SettingsView(coins, 30, done, candle_unit=HOUR, candle_count=100, ai_choices=FOUR)
         trade = replace(
             stage3_trade(coins, method=_trend()),
             pause_stop_loss=pause_stop_loss,
             backup_days=backup_days,
         )
-        write_stage3(conn, replace(view, trade=trade))
+        if done:
+            write_stage3(conn, replace(view, trade=trade))
+        else:
+            write_settings(conn, view)
         if seed is not None:
             seed(conn)
     finally:
