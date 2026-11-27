@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from acceptance.m1_support import AAA, HOUR, NOW, THIS_HOUR, markets, prepare_db, webhook_url
-from acceptance.m3_support import fill_trade_fields
+from acceptance.m3_support import fill_trade_fields, plant_prices, planted_trade
 from fakes.ai import FakeAiRunner
 from fakes.clock import FakeClock
 from fakes.discord import FakeDiscord
@@ -75,6 +75,7 @@ def services(clock: FakeClock | None = None, **kwargs: Any) -> Services:
     clock = clock or FakeClock()
     quote = kwargs.pop("quote", None) or FakeQuoteSource(markets=markets(AAA), clock=clock)
     quote.set_candles(AAA, HOUR, make_candles(AAA, HOUR, 200, last_start=THIS_HOUR))
+    plant_prices(quote, (AAA,))  # 23번 뒤의 손절 점검이 고른 코인의 현재가를 읽는다(M3 명세 3.9)
     return Services(
         quote=quote,
         webhook=kwargs.pop("webhook", None) or FakeDiscord(),
@@ -222,8 +223,11 @@ def insert(category: AlertCategory, minutes: int = 5) -> int:
 
 
 def ready_db() -> None:
-    prepare_db(
-        db_file(), settings=SettingsView((AAA,), 30, True, candle_unit=HOUR, candle_count=100)
+    prepare_db(  # 3단계로 마친 DB(M3 명세 4절 31번)
+        db_file(),
+        settings=SettingsView(
+            (AAA,), 30, True, candle_unit=HOUR, candle_count=100, trade=planted_trade((AAA,))
+        ),
     )
 
 

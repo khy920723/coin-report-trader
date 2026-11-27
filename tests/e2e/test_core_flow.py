@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from acceptance.m3_support import fill_trade_fields
+from acceptance.m3_support import fill_trade_fields, plant_prices
 from fakes.ai import FakeAiRunner
 from fakes.clock import DEFAULT_START, FakeClock
 from fakes.discord import FakeDiscord
@@ -178,6 +178,7 @@ def test_first_setup_to_stats_to_an_alert_in_the_alert_center_and_on_discord(
         CandleUnit.MINUTE_60,
         make_candles(AAA, CandleUnit.MINUTE_60, 300, last_start=DEFAULT_START.replace(minute=0)),
     )
+    plant_prices(quote, (AAA,))  # 23번 뒤의 손절 점검이 고른 코인의 현재가를 읽는다(M3 명세 3.9)
     url = _webhook_url()
     discord = FakeDiscord()
     vault = FakeVault({webhook_secret_name(AlertCategory.ERROR): url})

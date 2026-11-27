@@ -57,7 +57,12 @@ def blocked(*, retry: float | None) -> QuoteError:
 
 
 def codes(rig) -> list[tuple[str, str | None, str | None]]:
-    return [(a.code, a.coin, a.detail.error_name if a.detail else None) for a in rig.alerts()]
+    """알림의 (번호, 코인, 오류 이름). 23번 뒤에 생기는 매매 알림(A-27, A-28)은 세지 않는다."""
+    return [
+        (a.code, a.coin, a.detail.error_name if a.detail else None)
+        for a in rig.alerts()
+        if a.code not in ("A-27", "A-28")
+    ]
 
 
 # --- B11: 일시 차단 ----------------------------------------------------------------------------
@@ -90,7 +95,7 @@ def test_b11_a_block_stops_every_request_until_it_ends_then_fetches_once(rigs) -
     for coin in (AAA, BBB):
         (view,) = rig.sink.coin(coin)
         assert (view.state, view.blocked_until) == (LoadState.FAILED, until)
-    assert len(rig.alerts()) == 2  # A-1은 더 생기지 않는다
+    assert len(codes(rig)) == 2  # A-1은 더 생기지 않는다
     # 120초가 지난 때에 저절로 한 번 받는다.
     rig.advance(119)
     assert len(rig.quote.requests) == requests
@@ -302,7 +307,7 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
     for coin in (AAA, BBB):
         rig.quote.set_candles(coin, HOUR, make_candles(coin, HOUR, 200, last_start=THIS_HOUR))
     rig.start()
-    alerts_before = len(rig.alerts())
+    alerts_before = len(codes(rig))
     rig.sink.clear()
     rig.quote.script(blocked(retry=120.0), kind="markets")
     rig.data.refresh_markets()
@@ -318,8 +323,8 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
         assert (view.state, view.error_name, view.blocked_until) == (
             LoadState.FAILED, ERROR_BLOCKED, until,
         )  # fmt: skip
-    new = rig.alerts()[alerts_before:]
-    assert [(a.code, a.detail.error_name if a.detail else None) for a in new] == [
+    new = codes(rig)[alerts_before:]  # 센 기준과 자르는 기준이 같다(A-27, A-28을 뺀 목록)
+    assert [(code, name) for code, _coin, name in new] == [
         ("A-31", ERROR_BLOCKED)
     ]  # 고른 코인의 A-1은 생기지 않는다
     requests = len(rig.quote.requests)
@@ -332,7 +337,7 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
         **{**markets_view.__dict__, "as_of": rig.sink.of(MarketsView)[-1].as_of}
     )
     assert all(rig.sink.coin(c)[-1].blocked_until == until for c in (AAA, BBB))
-    assert len(rig.alerts()) == alerts_before + 1  # A-31도 A-1도 더 생기지 않는다
+    assert len(codes(rig)) == alerts_before + 1  # A-31도 A-1도 더 생기지 않는다
     window = create_main_window(UiContext("0.0.1", "X", None))
     try:
         window.apply(SettingsView((), None, False))
