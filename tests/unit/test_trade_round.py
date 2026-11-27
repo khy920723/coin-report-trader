@@ -795,18 +795,35 @@ def listed_rig(build: Callable[..., Rig], **kwargs: Any) -> Rig:
 # 1. 손절선 아래 보유 확인의 경계(3.11.4)
 
 
-def test_an_empty_holding_row_does_not_ask_below_the_stop_line(build: Callable[..., Rig]) -> None:
+def test_an_empty_holding_row_does_not_ask_below_the_stop_line(
+    build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
+) -> None:
     def seed(conn: Any) -> None:
         account = trade_store.read_paper_account(conn, Mode.PAPER)
         assert account is not None
         empty = PaperHolding(BBB, Decimal(0), Decimal(0), None, Decimal(0), Decimal(0))
         trade_store.write_paper_account(conn, Mode.PAPER, replace(account, holdings=(empty,)))
 
+    real = trade_store.read_paper_account
+
+    def with_an_average(conn: Any, mode: Mode) -> PaperAccount | None:
+        """저장소는 수량 0의 평균 매수가를 `None`으로 읽는다. 수량 0인데 평균 매수가가 남은 보유로
+        읽히더라도(손절선 95가 현재가 90 이상) 묻지 않는지 본다(`qty <= 0`의 확인 자체를 고정)."""
+        account = real(conn, mode)
+        if account is None:
+            return None
+        rows = tuple(
+            replace(h, avg_price=Decimal(100)) if h.market == BBB and h.qty == 0 else h
+            for h in account.holdings
+        )
+        return replace(account, holdings=rows)
+
     rig = build(seed=seed)  # `paper_holdings`의 줄은 보유가 0이어도 남는다(3.12)
     rig.start()
-    rig.quote.set_prices({BBB: Decimal(1)})
+    rig.quote.set_prices({BBB: Decimal(90)})
     rig.worker.refresh_markets()
     rig.settle()
+    monkeypatch.setattr(trade_store, "read_paper_account", with_an_average)
     rig.worker.save_settings((AAA, BBB), 30, first_setup=False, trade=stage3_trade((AAA, BBB)))
     rig.settle()
     assert rig.sink.of(BelowStopView) == []
