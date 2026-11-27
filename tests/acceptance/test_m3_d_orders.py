@@ -392,6 +392,31 @@ def test_d8_a_stop_loss_still_sells_when_the_daily_loss_limit_is_reached(
     assert all_codes(rig).count("A-12") == 1
 
 
+@pytest.mark.scenario("D8")
+def test_d8_a_sell_judgment_still_goes_out_when_the_daily_loss_limit_is_reached(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build(
+        seed=seeds(
+            holding_seed(AAA, "10", "980"), fill_seed(AAA, "-1200"), fill_seed(AAA, "-1900")
+        )
+    )
+    rig.start()
+    assert all_codes(rig).count("A-12") == 1
+    answer(rig, direction="내릴 것", sell_price="1010")
+    rig.round()
+    ((state, order_id, reason),) = reports(rig)
+    assert state == "ok"
+    assert order_id is not None
+    assert reason is None
+    # 심은 체결의 시장가 매도 둘은 빼고, 이 회차가 낸 지정가 매도를 본다
+    sells = [row for row in orders(rig) if row[1] == "sell" and row[2] == "limit"]
+    assert [(row[2], row[4], D(row[5]), D(row[6])) for row in sells] == [
+        ("limit", "open", D(1010), D(10))  # 지정가 매도 한 건
+    ]
+    assert all_codes(rig).count("A-12") == 1  # 그대로 한 번
+
+
 # --- D9: 유의·주의 --------------------------------------------------------------------------------
 
 

@@ -114,9 +114,11 @@ def test_d20_a_pause_cancels_the_open_order_without_a_dialog_and_stops_the_round
     assert [row[4] for row in orders(rig)] == ["open"]
     window = open_window(rig)
     try:
-        window.set_confirm_handler(_NoConfirmAllowed())  # 확인 창이 뜨면 시험이 실패한다
+        asked = _Confirm(False)
+        window.set_confirm_handler(asked)
         window.findChild(_button(), "pauseButton").click()
         rig.settle()
+        assert asked.asked == []  # 확인 창이 뜨지 않는다
         apply_all(window, rig)
         assert [row[4] for row in orders(rig)] == ["canceled"]
         assert (status(rig).user_paused, status(rig).stop_loss_off) == (True, False)
@@ -366,10 +368,11 @@ def test_d26_releasing_the_error_pause_leaves_the_user_pause(
     def broken(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("뜻밖")
 
-    monkeypatch.setattr(trade_store, "realized_pnl_between", broken)
-    advance(rig, 60)
-    assert (status(rig).user_paused, status(rig).error_paused) == (True, True)
-    monkeypatch.undo()
+    # 이 시험의 바꿈만 되돌린다(`monkeypatch.undo()`는 `conftest.py`가 건 자료 폴더 값까지 되돌린다)
+    with monkeypatch.context() as patch:
+        patch.setattr(trade_store, "realized_pnl_between", broken)
+        advance(rig, 60)
+        assert (status(rig).user_paused, status(rig).error_paused) == (True, True)
     rig.data.resume_error()
     rig.settle()
     assert (status(rig).user_paused, status(rig).error_paused) == (True, False)
@@ -459,9 +462,4 @@ class _Confirm:
     def __call__(self, title: str, body: str) -> bool:
         self.asked.append((title, body))
         return self.answer
-
-
-class _NoConfirmAllowed:
-    def __call__(self, title: str, body: str) -> bool:
-        raise AssertionError("확인 창이 떴다")
 

@@ -25,7 +25,6 @@ from acceptance.m3_d_support import (
     advance,
     all_codes,
     answer,
-    apply_all,
     close_window,
     d_rig,
     d_trade,
@@ -173,9 +172,10 @@ def test_d31_the_judgments_tab_shows_the_prediction_the_actual_value_and_the_ski
     assert skipped.cells[9] == "현재가를 읽지 못함"  # 쉰 까닭
     assert first.cells[2] == "오를 것"
     assert first.cells[3] == "1,010"
-    assert first.cells[4] != "-"
-    assert first.cells[5][0] in "▲▼0"
-    assert first.cells[6] in ("맞음", "틀림")
+    # 회차 1의 다음 봉(04:00)의 종가 1,035가 실제 값이다: 1,035 ÷ 1,010 − 1 = +2.475…%
+    assert first.cells[4] == "1,035"
+    assert first.cells[5] == "▲ +2.48%"
+    assert first.cells[6] == "맞음"  # '오를 것'이고 실제 값이 기준가 1,000보다 높다
     assert first.report_id is not None  # 판단 줄에서 보고서로 간다
 
 
@@ -418,5 +418,3 @@ def _label(parent: Any, name: str) -> str:
     assert found is not None, name
     return str(found.text())
 
-
-_UNUSED = (apply_all, timedelta)

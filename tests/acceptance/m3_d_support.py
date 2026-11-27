@@ -15,12 +15,12 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from acceptance.m2_support import AAA, BBB, HOUR, THIS_HOUR, Rig, make_rig
+from acceptance.m2_support import AAA, BBB, HOUR, Rig, make_rig
 from fakes.ai import answered, good_answers
 
 from coin_report_trader.core import (
@@ -50,8 +50,6 @@ __all__ = [
     "D_PRICE",
     "HOUR",
     "PARTS",
-    "SEED_AT",
-    "THIS_HOUR",
     "Rig",
     "account",
     "advance",
@@ -360,12 +358,6 @@ def close_window(window: Any) -> None:
     QApplication.processEvents()
 
 
-def open_db(rig: Rig) -> Any:
-    return open_database(rig.db)
-
-
-def after(when: datetime, **delta: float) -> datetime:
-    return when + timedelta(**delta)
 
 
 # --- 처음 설정과 설정 화면(D27, D28, D29, D34) ----------------------------------------------------

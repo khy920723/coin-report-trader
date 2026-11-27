@@ -32,9 +32,17 @@ from acceptance.m3_d_support import (
     visible_texts,
 )
 from acceptance.m3_support import LINE_VALUES, fill_trade_fields
-from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit, QPushButton, QRadioButton
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QRadioButton,
+)
 
 from coin_report_trader.core import (
+    AiSlot,
     OrderKind,
     OrderSide,
     ScreenId,
@@ -224,6 +232,12 @@ def test_d28_a_level_two_record_shows_the_first_setup_again_with_the_saved_choic
         box = first.findChild(QCheckBox, f"firstSetupCoin_{market}")
         assert box is not None
         assert box.isChecked()
+    for slot in AiSlot:  # 저장된 모델과 노력(`FOUR`의 haiku, low)이 채워져 있고 잠겨 있다
+        for kind, value in (("Model", "haiku"), ("Effort", "low")):
+            combo = first.findChild(QComboBox, f"firstSetupAi{kind}_{slot.value}")
+            assert combo is not None
+            assert combo.currentText() == value, (slot, kind)
+            assert not combo.isEnabled(), (slot, kind)
     notice = first.findChild(QLabel, "firstSetupLegacyNotice")
     assert notice is not None
     assert not notice.isHidden()
@@ -315,7 +329,10 @@ def test_d34_a_saved_setting_that_fails_the_minimum_order_blocks_buys_until_it_i
     answer(rig, direction="오를 것", buy_price="990", result_text="지난 결과",
            compared=[("검색 판별", 1), ("봉 판별", 1), ("최종 예측", 1)])  # fmt: skip
     rig.round()
-    assert [row[4] for row in orders(rig)] != []  # 막음이 풀린다
+    # 막음이 풀린다: 7%라 하한을 넘는 첫 매수가 지정가 매수 한 건으로 걸린다(보유 중이면 추가 매수)
+    assert [(row[1], row[2], row[3], row[4]) for row in orders(rig)] == [
+        ("buy", "limit", "judgment", "open")
+    ]
 
 
 @pytest.mark.scenario("D34")
