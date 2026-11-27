@@ -34,6 +34,7 @@ def test_screen_ids_follow_screen_order() -> None:
     assert [s.value for s in ScreenId] == [
         "first_setup",
         "status",
+        "account",
         "reports",
         "history",
         "settings",
@@ -44,7 +45,7 @@ def test_screen_ids_follow_screen_order() -> None:
 
 def test_screen_titles() -> None:
     assert list(SCREEN_TITLES) == list(ScreenId)
-    assert list(SCREEN_TITLES.values()) == ["처음 설정", "현황", "보고서", "기록", "설정"]
+    assert list(SCREEN_TITLES.values()) == ["처음 설정", "현황", "계정", "보고서", "기록", "설정"]
 
 
 def test_screen_titles_are_read_only() -> None:

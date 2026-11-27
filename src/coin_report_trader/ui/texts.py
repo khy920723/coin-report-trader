@@ -705,3 +705,65 @@ MODE_PAPER_RECORD: Final = "모의매매 기록"
 MODE_LIVE_RECORD: Final = "실거래 기록"
 LIVE_KRW_LABEL: Final = "원화"
 """현황 오늘 요약의 실거래 줄 "원화 {금액}원"(가상 원화 대신)."""
+
+# --- 5단계의 계정 화면(M5 명세 3.15) ---
+ACCOUNT_REFRESH_TEXT: Final = "새로 고침"
+ACCOUNT_GO_KEY_TEXT: Final = "업비트 키 넣으러 가기"
+ACCOUNT_SUMMARY_TITLE: Final = "실제 계정"
+ACCOUNT_SUMMARY_INFO: Final = (
+    "업비트 계정에서 읽은 값입니다. 모의매매의 가상 계정은 현황에 있습니다.",
+    "이 화면은 보기만 하고 주문하지 않습니다. "
+    "실제 보유의 손절은 실거래 중에 고른 코인에만 걸립니다.",
+    "계정 화면만 쓰려면 키에 자산조회 권한만 있으면 됩니다.",
+    "원화 마켓이 없는 코인과 계좌 조회에 들지 않는 자산은 총자산에 들지 않아 업비트 앱의 값과 "
+    "다를 수 있습니다.",
+)
+ACCOUNT_BEFORE_SETUP: Final = "처음 설정을 마치면 계정을 볼 수 있습니다."
+ACCOUNT_NO_KEY: Final = "업비트 키가 없습니다"
+ACCOUNT_NO_HOLDINGS: Final = "보유한 코인이 없습니다."
+ACCOUNT_BLOCKED: Final = "오류 멈춤(일시 차단) 동안에는 계정을 읽지 않습니다."
+ACCOUNT_SUMMARY_LABELS: Final = {
+    "krw_available": "원화 주문 가능",
+    "krw_locked": "원화 주문에 묶임",
+    "holdings_value": "보유 코인 평가 합",
+    "total_assets": "총자산",
+    "total_buy": "총 매수 금액",
+    "total_pnl": "총 평가 손익",
+    "total_pnl_rate": "수익률",
+}
+ACCOUNT_TABLE_COLUMNS: Final = (
+    "코인",
+    "보유 수량",
+    "평균 매수가",
+    "현재가",
+    "매수 금액",
+    "평가 금액",
+    "평가 손익",
+    "수익률",
+    "고른 코인",
+    "비고",
+)
+ACCOUNT_PICKED_TEXT: Final = "고름"
+ACCOUNT_AVG_MODIFIED_TIP: Final = "업비트가 이 평균 매수가를 고쳤다고 알렸습니다."
+
+
+def account_read_at_text(when: str) -> str:
+    return f"{when}에 읽음"
+
+
+def account_excluded_text(value_n: int, pnl_n: int) -> str | None:
+    """뺀 줄이 있으면 한 줄(0인 쪽은 쓰지 않는다). 없으면 `None`."""
+    parts = []
+    if value_n:
+        parts.append(f"평가하지 못해 총자산에서 뺀 코인 {value_n}개")
+    if pnl_n:
+        parts.append(f"손익을 셈하지 못한 코인 {pnl_n}개")
+    return " · ".join(parts) if parts else None
+
+
+def account_failed_text(when: str, error_name: str | None) -> str:
+    return f"계정을 읽지 못했습니다(마지막으로 읽은 시각 {when}). {error_name or NO_VALUE}"
+
+
+def account_qty_text(qty: str, locked: str | None) -> str:
+    return f"{qty} (묶임 {locked})" if locked else qty

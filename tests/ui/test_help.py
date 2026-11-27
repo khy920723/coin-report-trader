@@ -336,7 +336,7 @@ def test_the_help_button_sits_below_the_screen_list_and_is_not_one_of_its_lines(
     assert button is not None
     assert left is not None
     assert button.text() == "도움말"
-    assert nav.count() == len(ScreenId) == 5
+    assert nav.count() == len(ScreenId) == 6
     assert nav.parentWidget() is left
     assert button.parentWidget() is left
     assert button.mapTo(window, QPoint(0, 0)).y() > nav.mapTo(window, QPoint(0, 0)).y()
@@ -383,6 +383,6 @@ def test_the_window_shows_the_unreadable_text_when_the_guide_is_gone(qapp, tmp_p
     made.deleteLater()
 
 
-def test_ctrl_number_shortcuts_still_open_the_five_screens(window):
+def test_ctrl_number_shortcuts_open_the_six_screens(window):
     keys = sorted(s.key().toString() for s in window.findChildren(QShortcut))
-    assert keys == ["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "F1"]
+    assert keys == ["Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "F1"]
