@@ -453,3 +453,62 @@ def test_the_vault_names_of_the_two_keys() -> None:
         "upbit_access_key",
         "upbit_secret_key",
     )
+
+
+def test_the_not_null_columns_of_the_new_tables_follow_the_spec(tmp_path: Path) -> None:
+    """3.9의 열 정의: NOT NULL인 열과 비어도 되는 열(0→4와 3→4 양쪽)."""
+    zero = open_database(tmp_path / "zero.db")
+    three = at_three(tmp_path / "three.db")
+    expected_not_null = {
+        "fills": {"order_id", "mode", "market", "side", "price", "qty", "fee", "filled_utc",
+                  "trade_key"},
+        "live_snapshots": {"market", "balance", "locked", "direct_locked", "read_utc"},
+        "external_changes": {"mode", "market", "qty_delta", "utc"},
+    }  # fmt: skip
+    try:
+        migrate(zero)
+        migrate(three)
+        for conn in (zero, three):
+            for table, names in expected_not_null.items():
+                found = {c[1] for c in columns(conn, table) if c[3] == 1}
+                assert names <= found, (table, names - found)
+            nullable = {c[1] for c in columns(conn, "fills") if c[3] == 0}
+            assert "realized_pnl" in nullable
+            orders = {c[1]: c[3] for c in columns(conn, "orders")}
+            assert (orders["executed_qty"], orders["avg_price_at_send"]) == (0, 0)
+            for table, names in expected_not_null.items():
+                for name in names:  # NULL을 넣으면 거절된다
+                    conn.execute("SAVEPOINT s")
+                    others = [c[1] for c in columns(conn, table) if c[1] != "id"]
+                    values = ", ".join("NULL" if c == name else "'1'" for c in others)
+                    with pytest.raises(sqlite3.IntegrityError):
+                        conn.execute(f"INSERT INTO {table} ({', '.join(others)}) VALUES ({values})")
+                    conn.execute("ROLLBACK TO s")
+                    conn.execute("RELEASE s")
+            conn.rollback()
+    finally:
+        zero.close()
+        three.close()
+
+
+def test_the_adapter_passes_the_close_error_and_sent_of_an_order_update(
+    conn: sqlite3.Connection,
+) -> None:
+    store = SqlitePaperStore(conn)
+    seed_account(conn)
+    order = store.insert_order(plan(), mode=Mode.PAPER, uid="a2", round_id=None, created_utc=NOW)
+    closed = datetime(2026, 1, 5, 3, 5, tzinfo=UTC)
+    store.update_order(
+        order.order_id,
+        state=OrderState.CANCELED,
+        closed_utc=closed,
+        error_name="거절",
+        sent=True,
+    )
+    assert conn.execute("SELECT state, closed_utc, error_name, sent FROM orders").fetchall() == [
+        ("canceled", "2026-01-05T03:05:00Z", "거절", 1)
+    ]
+    store.update_order(order.order_id, state=OrderState.NOT_SENT)  # 안 준 값은 지워지거나 그대로
+    assert conn.execute("SELECT state, closed_utc, error_name, sent FROM orders").fetchall() == [
+        ("not_sent", None, None, 1)  # `sent`는 안 주면 그대로
+    ]
