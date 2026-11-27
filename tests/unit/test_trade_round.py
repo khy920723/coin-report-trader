@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from fakes.ai import FakeAiRunner, answered, good_answers, timeout
 from fakes.clock import FakeClock
-from fakes.quote import OK, FakeQuoteSource, make_candles
+from fakes.quote import MINUTES, OK, FakeQuoteSource, make_candles
 from fakes.stage3 import stage3_trade, write_stage3
 
 from coin_report_trader.ai import inputs as ai_inputs
@@ -30,11 +30,13 @@ from coin_report_trader.core import (
     CandleUnit,
     CoinTradeView,
     Effort,
+    FillRecord,
     Market,
     MinuteCandle,
     Mode,
     NoOrderReason,
     OrderKind,
+    OrderPlan,
     OrderReason,
     OrderSide,
     OrderState,
@@ -50,8 +52,10 @@ from coin_report_trader.core import (
 )
 from coin_report_trader.core.texts import (
     BELOW_STOP_PRICE_UNREAD,
+    ERROR_BLOCKED,
     ERROR_NETWORK,
     STOP_ONLY_LEFT,
+    error_unknown_exchange,
     order_summary_text,
     qty_text,
     trade_balance_line,
@@ -63,6 +67,7 @@ from coin_report_trader.storage import trading as trade_store
 from coin_report_trader.storage.alerts import list_alerts
 from coin_report_trader.storage.database import migrate, open_database
 from coin_report_trader.storage.settings import read_first_setup_level, write_settings
+from coin_report_trader.trading.paper import lock_order
 
 AAA, BBB = "KRW-AAA", "KRW-BBB"
 HOUR = CandleUnit.MINUTE_60
@@ -683,3 +688,384 @@ def test_the_a17_stop_only_suffix_is_added_only_when_a_sell_was_canceled() -> No
     assert plain.text == "AI 보고서를 받지 못해 이번 회차에 주문하지 않았습니다(시간 초과)."
     assert marked.text == f"{plain.text} {STOP_ONLY_LEFT}"
     assert isinstance(marked, AlertSpec)
+
+
+# --- 검토의 고칠 것 7개(PR 검토. 경계와 갈래마다 시험 하나씩) -------------------------------------
+
+SEED_AT = datetime(2026, 1, 5, 2, tzinfo=UTC)
+"""심는 주문을 건 때(가짜 시계의 지금 03:00보다 한 시간 앞)."""
+
+
+def order_seed(
+    market: str,
+    side: OrderSide,
+    kind: OrderKind,
+    price: Decimal | None,
+    qty: str,
+    *,
+    sent: bool = True,
+    lock: bool = True,
+) -> Callable[[Any], None]:
+    """걸린 주문 하나를 심는다(`sent`가 거짓이면 보내기 전에 꺼진 줄). 지정가는 묶음도 쓴다."""
+
+    def seed(conn: Any) -> None:
+        amount = (price or Decimal(0)) * Decimal(qty)
+        plan = OrderPlan(market, side, kind, OrderReason.JUDGMENT, price, Decimal(qty), amount)
+        order = trade_store.insert_order(
+            conn,
+            plan,
+            mode=Mode.PAPER,
+            uid=f"seed-{market}-{side.value}-{kind.value}-{qty}",
+            round_id=None,
+            created_at=SEED_AT,
+            judged_until=SEED_AT,
+        )
+        if sent:
+            trade_store.update_order(conn, order.order_id, state=OrderState.OPEN, sent=True)
+        if lock and kind is OrderKind.LIMIT:
+            account = trade_store.read_paper_account(conn, Mode.PAPER)
+            assert account is not None
+            trade_store.write_paper_account(conn, Mode.PAPER, lock_order(account, order))
+
+    return seed
+
+
+def fill_seed(market: str, pnl: str) -> Callable[[Any], None]:
+    """그날(한국 09:00 경계) 프로그램이 판 체결 하나를 심는다."""
+
+    def seed(conn: Any) -> None:
+        plan = OrderPlan(
+            market, OrderSide.SELL, OrderKind.MARKET, OrderReason.STOP_LOSS, None,
+            Decimal(1), Decimal(1),
+        )  # fmt: skip
+        order = trade_store.insert_order(
+            conn, plan, mode=Mode.PAPER, uid="seed-fill", round_id=None, created_at=SEED_AT,
+            judged_until=SEED_AT,
+        )  # fmt: skip
+        account = trade_store.read_paper_account(conn, Mode.PAPER)
+        assert account is not None
+        fill = FillRecord(
+            0, order.order_id, Mode.PAPER, market, OrderSide.SELL, Decimal(1), Decimal(1),
+            Decimal(0), Decimal(pnl), datetime(2026, 1, 5, 1, tzinfo=UTC),
+        )  # fmt: skip
+        trade_store.record_fill(conn, fill, account)
+
+    return seed
+
+
+def seeds(*parts: Callable[[Any], None]) -> Callable[[Any], None]:
+    def seed(conn: Any) -> None:
+        for part in parts:
+            part(conn)
+
+    return seed
+
+
+def set_holding(rig: Rig, market: str, qty: str, avg: str) -> None:
+    """돌고 있는 앱 밖에서 가상 보유를 바꾼다(다른 연결. 수량 0이면 줄은 남기고 0으로 둔다)."""
+    conn = open_database(rig.db)
+    try:
+        account = trade_store.read_paper_account(conn, Mode.PAPER)
+        assert account is not None
+        amount = Decimal(avg) * Decimal(qty)
+        holding = PaperHolding(
+            market, Decimal(qty), Decimal(0), Decimal(avg) if Decimal(qty) else None,
+            amount, Decimal(qty),
+        )  # fmt: skip
+        others = tuple(h for h in account.holdings if h.market != market)
+        trade_store.write_paper_account(
+            conn, Mode.PAPER, replace(account, holdings=(*others, holding))
+        )
+    finally:
+        conn.close()
+
+
+def order_states(rig: Rig) -> list[tuple[str, str, str]]:
+    return rig.query("SELECT side, kind, state FROM orders ORDER BY id")
+
+
+def listed_rig(build: Callable[..., Rig], **kwargs: Any) -> Rig:
+    rig = build(**kwargs)
+    rig.start()
+    rig.worker.refresh_markets()
+    rig.settle()
+    return rig
+
+
+# 1. 손절선 아래 보유 확인의 경계(3.11.4)
+
+
+def test_an_empty_holding_row_does_not_ask_below_the_stop_line(build: Callable[..., Rig]) -> None:
+    def seed(conn: Any) -> None:
+        account = trade_store.read_paper_account(conn, Mode.PAPER)
+        assert account is not None
+        empty = PaperHolding(BBB, Decimal(0), Decimal(0), None, Decimal(0), Decimal(0))
+        trade_store.write_paper_account(conn, Mode.PAPER, replace(account, holdings=(empty,)))
+
+    rig = build(seed=seed)  # `paper_holdings`의 줄은 보유가 0이어도 남는다(3.12)
+    rig.start()
+    rig.quote.set_prices({BBB: Decimal(1)})
+    rig.worker.refresh_markets()
+    rig.settle()
+    rig.worker.save_settings((AAA, BBB), 30, first_setup=False, trade=stage3_trade((AAA, BBB)))
+    rig.settle()
+    assert rig.sink.of(BelowStopView) == []
+    assert rig.sink.of(SettingsView)[-1].coins == (AAA, BBB)
+
+
+@pytest.mark.parametrize(("price", "asks"), [("95", True), ("96", False)])
+def test_the_below_stop_question_includes_a_price_exactly_at_the_stop_line(
+    build: Callable[..., Rig], price: str, asks: bool
+) -> None:
+    rig = build(seed=holding_seed(BBB, "10", "100"))  # 손절선 = 100 × (1 − 5%) = 95
+    rig.start()
+    rig.quote.set_prices({BBB: Decimal(price)})
+    rig.worker.refresh_markets()
+    rig.settle()
+    rig.worker.save_settings((AAA, BBB), 30, first_setup=False, trade=stage3_trade((AAA, BBB)))
+    rig.settle()
+    assert bool(rig.sink.of(BelowStopView)) is asks
+    assert (rig.sink.of(SettingsView)[-1].coins == (AAA, BBB)) is (not asks)
+
+
+# 2. 설정 바뀜의 세 갈래(3.16.2)
+
+
+def test_each_setting_change_writes_its_own_event_lines(build: Callable[..., Rig]) -> None:
+    rig = listed_rig(build)
+    trend = TradeMethod.TREND
+    rig.worker.save_settings(
+        (AAA, BBB), 30, first_setup=False, trade=stage3_trade((AAA, BBB), method=trend)
+    )
+    rig.settle()
+    events = "SELECT kind, market, value FROM setting_events ORDER BY id"
+    assert rig.query(events) == [("coin_added", BBB, None)]  # 방식은 그대로라 그 줄이 없다
+    rig.worker.save_settings(
+        (AAA, BBB),
+        30,
+        first_setup=False,
+        trade=stage3_trade((AAA, BBB), method=TradeMethod.MEAN_REVERSION),
+    )
+    rig.settle()
+    assert rig.query(events)[1:] == [
+        ("method_changed", AAA, "mean_reversion"),
+        ("method_changed", BBB, "mean_reversion"),
+    ]
+    rig.worker.save_settings((AAA, BBB), 30, first_setup=False, candle_count=200)
+    rig.settle()
+    assert rig.query(events)[3:] == [
+        ("candle_count_changed", AAA, "200"),
+        ("candle_count_changed", BBB, "200"),
+    ]
+
+
+# 3. A-16은 보유 중인 코인을 뺄 때만, A-15는 다시 통과하면 풀림(3.11.4, 3.11.2)
+
+
+def test_removing_a_coin_without_a_holding_has_no_a16(build: Callable[..., Rig]) -> None:
+    rig = listed_rig(build, coins=(AAA, BBB))
+    rig.worker.save_settings((AAA,), 30, first_setup=False, trade=stage3_trade((AAA,)))
+    rig.settle()
+    assert rig.sink.of(SettingsView)[-1].coins == (AAA,)
+    assert "A-16" not in rig.codes()
+    assert ("coin_removed", BBB) in rig.query("SELECT kind, market FROM setting_events")
+
+
+def test_a15_is_made_again_after_the_saved_setting_passed_in_between(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build()
+    rig.start()
+    assert "A-15" not in rig.codes()
+
+    def save_with(min_order: str) -> None:
+        rig.worker._min_order = Decimal(min_order)  # 쉬는 동안 바꾼다(최소 주문 금액이 바뀜)
+        rig.worker.save_settings((AAA,), 30, first_setup=False)  # `trade=None`: 저장된 칸을 검사
+        rig.settle()
+
+    save_with("180000")
+    assert rig.codes().count("A-15") == 1
+    save_with("180000")
+    assert rig.codes().count("A-15") == 1  # 걸려 있는 동안은 다시 만들지 않는다
+    save_with("5000")
+    assert rig.codes().count("A-15") == 1  # 다시 통과했다
+    save_with("180000")
+    assert rig.codes().count("A-15") == 2  # 다시 걸리면 새로 만든다
+
+
+# 4. 켤 때 `sent` 0인 주문을 닫으며 묶음도 푼다(3.8.3)
+
+
+def test_startup_frees_the_locked_krw_of_an_unsent_buy(build: Callable[..., Rig]) -> None:
+    seed = order_seed(AAA, OrderSide.BUY, OrderKind.LIMIT, Decimal(99), "10", sent=False)
+    rig = build(seed=seed)
+    rig.start()
+    assert order_states(rig) == [("buy", "limit", "not_sent")]
+    account = rig.account()
+    assert (account.krw, account.locked_krw) == (Decimal(1_000_000), Decimal(0))
+
+
+# 5. 손절의 순서와 A-3(3.9)
+
+
+def test_a_stop_loss_cancels_the_coins_open_orders_before_it_sells(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build(
+        seed=seeds(
+            holding_seed(AAA, "100", "100"),
+            order_seed(AAA, OrderSide.BUY, OrderKind.LIMIT, Decimal(90), "10"),
+        )
+    )
+    rig.start()
+    assert order_states(rig) == [("buy", "limit", "open")]
+    rig.quote.set_prices({AAA: Decimal(90)})  # 손절선 95 아래
+    rig.quote.set_book(AAA, Decimal(91), Decimal(89))
+    rig.advance(60)
+    assert order_states(rig) == [("buy", "limit", "canceled"), ("sell", "market", "filled")]
+    assert rig.account().locked_krw == 0
+
+
+def test_a_holding_too_small_to_sell_is_one_a3_and_it_comes_back_after_the_holding_ends(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build(seed=holding_seed(AAA, "1", "100"))
+    rig.quote.set_prices({AAA: Decimal(90)})  # 손절선(95) 이하이지만 평가 금액 90원 < 5,000원
+    rig.start()
+    assert rig.codes().count("A-3") == 1
+    assert rig.orders() == []
+    rig.advance(60)
+    assert rig.codes().count("A-3") == 1  # 그 상태에서는 되풀이하지 않는다
+    set_holding(rig, AAA, "0", "0")
+    rig.advance(60)  # 보유가 없는 점검이 풀어 둔다
+    set_holding(rig, AAA, "1", "100")
+    rig.advance(60)
+    assert rig.codes().count("A-3") == 2
+
+
+# 6. 하루 손실 한도의 경계와 취소 범위(3.8.2, 3.9)
+
+
+@pytest.mark.parametrize(("pnl", "reached"), [("-3000", True), ("-2999", False)])
+def test_the_daily_loss_limit_includes_exactly_the_limit_and_cancels_only_buys(
+    build: Callable[..., Rig], pnl: str, reached: bool
+) -> None:
+    rig = build(
+        seed=seeds(
+            holding_seed(AAA, "100", "100"),
+            fill_seed(AAA, pnl),
+            order_seed(AAA, OrderSide.BUY, OrderKind.LIMIT, Decimal(90), "10"),
+            order_seed(AAA, OrderSide.SELL, OrderKind.LIMIT, Decimal(150), "10"),
+        )
+    )
+    rig.start()
+    states = [(side, state) for side, _, state in order_states(rig) if state != "filled"]
+    assert states == [("buy", "canceled" if reached else "open"), ("sell", "open")]
+    assert rig.codes().count("A-12") == (1 if reached else 0)
+
+
+# 7. 1분 점검의 판정 길(3.7.2, 3.8.4, 3.9)
+
+BUY_99 = order_seed(AAA, OrderSide.BUY, OrderKind.LIMIT, Decimal(99), "10")
+JUDGED_UNTIL = "SELECT judged_until_utc, state FROM orders"
+
+
+def test_a_minute_candle_that_could_not_be_read_is_judged_again_over_the_same_span(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build(seed=BUY_99)
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 20, kind=MINUTES, market=AAA)
+    rig.start()
+    assert rig.query(JUDGED_UNTIL) == [("2026-01-05T02:00:00Z", "open")]  # 본 구간이 앞서지 않았다
+    assert "A-24" not in rig.codes()  # 잠깐의 문제는 알림이 없다
+    rig.quote.clear_script()
+    low = MinuteCandle(
+        AAA, datetime(2026, 1, 5, 2, 10, tzinfo=UTC), Decimal(100), Decimal(98), Decimal(98)
+    )
+    rig.quote.put_minutes(low)
+    rig.advance(60)
+    assert rig.query("SELECT state FROM orders") == [("filled",)]
+    assert rig.query("SELECT filled_utc FROM fills") == [("2026-01-05T02:11:00Z",)]
+
+
+def test_the_judged_span_is_stored_after_a_judgment_with_no_fill(build: Callable[..., Rig]) -> None:
+    rig = build(seed=BUY_99)
+    rig.start()
+    assert rig.query(JUDGED_UNTIL) == [("2026-01-05T03:00:00Z", "open")]
+    rig.advance(60)
+    assert rig.query(JUDGED_UNTIL) == [("2026-01-05T03:01:00Z", "open")]
+    assert len(rig.quote.book_requests(MINUTES, AAA)) == 2  # 봉을 겹쳐 받지 않고 이어 받는다
+
+
+def test_a_market_order_is_never_judged_by_minute_candles(build: Callable[..., Rig]) -> None:
+    seed = seeds(
+        holding_seed(AAA, "100", "100"),
+        order_seed(AAA, OrderSide.SELL, OrderKind.MARKET, None, "5"),
+    )
+    rig = build(seed=seed)
+    rig.start()
+    rig.advance(60)
+    assert rig.quote.book_requests(MINUTES, AAA) == []
+    assert "A-30" not in rig.codes()
+    assert order_states(rig) == [("sell", "market", "open")]
+
+
+def test_a_blocked_price_read_stops_price_requests_until_the_block_ends(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build()
+    rig.quote.script(QuoteError(ERROR_BLOCKED, retry_after=600), kind="price", market=AAA)
+    rig.start()
+    count = len(rig.quote.price_requests(AAA))
+    rig.advance(60)
+    rig.advance(60)
+    assert len(rig.quote.price_requests(AAA)) == count  # 차단 중에는 요청하지 않는다
+    rig.advance(660)
+    assert len(rig.quote.price_requests(AAA)) > count  # 풀린 뒤에는 다시 읽는다
+
+
+def test_a_blocked_minute_candle_read_stops_minute_and_price_requests(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build(seed=BUY_99)
+    rig.quote.script(QuoteError(ERROR_BLOCKED, retry_after=600), kind=MINUTES, market=AAA)
+    rig.start()
+    minutes = len(rig.quote.book_requests(MINUTES, AAA))
+    prices = len(rig.quote.price_requests(AAA))
+    rig.advance(60)
+    assert len(rig.quote.book_requests(MINUTES, AAA)) == minutes
+    assert len(rig.quote.price_requests(AAA)) == prices
+    assert rig.query(JUDGED_UNTIL) == [("2026-01-05T02:00:00Z", "open")]
+
+
+def test_an_unlisted_exchange_error_on_minute_candles_is_one_a24_per_sixty_minutes(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build(seed=BUY_99)
+    unlisted = QuoteError(error_unknown_exchange(418))
+    rig.quote.script(*[unlisted] * 80, kind=MINUTES, market=AAA)
+    rig.start()
+    assert rig.codes().count("A-24") == 1
+    rig.advance(60)
+    assert (
+        rig.codes().count("A-24") == 1
+    )  # 같은 코인, 같은 오류 이름은 60분 안에 다시 만들지 않는다
+    rig.advance(3600)
+    assert rig.codes().count("A-24") == 2
+    (first, *_) = [a for a in rig.alerts() if a.code == "A-24"]
+    assert (first.category, first.detail.stage) == (AlertCategory.OTHER, "거래소와 맞춰 보기")
+
+
+def test_no_round_runs_until_every_open_order_was_judged(build: Callable[..., Rig]) -> None:
+    rig = build(seed=BUY_99)
+    rig.quote.script(*[QuoteError(ERROR_NETWORK)] * 80, kind=MINUTES, market=AAA)
+    rig.start()
+    assert rig.worker._trade_ready is False
+    rig.advance(3610)  # (라)의 때가 와도 판정이 끝나지 않아 회차를 돌리지 않는다
+    assert rig.query("SELECT count(*) FROM rounds") == [(0,)]
+    assert rig.worker._trade_ready is False
+    rig.quote.clear_script()
+    rig.advance(60)
+    assert rig.worker._trade_ready is True
+    rig.round()
+    assert rig.query("SELECT count(*) FROM rounds") == [(1,)]
