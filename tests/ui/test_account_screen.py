@@ -442,6 +442,31 @@ def test_the_excluded_line_only_writes_the_nonzero_parts(window, value_n, pnl_n,
     assert _text(window, "accountExcluded") == text
 
 
+def test_the_read_time_shows_only_with_a_read_time(window):
+    _done(window)
+    screen = _account(window)
+    read_at = _find(screen, QLabel, "accountReadAt")
+    window.apply(_view())
+    assert read_at.isVisibleTo(screen)
+    window.apply(_view(read_utc=None))
+    assert not read_at.isVisibleTo(screen)
+    assert read_at.text() == ""
+    window.apply(_view())
+    assert read_at.isVisibleTo(screen)
+
+
+@pytest.mark.parametrize(("value_n", "pnl_n"), [(1, 0), (0, 2), (3, 1)])
+def test_the_excluded_line_shows_for_each_kind_and_hides_at_zero(window, value_n, pnl_n):
+    _done(window)
+    screen = _account(window)
+    line = _find(screen, QLabel, "accountExcluded")
+    window.apply(_view(excluded_value=value_n, excluded_pnl=pnl_n))
+    assert line.isVisibleTo(screen)
+    window.apply(_view(excluded_value=0, excluded_pnl=0))
+    assert not line.isVisibleTo(screen)
+    assert line.text() == ""
+
+
 def test_no_excluded_line_when_nothing_was_left_out(window):
     _done(window)
     window.apply(_view(excluded_value=0, excluded_pnl=0))
