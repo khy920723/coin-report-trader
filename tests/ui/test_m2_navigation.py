@@ -316,7 +316,8 @@ def test_ctrl_1_to_6_open_the_screens_in_the_list_order(window):
         for shortcut in window.findChildren(QShortcut)
         if shortcut.key().toString().startswith("Ctrl+")  # F1(도움말)은 test_help.py가 본다
     }
-    assert sorted(shortcuts) == [f"Ctrl+{n}" for n in range(1, 7)]  # 현황 다음이 계정(M5 명세 3.15.1)
+    # 현황 다음이 계정이라 여섯이다(M5 명세 3.15.1).
+    assert sorted(shortcuts) == [f"Ctrl+{n}" for n in range(1, 7)]
     for number, screen_id in enumerate(ScreenId, start=1):
         select_screen(
             window, ScreenId.REPORTS if screen_id is not ScreenId.REPORTS else ScreenId.SETTINGS
