@@ -376,8 +376,9 @@ def test_b21_an_m0_database_is_raised_to_schema_one_and_the_self_test_passes(
             if not name.startswith("sqlite_")
         )
         assert names == [
-            "alerts", "candles", "fills", "orders", "paper_accounts", "paper_holdings", "pauses",
-            "report_rows", "reports", "rounds", "setting_events", "settings",
+            "alerts", "candles", "external_changes", "fills", "live_snapshots", "orders",
+            "paper_accounts", "paper_holdings", "pauses", "report_rows", "reports", "rounds",
+            "setting_events", "settings",
         ]  # fmt: skip
         (sql,) = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'alerts'").fetchone()
         assert "AUTOINCREMENT" in sql.upper()
