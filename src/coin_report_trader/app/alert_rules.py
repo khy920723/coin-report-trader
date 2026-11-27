@@ -28,8 +28,13 @@ from coin_report_trader.core.texts import (
     CODE_CLAUDE_OFF,
     CODE_COIN_REMOVED,
     CODE_DAILY_LOSS,
+    CODE_DIRECT_CANCELED,
+    CODE_DIRECT_LOCKED,
     CODE_ERROR_PAUSE,
+    CODE_EXTERNAL,
     CODE_FILLED,
+    CODE_KEY_EXPIRY,
+    CODE_LIVE_OFF,
     CODE_LOGGED_OUT,
     CODE_MARKETS_FAILED,
     CODE_MIN_ORDER_CHANGED,
@@ -378,6 +383,102 @@ def filled(coin: str, side: str, qty: Decimal, price: Decimal, trade_line: str) 
 
 def _limit(code: str, coin: str | None, text: str) -> AlertSpec:
     return AlertSpec(AlertCategory.LIMIT, code, coin, text, "", "", "", "")
+
+
+# --- 5단계(M5 명세 3.10) --------------------------------------------------------------------------
+
+KEY_STAGE: Final = "업비트 키"
+"""A-32의 단계(M5 명세 3.10)."""
+KEY_EXPIRY_SOON: Final = "키 만료 임박"
+KEY_EXPIRED: Final = "키 만료"
+AFTER_KEY_EXPIRY_PAPER: Final = "실거래 켜기 전에 새 키를 넣으세요."
+AFTER_KEY_EXPIRY_LIVE: Final = "새 키를 넣기 전까지 실거래는 그대로 돕니다."
+AFTER_KEY_SAVE_FAILED: Final = "키는 그대로입니다. 다시 하세요."
+"""A-29("업비트 키 저장")의 그 뒤에 한 일(명세에 글이 없어 웹후크 주소의 글을 따라 정했다)."""
+AFTER_LIVE_ON_FAILED: Final = "실거래를 켜지 않았습니다. 모드는 모의매매 그대로입니다."
+"""A-29("실거래 켜기")의 그 뒤에 한 일(M5 명세 3.7.2의 3. 모드를 쓰지 못하면 켜지 않는다)."""
+KRW_COIN_TEXT: Final = "원화"
+"""A-22의 {코인}이 원화일 때(M5 명세 3.10)."""
+
+
+def live_no_krw(coin: str) -> AlertSpec:
+    """A-11의 실거래 글(제한 알림. M5 명세 3.10)."""
+    return _limit(CODE_NO_KRW, coin, "원화 잔고가 모자라 이번 회차에 사지 않았습니다.")
+
+
+def direct_locked(coin: str, qty_text: str) -> AlertSpec:
+    """A-6(보유 알림): 직접 걸어 둔 주문에 묶인 수량(설계서 12)."""
+    return AlertSpec(
+        AlertCategory.HOLDING, CODE_DIRECT_LOCKED, coin,
+        f"직접 걸어 둔 주문에 묶인 {qty_text}은 팔 수 없습니다.", "", "", "", "",
+    )  # fmt: skip
+
+
+def direct_canceled(coin: str) -> AlertSpec:
+    """A-7(보유 알림): 직접 걸어 둔 주문이 거래소에서 취소됨(설계서 12)."""
+    return AlertSpec(
+        AlertCategory.HOLDING, CODE_DIRECT_CANCELED, coin,
+        "프로그램 주문과 만나 직접 걸어 둔 주문이 거래소에서 취소되었습니다.", "", "", "", "",
+    )  # fmt: skip
+
+
+def live_off(uncanceled: tuple[str, ...] = ()) -> AlertSpec:
+    """A-20(보유 알림, 코인 없음): 실거래에서 나감. 취소하지 못한 주문이 있으면 덧붙인다(3.7.3)."""
+    text = "실거래를 끝냈습니다. 남은 실제 보유에는 손절이 없습니다."
+    if uncanceled:
+        text = f"{text} 취소하지 못한 주문: {', '.join(uncanceled)}"
+    return AlertSpec(AlertCategory.HOLDING, CODE_LIVE_OFF, None, text, "", "", "", "")
+
+
+def external_change(coin: str | None) -> AlertSpec:
+    """A-22(보유 알림): 외부 변동. 원화면 코인이 없고 {코인}은 "원화"다(설계서 12, 3.10)."""
+    text = "프로그램이 내지 않은 잔고 변화가 있었습니다(외부 변동)."
+    if coin is None:
+        text = f"{KRW_COIN_TEXT}: {text}"
+    return AlertSpec(AlertCategory.HOLDING, CODE_EXTERNAL, coin, text, "", "", "", "")
+
+
+def key_expiry(expires_text: str, *, expired: bool, live: bool) -> AlertSpec:
+    """A-32(기타 알림, 코인 없음): 업비트 키의 만료일까지 30일 이하이거나 지남(3.8, 3.10)."""
+    if expired:
+        text = "업비트 키가 만료되었습니다. 새 키를 만들어 넣으세요."
+    else:
+        text = f"업비트 키가 {expires_text}에 만료됩니다. 새 키를 만들어 넣으세요."
+    return AlertSpec(
+        AlertCategory.OTHER, CODE_KEY_EXPIRY, None, text, KEY_STAGE,
+        KEY_EXPIRED if expired else KEY_EXPIRY_SOON, f"만료일 {expires_text}",
+        AFTER_KEY_EXPIRY_LIVE if live else AFTER_KEY_EXPIRY_PAPER,
+    )  # fmt: skip
+
+
+def exchange_error_pause(stage: str, kind: str) -> AlertSpec:
+    """A-23(오류 알림): 업비트의 거래를 계속 막는 오류(키 오류 넷. 3.5.5). 일시 차단은
+    `error_pause`다."""
+    return AlertSpec(
+        AlertCategory.ERROR, CODE_ERROR_PAUSE, None,
+        f"거래소 오류({kind})로 오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다.",
+        stage, kind, f"업비트가 요청을 받지 않았습니다({kind}).",
+        "사용자가 풀 때까지 회차와 손절을 하지 않습니다.",
+    )  # fmt: skip
+
+
+def key_save_failed(stage: str, error_name: str) -> AlertSpec:
+    """A-29(오류 알림): 업비트 키를 보관소에 저장하지 못함, 지우지 못함(3.8). 오류 멈춤이 아니다."""
+    return AlertSpec(
+        AlertCategory.ERROR, CODE_SAVE_FAILED, None, text_save_failed(stage, error_name),
+        stage, error_name, error_name, AFTER_KEY_SAVE_FAILED,
+    )  # fmt: skip
+
+
+def live_on_save_failed(stage: str, content: str, *, error_pause: bool) -> AlertSpec:
+    """A-29(오류 알림): 실거래 켜기·끄기의 모드나 실제 계정을 쓰지 못함(3.7.2의 3, 3.9)."""
+    after = AFTER_LIVE_ON_FAILED
+    if error_pause:
+        after = f"{after} {AFTER_ERROR_PAUSE}"
+    return AlertSpec(
+        AlertCategory.ERROR, CODE_SAVE_FAILED, None, text_save_failed(stage, ERROR_STORAGE),
+        stage, ERROR_STORAGE, content, after,
+    )  # fmt: skip
 
 
 class RepeatRules:

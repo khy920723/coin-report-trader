@@ -212,6 +212,9 @@ def _run_window(
             sessions_root=paths.root / SESSIONS_FOLDER,
             book=None if services is None else services.book,
             min_order=None if services is None else services.min_order,
+            vault=None if services is None else services.vault,
+            real_vault=True,
+            exchange_transport=None if services is None else services.exchange_transport,
         )
         sender.attach(worker)
         actions = AppActions(worker, sender)
