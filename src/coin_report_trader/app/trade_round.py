@@ -12,14 +12,15 @@
   같은 점검을 한 번 하고(소급 판정. 3.7.4), 걸린 주문의 판정이 끝나기 전에는 회차를 돌리지 않는다.
 - 멈춤과 오류 멈춤, 전량 매도, 상태 띠의 켜는 중 값은 25번이다(이 모듈은 다루지 않는다).
 
-`DataWorker`가 갖춰야 하는 것: `_conn`, `_clock`, `_settings`, `_client`, `_rules`, `_stop`, `_post`,
+`DataWorker`가 갖춰야 하는 것: `_conn`, `_clock`, `_settings`, `_client`, `_rules`, `_stop`,
+`_post`,
 `_emit_alert`, `_emit_save_failed`, `_emit_unexpected`, `_emit_markets_failed`, `_is_blocked`,
 `_set_block`, `_active_round`, `_next_due`, `_markets_listed`.
 """
 
 import logging
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Final
@@ -31,6 +32,7 @@ from coin_report_trader.core import (
     ORDER_KIND_TITLES,
     ORDER_SIDE_TITLES,
     PAPER_FEE_RATE,
+    SAVE_TARGET_SETTINGS,
     BelowStopView,
     CoinTradeView,
     Direction,
@@ -54,14 +56,18 @@ from coin_report_trader.core import (
     SettingsView,
     StorageError,
     TodayView,
+    TradeMethod,
     TradeSettings,
     coin_label,
 )
 from coin_report_trader.core.clock import KST
 from coin_report_trader.core.texts import (
     BELOW_STOP_PRICE_UNREAD,
+    CODE_NO_AVG,
+    CODE_PRICE_GUARD,
+    CODE_TOO_SMALL,
     ERROR_BLOCKED,
-    SAVE_TARGET_SETTINGS,
+    ERROR_STORAGE,
     STAGE_ORDER,
     STAGE_ORDER_SAVE,
     STAGE_RECONCILE,
@@ -82,6 +88,7 @@ from coin_report_trader.trading.orders import (
     decide,
     error_branch,
     new_uid,
+    widen_price,
 )
 from coin_report_trader.trading.paper import (
     apply_fill,
@@ -196,6 +203,8 @@ class TradeMixin:
         """저장된 설정이 지금의 최소 주문 금액으로 검사에 걸린다(3.11.2의 마지막 줄, A-15)."""
         self._round_stage: RoundStage | None = None
         self._round_number: int | None = None
+        self._tick_error_name = NoOrderReason.NO_PRICE_OR_TICK.value
+        """호가 단위를 마지막으로 읽지 못한 까닭의 오류 이름(주문 때의 A-2)."""
 
     # --- 묻기 ---------------------------------------------------------------------------------
 
@@ -489,13 +498,13 @@ class TradeMixin:
         rules = OrderRules(tick if tick is not None else _ZERO, self._min_order)
         decision = stop_loss_plan(holding, price, trade, rules)
         if decision.plan is None:
-            if decision.alert == alert_rules.CODE_TOO_SMALL_ALIAS:
+            if decision.alert == CODE_TOO_SMALL:
                 self._emit_alert(
                     alert_rules.too_small(market), self._rules.want_a3(market), module=_MODULE
                 )
             return
         self._rules.a3_cleared(market)
-        result = self._place(decision.plan, None, stop=True)
+        result = self._place(decision.plan, None)
         if isinstance(result, str):
             wanted = self._rules.want_a8(market, self._clock.monotonic())
             self._emit_alert(alert_rules.stop_failed(market, result), wanted, module=_MODULE)
@@ -514,10 +523,12 @@ class TradeMixin:
         for order in trade_store.list_open_orders(self._conn, Mode.PAPER):
             if order.side is OrderSide.BUY:
                 self._cancel_order(order)
-        self._emit_alert(alert_rules.daily_loss(), self._rules.want_a12(start.date()), module=_MODULE)
+        self._emit_alert(
+            alert_rules.daily_loss(), self._rules.want_a12(start.date()), module=_MODULE
+        )
         return True
 
-    # --- 주문 하나의 동작 --------------------------------------------------------------------------
+    # --- 주문 하나의 동작 ------------------------------------------------------------------------
 
     def _tick_for(self, market: str) -> Decimal | None:
         """이 회차에 읽은 호가 단위. 없으면 읽는다. 읽지 못하면 `None`."""
@@ -529,6 +540,7 @@ class TradeMixin:
         try:
             tick = self._client.read_tick_size(market)
         except QuoteError as exc:
+            self._tick_error_name = str(exc.error_name)
             if exc.error_name == ERROR_BLOCKED:
                 self._set_block(exc.retry_after)
             return None
@@ -560,7 +572,7 @@ class TradeMixin:
         self._cancel_pending.discard(order.order_id)
         return True
 
-    def _place(self, plan: OrderPlan, round_id: int | None, *, stop: bool = False) -> int | str:
+    def _place(self, plan: OrderPlan, round_id: int | None) -> int | str:
         """식별값과 주문 값을 먼저 쓰고(3.8.3) 모의 엔진에 낸다. 낸 주문의 번호, 내지 못하면 그
         오류 이름(최우선 호가를 읽지 못함)을 돌려준다. 주문을 쓰지 못하면 A-29("주문 저장")와
         `StorageError`의 이름이다."""
@@ -581,7 +593,7 @@ class TradeMixin:
             )
         except StorageError as exc:
             self._emit_save_failed(STAGE_ORDER_SAVE, plan.market, exc, module=_MODULE)
-            return alert_rules.ERROR_STORAGE_NAME
+            return ERROR_STORAGE
         self._rules.a29_succeeded(STAGE_ORDER_SAVE, plan.market)
         fill = fill_on_place(order, ask, bid, now)
         account = self._db_account()
@@ -592,7 +604,6 @@ class TradeMixin:
         self._order_alert(order, plan.amount, account)
         if fill is not None:
             self._settle(order, fill)
-        del stop
         return order.order_id
 
     def _read_book(self, market: str) -> tuple[Decimal, Decimal] | str:
@@ -719,7 +730,9 @@ class TradeMixin:
                 ]
             )
         for price, when in self._round_canceled.get(market, ()):
-            rows.append([market, "체결되지 않고 끝난 주문 가격", decimal_text(price), utc_text(when)])
+            rows.append(
+                [market, "체결되지 않고 끝난 주문 가격", decimal_text(price), utc_text(when)]
+            )
         return write_csv(FINAL_TRADES_COLUMNS, rows)
 
     def _mark_method(self, report_id: int) -> None:
@@ -886,8 +899,8 @@ class TradeMixin:
         stop_only: bool,
     ) -> None:
         """`decide`가 정한 알림(A-3, A-4, A-9)."""
-        if code == alert_rules.CODE_PRICE_GUARD_ALIAS:
-            predicted = trade.method.value == "mean_reversion"
+        if code == CODE_PRICE_GUARD:
+            predicted = trade.method is TradeMethod.MEAN_REVERSION
             base = view.predicted_price if predicted else None
             if base is None:
                 base = view.sell_price if view.direction is Direction.DOWN else view.buy_price
@@ -900,10 +913,10 @@ class TradeMixin:
                 stop_only=stop_only,
             )
             self._emit_alert(spec, True, module=_MODULE)
-        elif code == alert_rules.CODE_NO_AVG_ALIAS:
+        elif code == CODE_NO_AVG:
             spec = alert_rules.no_avg_price(market, STAGE_ORDER)
             self._emit_alert(spec, self._rules.want_a9(market), module=_MODULE)
-        elif code == alert_rules.CODE_TOO_SMALL_ALIAS:
+        elif code == CODE_TOO_SMALL:
             spec = alert_rules.too_small(market)
             self._emit_alert(spec, self._rules.want_a3(market), module=_MODULE)
 
@@ -911,8 +924,6 @@ class TradeMixin:
         self, base: Decimal | None, view: Any, trade: TradeSettings, rules: OrderRules, mr: bool
     ) -> Decimal | None:
         """A-4의 {가격}: 허용 범위로 넓혀 맞춘 가격(3.8.5)."""
-        from coin_report_trader.trading.orders import widen_price
-
         if base is None:
             return None
         if mr:
@@ -970,9 +981,10 @@ class TradeMixin:
             if holding.market in trade.coin_ratios and holding.avg_price is not None:
                 used += holding.avg_price * holding.qty
         for order in opens:
-            if order.side is OrderSide.BUY and order.price is not None:
-                if order.market in trade.coin_ratios:
-                    used += order.price * order.qty
+            buying = order.side is OrderSide.BUY and order.price is not None
+            if buying and order.market in trade.coin_ratios:
+                assert order.price is not None
+                used += order.price * order.qty
         self._post(
             TodayView(
                 realized_pnl=pnl,
@@ -1072,15 +1084,3 @@ def _ran_at(conn: Any, moment: datetime, round_id: int) -> bool:
 
 def _price_text(value: Decimal | None) -> str:
     return "-" if value is None else format(value.normalize(), ",f")
-
-
-def replace_trade(view: SettingsView, trade: TradeSettings | None) -> SettingsView:
-    """`trade`가 `None`이면 그대로, 아니면 그 매매 칸을 담은 `SettingsView`."""
-    return view if trade is None else replace(view, trade=trade)
-
-
-def merged_errors(*parts: Mapping[str, str]) -> dict[str, str]:
-    merged: dict[str, str] = {}
-    for part in parts:
-        merged.update(part)
-    return merged
