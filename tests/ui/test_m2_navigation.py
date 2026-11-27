@@ -67,6 +67,10 @@ class Actions:
 
     def load_history(self, tab, market, day, mode=None) -> None: ...
 
+    def account_visible(self, visible) -> None: ...
+
+    def refresh_account(self) -> None: ...
+
     def retry_candles(self) -> None:
         self.calls.append("retry_candles")
 

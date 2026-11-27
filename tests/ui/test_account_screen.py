@@ -338,7 +338,7 @@ def test_before_the_first_setup_only_one_line_shows(window):
     assert message.text() == "처음 설정을 마치면 계정을 볼 수 있습니다."
     assert not message.isHidden()
     assert _find(screen, QWidget, "accountSummary").isHidden()
-    assert _find(screen, QTableWidget, "accountTable").isHidden()
+    assert _find(screen, QWidget, "accountTableCard").isHidden()
     assert _find(screen, QPushButton, "accountGoKey").isHidden()
     assert not _find(screen, QPushButton, "accountRefresh").isEnabled()
 
@@ -359,6 +359,12 @@ def test_without_a_key_the_go_key_button_opens_the_key_group(window, actions):
     key = _find(screen_widget(window, ScreenId.SETTINGS), QWidget, "settingsUpbitKey")
     scroll = _find(window, QScrollArea, "screenScroll_settings")
     assert scroll.isAncestorOf(key)
+    QApplication.processEvents()
+    bar = scroll.verticalScrollBar()
+    assert bar.maximum() > 0  # 설정 화면은 한 화면보다 길다
+    assert bar.value() > 0  # 업비트 키 묶음이 보이게 넘어갔다
+    top = key.mapTo(scroll.viewport(), key.rect().topLeft()).y()
+    assert 0 <= top < scroll.viewport().height()
     # 가기만 한다: 계정을 읽으라고 부르지 않는다.
     assert ("refresh_account",) not in actions.calls
 
@@ -377,7 +383,7 @@ def test_the_first_read_shows_loading(window):
     screen = _account(window)
     assert _text(window, "accountMessage") == "불러오는 중"
     assert _find(screen, QWidget, "accountSummary").isHidden()
-    assert _find(screen, QTableWidget, "accountTable").isHidden()
+    assert _find(screen, QWidget, "accountTableCard").isHidden()
     assert _find(screen, QPushButton, "accountGoKey").isHidden()
     window.apply(
         _view(AccountState.LOADING, rows=(), krw_available=None, reading=True, read_utc=None)
@@ -629,7 +635,7 @@ def test_a_failed_first_read_has_a_dash_for_the_time_and_no_values(window):
         "계정을 읽지 못했습니다(마지막으로 읽은 시각 -). 응답 형식 오류"
     )
     assert _find(_account(window), QWidget, "accountSummary").isHidden()
-    assert _table(window).isHidden()
+    assert _find(_account(window), QWidget, "accountTableCard").isHidden()
 
 
 def test_a_blocked_read_keeps_the_values_dim_and_says_why(window):
