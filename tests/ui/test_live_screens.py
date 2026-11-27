@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -49,7 +50,7 @@ from coin_report_trader.core.views import AlertView
 from coin_report_trader.ui import create_main_window, screen_widget, select_screen, theme
 from coin_report_trader.ui.dialogs import build_live_confirm_box, live_confirm_texts
 from coin_report_trader.ui.history_screen import HistoryScreen
-from coin_report_trader.ui.live_cards import UpbitKeyDialog, key_shape_ok
+from coin_report_trader.ui.live_cards import UpbitKeyCard, UpbitKeyDialog, key_shape_ok
 
 COINS = ("KRW-AAA", "KRW-BBB")
 NOW = datetime(2026, 1, 2, 1, 30, tzinfo=UTC)
@@ -252,6 +253,34 @@ def test_the_key_state_dates_and_expiry_colors(window):
     assert theme.ERROR.lower() in expires.styleSheet().lower()
 
 
+@pytest.mark.parametrize(
+    ("days_left", "color"),
+    [
+        (31, None),
+        (30, theme.CAUTION),  # 30일 이하
+        (1, theme.CAUTION),
+        (0, theme.CAUTION),  # 오늘이 만료일
+        (-1, theme.ERROR),  # 어제 만료
+        (-40, theme.ERROR),
+    ],
+)
+def test_the_expiry_color_edges(qapp, days_left, color):
+    card = UpbitKeyCard()
+    try:
+        today = date(2026, 6, 1)
+        expires = today + timedelta(days=days_left)
+        view = UpbitKeyView(True, expires - timedelta(days=365), expires, True, None)
+        card.render(view, active=True, live=False, today=today, message=None)
+        label = card.findChild(QLabel, "settingsUpbitKeyExpires")
+        assert label is not None
+        if color is None:
+            assert label.styleSheet() == ""
+        else:
+            assert label.styleSheet() == f"color: {color};"
+    finally:
+        card.deleteLater()
+
+
 def test_the_key_card_never_shows_a_key_value(window):
     _done(window)
     window.apply(_key())
@@ -327,10 +356,12 @@ def test_the_key_dialog_is_a_modal_with_hidden_fields_and_today(window, actions)
     today = datetime.now(UTC).astimezone().date()
     shown = created.date().toPython()
     assert abs((shown - today).days) <= 1  # 한국 날짜와 이 PC의 날짜가 하루 어긋날 수 있다
-    assert _find(dialog, QPushButton, "upbitKeySave").text() == "저장"
+    save = _find(dialog, QPushButton, "upbitKeySave")
+    assert save.text() == "저장"
     cancel = _find(dialog, QPushButton, "upbitKeyCancel")
     assert cancel.text() == "취소"
-    assert cancel.isDefault()
+    assert cancel.isDefault()  # Enter가 저장이 아니라 취소다
+    assert not save.isDefault()
     assert actions.names() == []
 
 
@@ -396,6 +427,16 @@ def test_cancelling_the_dialog_saves_nothing_and_clears_the_fields(window, actio
     assert actions.names() == []
     assert not dialog.isVisible()
     assert access.text() == ""
+
+
+def test_enter_in_the_dialog_cancels_it_and_never_saves(window, actions):
+    dialog = _open_dialog(window)
+    _find(dialog, QLineEdit, "upbitKeyAccess").setText(ACCESS)
+    _find(dialog, QLineEdit, "upbitKeySecret").setText(SECRET)
+    _find(dialog, QPushButton, "upbitKeyCancel").setFocus()
+    QTest.keyClick(dialog, Qt.Key.Key_Return)
+    assert actions.names() == []  # Enter는 저장이 아니라 취소(기본 단추)다
+    assert not dialog.isVisible()
 
 
 def test_the_key_error_goes_when_the_field_is_edited(window):
@@ -563,6 +604,20 @@ def test_the_mode_card_in_paper(window):
     assert (
         _text(window, "settingsLiveSellAll") == "모의매매에서 '멈추고 전량 매도': 하지 않음"
     )
+
+
+def test_the_counts_and_the_sell_all_record_are_shown_only_with_values(window):
+    _done(window)
+    counts = _find(_settings(window), QLabel, "settingsLiveCounts")
+    sell_all = _find(_settings(window), QLabel, "settingsLiveSellAll")
+    assert not counts.isVisibleTo(_settings(window))  # 값이 오기 전
+    assert not sell_all.isVisibleTo(_settings(window))
+    window.apply(_live_status(counts=(("KRW-AAA", 3, 30),), sell_all=False))
+    assert counts.isVisibleTo(_settings(window))
+    assert sell_all.isVisibleTo(_settings(window))
+    window.apply(_live_status(counts=()))  # 센 수가 비면 그 줄만 숨는다
+    assert not counts.isVisibleTo(_settings(window))
+    assert sell_all.isVisibleTo(_settings(window))
 
 
 def test_the_live_on_button_works_only_without_blocks(window):
