@@ -1429,6 +1429,7 @@ class DataWorker(ReportRoundMixin):
             coin=spec.coin,
             text=spec.text,
             detail=spec.detail,
+            trade_line=spec.trade_line,
         )
         try:
             self._send.submit(SendJob(alert_id, spec.category, redact(message)))

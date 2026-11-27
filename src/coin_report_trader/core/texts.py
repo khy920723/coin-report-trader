@@ -5,6 +5,7 @@ M1 명세 3.9절과 화면 설계서(8.4, 12)의 글이다. `{시각}`처럼 값
 
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import ROUND_FLOOR, Decimal
 from types import MappingProxyType
 from typing import Final
 
@@ -175,10 +176,9 @@ def content_not_enough_candles(have: int, count: int) -> str:
 
 
 CONTENT_BLOCKED: Final = "거래소가 공개 시세 요청을 잠시 막았습니다."
-CONTENT_BLOCKED_NOT_REQUESTED: Final = (
-    "앞 코인에서 일시 차단을 받아 이 코인은 요청하지 않았습니다."
-)
+CONTENT_BLOCKED_NOT_REQUESTED: Final = "앞 코인에서 일시 차단을 받아 이 코인은 요청하지 않았습니다."
 CONTENT_MARKETS_FAILED: Final = "코인 목록 요청이 실패했습니다."
+
 
 # --- 그 뒤에 한 일(3.9) ---
 def after_candles_retry(time_text: str) -> str:
@@ -282,3 +282,57 @@ def blocked_candles_text(time_text: str) -> str:
 def blocked_markets_text(time_text: str) -> str:
     """차단 중에 코인 목록의 "다시 시도"를 눌렀을 때(설계서 3.4)."""
     return f"거래소가 잠시 요청을 막았습니다. {time_text} 뒤에 다시 시도할 수 있습니다."
+
+
+# --- 3단계: 매매 알림과 보고서의 주문 글(M3 명세 3.14.1, 3.14.2, 3.17.3) ---
+def won_text(amount: Decimal) -> str:
+    """금액의 글: 원 아래를 버려 쉼표를 붙인다(예: 12,345. M3 명세 3.7.3)."""
+    return f"{int(amount.to_integral_value(rounding=ROUND_FLOOR)):,}"
+
+
+def unit_price_text(price: Decimal) -> str:
+    """가격의 글: 쉼표를 붙이고 뒤의 0은 뗀다(예: 1,010, 0.12)."""
+    return format(price.normalize(), ",f")
+
+
+def qty_text(qty: Decimal) -> str:
+    """수량의 글: 뒤의 0은 떼고, 정수이면 ".0"을 붙인다(예: 6.0, 20.20202020)."""
+    shown = format(qty.normalize(), "f")
+    return shown if "." in shown else f"{shown}.0"
+
+
+def order_summary_text(kind: str, side: str, price: Decimal | None, qty: Decimal) -> str:
+    """{주문 요약}: "{지정가·시장가} {매수·매도} {가격}원 × {수량}", 시장가는
+    "시장가 {매수·매도} {수량}"(M3 명세 3.14.1의 A-27). `kind`·`side`는 그 이름의 글이다."""
+    if price is None:
+        return f"{kind} {side} {qty_text(qty)}"
+    return f"{kind} {side} {unit_price_text(price)}원 × {qty_text(qty)}"
+
+
+def text_order_placed(summary: str) -> str:
+    """A-27(매매 알림)."""
+    return f"주문을 냈습니다({summary})."
+
+
+def text_filled(side: str, qty: Decimal, price: Decimal) -> str:
+    """A-28(매매 알림. 설계서 12)."""
+    return f"{side} {qty_text(qty)}이 {unit_price_text(price)}원에 체결되었습니다."
+
+
+def trade_balance_line(amount: Decimal, krw: Decimal, symbol: str, qty: Decimal) -> str:
+    """디스코드 매매 알림의 셋째 줄(M3 명세 3.14.2)."""
+    return (
+        f"주문 금액 {won_text(amount)}원 · 계정 잔고: 원화 {won_text(krw)}원,"
+        f" {symbol} {qty_text(qty)}"
+    )
+
+
+def order_placed_summary_text(summary: str) -> str:
+    """보고서 SCR-03-14(M3 명세 3.17.3)."""
+    return f"이 판단으로 낸 주문: {summary}"
+
+
+STOP_ONLY_LEFT: Final = "매도 주문을 다시 걸지 못했습니다. 다음 회차까지 손절만 남습니다."
+"""손절만 남음의 덧붙임(M3 명세 3.14.1)."""
+BELOW_STOP_PRICE_UNREAD: Final = "현재가를 읽지 못해 확인하지 못했습니다. 다시 저장하세요."
+"""손절선 아래인 보유를 보려다 현재가를 읽지 못함(M3 명세 3.11.4)."""

@@ -230,6 +230,12 @@ def write_settings(
             )
 
 
+def read_first_setup_level(conn: sqlite3.Connection) -> str | None:
+    """저장된 `first_setup_level`의 글(`"1"`, `"2"`, `"3"`). 없으면 `None`(M3 명세 3.11.3)."""
+    with translate_errors("설정 읽기"):
+        return _stored(conn, KEY_FIRST_SETUP_LEVEL)
+
+
 def read_fetched_at(conn: sqlite3.Connection, market: str) -> datetime | None:
     """그 코인의 마지막으로 성공한 받기가 끝난 때. 없으면 `None`."""
     with translate_errors("받은 때 읽기"):
