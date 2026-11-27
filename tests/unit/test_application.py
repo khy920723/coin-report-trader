@@ -633,10 +633,12 @@ def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
     env: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
+    from decimal import Decimal
+
+    from fakes.stage3 import write_stage3
 
     from coin_report_trader.core import AlertCategory
     from coin_report_trader.core.texts import ERROR_NETWORK
-    from coin_report_trader.storage.settings import write_settings
     from coin_report_trader.vault import webhook_secret_name
 
     monkeypatch.setattr(application, "JOIN_SECONDS", 0.05)  # 막힌 보내기를 오래 기다리지 않는다
@@ -645,7 +647,7 @@ def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
     conn = open_database(paths.database_file)
     try:
         migrate(conn)
-        write_settings(
+        write_stage3(  # 3단계로 마친 DB("3"과 3단계 키, 가상 계정. M3 명세 3.11.3)
             conn,
             SettingsView(
                 ("KRW-AAA",), 30, True, candle_unit=CandleUnit.MINUTE_60, candle_count=100
@@ -657,6 +659,7 @@ def test_a_send_thread_left_from_an_earlier_run_touches_nothing_of_a_later_run(
     discord.hold()
     vault = FakeVault({webhook_secret_name(AlertCategory.ERROR): _webhook_url()})
     quote = FakeQuoteSource()
+    quote.set_prices({"KRW-AAA": Decimal(1000)})  # 켤 때의 손절 점검이 읽는다(3.9. 만든 값)
     quote.script(QuoteError(ERROR_NETWORK), kind="candles", market="KRW-AAA")
     updates = _record_updates(monkeypatch)
     services = Services(quote=quote, webhook=discord, vault=vault, clock=FakeClock())
