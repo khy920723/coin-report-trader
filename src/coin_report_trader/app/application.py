@@ -210,6 +210,8 @@ def _run_window(
             autostart=None if services is None else services.autostart,
             ai=None if services is None else services.ai,
             sessions_root=paths.root / SESSIONS_FOLDER,
+            book=None if services is None else services.book,
+            min_order=None if services is None else services.min_order,
         )
         sender.attach(worker)
         actions = AppActions(worker, sender)

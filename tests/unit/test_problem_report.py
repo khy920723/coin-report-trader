@@ -18,6 +18,7 @@ import pytest
 from fakes.ai import FakeAiRunner
 from fakes.clock import DEFAULT_START, FakeClock
 from fakes.quote import FakeQuoteSource, make_candles
+from fakes.stage3 import write_stage3
 
 from coin_report_trader import __version__
 from coin_report_trader.app import problem_report as pr
@@ -37,7 +38,6 @@ from coin_report_trader.core import (
 from coin_report_trader.core.texts import ERROR_NETWORK, ERROR_TIMEOUT
 from coin_report_trader.storage import reports as report_store
 from coin_report_trader.storage.database import migrate, open_database
-from coin_report_trader.storage.settings import write_settings
 
 KST_WHEN = datetime(2026, 11, 21, 18, 15, 20, tzinfo=UTC)  # 한국 2026-11-22 03:15:20
 SAFETY = 10.0
@@ -317,7 +317,7 @@ class Rig:
             view = SettingsView(
                 (AAA,), 30, True, candle_unit=HOUR, candle_count=100, ai_choices=FOUR
             )
-            write_settings(conn, view)
+            write_stage3(conn, view)  # 3단계로 마친 DB(M3 명세 3.11.3. 23번)
         finally:
             conn.close()
         self.clock = FakeClock()

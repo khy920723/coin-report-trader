@@ -8,12 +8,14 @@ import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fakes.clock import DEFAULT_START, FakeClock
-from fakes.quote import OK, FakeQuoteSource, make_candles
+from fakes.quote import OK, PRICE, FakeQuoteSource, make_candles
+from fakes.stage3 import stage3_trade, write_stage3
 
 from coin_report_trader.app import data_thread
 from coin_report_trader.app.data_thread import DATA_THREAD_NAME, DataWorker
@@ -22,14 +24,17 @@ from coin_report_trader.core import (
     AlertsView,
     Candle,
     CandleUnit,
+    CoinTradeView,
     CoinView,
     LoadState,
     Market,
     MarketsView,
     QuoteError,
+    RoundNowView,
     SaveResult,
     SettingsView,
     StorageError,
+    TodayView,
     UiUpdate,
     empty_bar_stats,
 )
@@ -68,12 +73,18 @@ class Sink:
     """화면에 가는 값을 모은다."""
 
     items: list[UiUpdate] = field(default_factory=list)
+    trade: list[UiUpdate] = field(default_factory=list)
+    """3단계의 매매 값(`CoinTradeView`, `TodayView`, `RoundNowView`. M3 명세 3.17.2). 1·2단계의 값을
+    보는 시험의 `items`에 섞이지 않게 따로 모은다."""
     threads: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __call__(self, update: UiUpdate) -> None:
         with self.lock:
-            self.items.append(update)
+            if isinstance(update, CoinTradeView | TodayView | RoundNowView):
+                self.trade.append(update)
+            else:
+                self.items.append(update)
             self.threads.add(threading.current_thread().name)
 
     def of(self, kind: type) -> list[Any]:
@@ -86,6 +97,7 @@ class Sink:
     def clear(self) -> None:
         with self.lock:
             self.items.clear()
+            self.trade.clear()
 
 
 @dataclass
@@ -137,6 +149,12 @@ class Rig:
             conn.close()
 
 
+def fetch_requests(rig: "Rig") -> list[Any]:
+    """1·2단계의 요청(봉, 코인 목록). 3단계의 켤 때와 1분마다의 손절 점검이 내는 현재가 요청은
+    빼고 센다(M3 명세 3.9. 이 파일의 시험에는 AI 회차가 없어 현재가 요청은 모두 그것이다)."""
+    return [r for r in rig.quote.requests if r.kind != PRICE]
+
+
 def make_rig(
     tmp_path: Path,
     *,
@@ -155,11 +173,17 @@ def make_rig(
     conn = open_database(db)
     try:
         migrate(conn)
-        write_settings(conn, SettingsView(coins, days, done, candle_unit=unit, candle_count=count))
+        view = SettingsView(coins, days, done, candle_unit=unit, candle_count=count)
+        if done and unit is not None and count is not None:
+            write_stage3(conn, view)  # 3단계로 마친 DB(M3 명세 3.11.3. 23번)
+        else:
+            write_settings(conn, view)
     finally:
         conn.close()
     clock = clock or FakeClock()
     source = quote or FakeQuoteSource(markets=markets(AAA, BBB, CCC), clock=clock)
+    # 3단계의 켤 때와 1분마다의 손절 점검이 고른 코인의 현재가를 읽는다(M3 명세 3.9. 만든 값)
+    source.set_prices(dict.fromkeys(coins, Decimal(1000)))
     if bars:
         for coin in coins:
             source.set_candles(coin, DAY, make_candles(coin, DAY, 40, last_start=TODAY_START))
@@ -190,8 +214,10 @@ def build(tmp_path: Path, rigs: list[Rig]) -> Any:
 
 
 def chosen(coins: tuple[str, ...], days: int | None, done: bool) -> SettingsView:
-    """고른 봉 단위(60분봉)와 봉 개수(100개)가 저장된 설정(`make_rig`의 기본)."""
-    return SettingsView(coins, days, done, candle_unit=HOUR, candle_count=100)
+    """고른 봉 단위(60분봉)와 봉 개수(100개)가 저장된 설정(`make_rig`의 기본). 마친 설정에는
+    3단계 값(`stage3_trade`)이 있다(M3 명세 3.11.3)."""
+    trade = stage3_trade(coins) if done else None
+    return SettingsView(coins, days, done, candle_unit=HOUR, candle_count=100, trade=trade)
 
 
 def next_in(rig: Rig) -> float:
@@ -245,7 +271,7 @@ def test_the_initial_view_uses_the_stored_candles(build: Any, tmp_path: Path) ->
     assert (view.stats.unit, view.stats.requested_count, view.stats.bar_count) == (HOUR, 100, 100)
     assert view.stats.close_last is not None
     assert view.last_incomplete is False
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
 
 
 def test_the_initial_view_is_no_data_with_the_count_when_fewer_candles_are_stored(
@@ -425,21 +451,21 @@ def test_the_next_fetch_gets_only_the_new_candles_and_overwrites_the_last(build:
 def test_the_next_fetch_is_ten_seconds_after_the_end_of_the_last_stored_bar(build: Any) -> None:
     rig = build()
     rig.start()
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     # 저장된 마지막 60분봉은 03:00에 시작해 04:00에 끝난다. 거기에 10초를 더한다.
     assert next_in(rig) == pytest.approx(3610.0)
     rig.advance(3609)
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     rig.advance(1)
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
     assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
     # 새 봉이 오지 않았으므로 마지막 봉은 그대로이고, 다음은 그다음 봉의 끝에서 10초 뒤다(05:00:10).
     assert next_in(rig) == pytest.approx(3600.0)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.advance(3599)
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     rig.advance(1)
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
 
 
 def test_with_nothing_stored_the_next_fetch_is_the_next_boundary_since_the_epoch(
@@ -494,7 +520,7 @@ def test_no_next_time_waits_an_hour_and_does_nothing_when_it_wakes(build: Any) -
     sent = len(rig.sink.items)
     rig.advance(data_thread.IDLE_SECONDS)
     rig.advance(data_thread.IDLE_SECONDS)
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     assert len(rig.sink.items) == sent
     assert rig.clock.waits[-1] == data_thread.IDLE_SECONDS
 
@@ -506,7 +532,7 @@ def test_retry_does_nothing_without_coins_even_while_blocked(build: Any) -> None
     rig.worker.retry_candles()
     rig.settle()
     assert rig.sink.items == []
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     assert rig.worker._next_round_mono is None  # (라)의 60분을 새로 세지 않는다
     rig.quote.script(QuoteError(ERROR_BLOCKED), kind="markets")  # 코인 목록이 차단을 정한다
     rig.worker.refresh_markets()
@@ -518,7 +544,7 @@ def test_retry_does_nothing_without_coins_even_while_blocked(build: Any) -> None
     rig.worker.retry_candles()  # 차단 중이어도 같다
     rig.settle()
     assert rig.sink.items == []
-    assert len(rig.quote.requests) == 1  # 코인 목록 요청 하나뿐이다
+    assert len(fetch_requests(rig)) == 1  # 코인 목록 요청 하나뿐이다
     assert rig.worker._next_round_mono is None
     assert (rig.worker._blocked_until, rig.worker._blocked_mono, rig.worker._backoff) == (
         until, mono, backoff,
@@ -894,9 +920,9 @@ def test_an_alert_that_cannot_be_saved_does_not_stop_the_fetching(
     monkeypatch.setattr(data_thread.alert_store, "insert_alert", refuse)
     rig.start()
     assert rig.sink.coin(AAA)[-1].state is LoadState.FAILED  # 끝을 알리는 CoinView는 온다
-    before = len(rig.quote.requests)
+    before = len(fetch_requests(rig))
     rig.advance(3610)
-    assert len(rig.quote.requests) > before  # 다음 받는 때에도 받는다
+    assert len(fetch_requests(rig)) > before  # 다음 받는 때에도 받는다
     assert rig.alerts() == []
 
 
@@ -961,12 +987,12 @@ def test_while_blocked_nothing_is_requested_and_it_is_fetched_once_after(build: 
     rig = build(coins=(AAA, BBB))
     block(rig, 120.0)
     rig.start()
-    sent = len(rig.quote.requests)
+    sent = len(fetch_requests(rig))
     # 차단 중의 "다시 시도": 요청 없이 차단 묶음, A-1 없음
     rig.sink.clear()
     rig.worker.retry_candles()
     rig.settle()
-    assert len(rig.quote.requests) == sent
+    assert len(fetch_requests(rig)) == sent
     assert [(v.market, v.state, v.error_name) for v in rig.sink.of(CoinView)] == [
         (AAA, LoadState.FAILED, ERROR_BLOCKED),
         (BBB, LoadState.FAILED, ERROR_BLOCKED),
@@ -982,15 +1008,15 @@ def test_while_blocked_nothing_is_requested_and_it_is_fetched_once_after(build: 
     )  # fmt: skip
     assert len(rig.alerts()) == 2
     rig.advance(119)
-    assert len(rig.quote.requests) == sent
+    assert len(fetch_requests(rig)) == sent
     rig.advance(1)  # blocked_until: 저절로 한 번 받는다
     assert len(rig.quote.candle_requests(AAA)) > 0
     assert {r.market for r in rig.quote.candle_requests()[sent:]} == {AAA, BBB}
-    after = len(rig.quote.requests)
+    after = len(fetch_requests(rig))
     rig.advance(3489)  # 그 받기(03:02) 뒤의 (라)는 저장된 마지막 봉(03:00)의 끝 + 10초(04:00:10)다
-    assert len(rig.quote.requests) == after
+    assert len(fetch_requests(rig)) == after
     rig.advance(1)
-    assert len(rig.quote.requests) > after
+    assert len(fetch_requests(rig)) > after
 
 
 def test_a_fetch_time_inside_a_block_does_nothing_and_the_block_end_fetches_once(
@@ -1006,20 +1032,24 @@ def test_a_fetch_time_inside_a_block_does_nothing_and_the_block_end_fetches_once
     rig.settle()
     view = rig.sink.coin(AAA)[-1]
     assert (view.error_name, view.fetched_at) == (ERROR_BLOCKED, fetched)
-    requests, views, alerts = len(rig.quote.requests), len(rig.sink.of(CoinView)), len(rig.alerts())
+    requests, views, alerts = (
+        len(fetch_requests(rig)),
+        len(rig.sink.of(CoinView)),
+        len(rig.alerts()),
+    )
     backoff = rig.worker._backoff
     rig.advance(3600)  # (라)의 때가 차단 기간(7200초) 안에서 온다
     rig.advance(3599)  # 차단이 끝나기 1초 전
-    assert (len(rig.quote.requests), len(rig.sink.of(CoinView)), len(rig.alerts())) == (
+    assert (len(fetch_requests(rig)), len(rig.sink.of(CoinView)), len(rig.alerts())) == (
         requests, views, alerts,
     )  # fmt: skip
     rig.worker.retry_candles()  # 요청하지 않은 받기도 fetched_at과 차례를 바꾸지 않는다
     rig.settle()
-    assert len(rig.quote.requests) == requests
+    assert len(fetch_requests(rig)) == requests
     assert rig.sink.coin(AAA)[-1].fetched_at == fetched
     assert rig.worker._backoff == backoff
     rig.advance(1)  # blocked_until: 저절로 한 번 받는다
-    assert len(rig.quote.requests) == requests + 1  # 고른 단위 하나
+    assert len(fetch_requests(rig)) == requests + 1  # 고른 단위 하나
     assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
 
 
@@ -1029,14 +1059,14 @@ def test_a_save_during_a_block_saves_then_sends_blocked_views_without_requests(b
     rig.start()
     rig.worker.refresh_markets()  # 차단 중이므로 목록은 못 받았다
     rig.settle()
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.sink.clear()
     rig.worker.save_settings((AAA,), 90, first_setup=False)  # 코인이 같으면 목록과 견주지 않는다
     rig.settle()
     kinds = [type(u).__name__ for u in rig.sink.items]
     assert kinds == ["SaveResult", "SettingsView", "AlertsView", "CoinView"]
     assert rig.sink.coin(AAA)[0].error_name == ERROR_BLOCKED
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     assert len(rig.alerts()) == 1  # A-1은 처음 받기의 것 하나뿐이다
 
 
@@ -1129,12 +1159,13 @@ def test_the_blocked_until_wait_is_not_capped_and_huge_waits_are_accepted(build:
     rig = build(days=None)  # 보관 기간을 고르지 않아 60분마다의 알림 지우기가 없다
     block(rig, 999_999_999.0)
     rig.start()
-    assert rig.clock.waits[-1] == pytest.approx(999_999_999.0)
+    # 다음 기다림은 1분 점검(M3 명세 3.9)까지다. 차단의 때는 줄이지 않는다
+    assert rig.clock.waits[-1] == pytest.approx(60.0)
     assert seconds_blocked(rig) == pytest.approx(999_999_999.0)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.worker.retry_candles()
     rig.settle()
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
 
 
 # --- 코인 목록 ---------------------------------------------------------------------------------
@@ -1269,7 +1300,10 @@ def test_a_first_setup_save_stores_the_level_and_starts_the_fetch(build: Any) ->
     rig.start()
     listed(rig)
     rig.sink.clear()
-    rig.worker.save_settings((BBB, AAA), 7, first_setup=True, candle_unit=HOUR, candle_count=100)
+    rig.worker.save_settings(
+        (BBB, AAA), 7, first_setup=True, candle_unit=HOUR, candle_count=100,
+        trade=stage3_trade((BBB, AAA)),
+    )  # fmt: skip
     rig.settle()
     kinds = [type(u).__name__ for u in rig.sink.items]
     assert kinds[:2] == ["SaveResult", "SettingsView"]
@@ -1281,9 +1315,9 @@ def test_a_first_setup_save_stores_the_level_and_starts_the_fetch(build: Any) ->
     assert states(rig.sink.coin(BBB))[-2:] == [LoadState.LOADING, LoadState.READY]
     assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
     assert rig.worker.wait_idle(SAFETY)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.advance(3610)  # 이제 (라)가 돈다
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
 
 
 def test_a_first_setup_save_without_the_unit_and_count_is_not_done(build: Any) -> None:
@@ -1302,7 +1336,8 @@ def test_a_save_from_the_settings_screen_keeps_the_stored_first_setup_level(buil
     rig.start()
     listed(rig)
     rig.worker.save_settings((AAA,), 90, first_setup=False)  # 보관 기간만 바꾼다
-    rig.worker.save_settings((BBB, AAA), 90, first_setup=False)  # 코인도 바꾼다
+    # 코인도 바꾼다(3단계의 설정 화면은 매매 칸을 함께 넘긴다. 새 코인의 투자 비율이 든다)
+    rig.worker.save_settings((BBB, AAA), 90, first_setup=False, trade=stage3_trade((BBB, AAA)))
     rig.settle()
     assert rig.settings() == chosen((BBB, AAA), 90, True)
     results = rig.sink.of(SaveResult)
@@ -1341,14 +1376,14 @@ def test_a_failed_write_is_an_a29_and_sends_nothing_else(
         real(conn, view, **kwargs)
 
     monkeypatch.setattr(data_thread, "write_settings", maybe)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.sink.clear()
     rig.worker.save_settings((BBB,), 7, first_setup=False)  # 코인을 바꾸는 저장이 실패한다
     rig.settle()
     kinds = [type(u).__name__ for u in rig.sink.items]
     assert kinds == ["SaveResult", "AlertsView"]  # 만든 A-29가 알림센터에 보인다
     assert rig.sink.items[0] == SaveResult("settings", False, SETTINGS_SAVE_FAILED)
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     assert rig.settings() == chosen((AAA,), 30, True)
     (alert,) = rig.alerts()
     assert (alert.code, alert.category, alert.coin) == ("A-29", AlertCategory.ERROR, None)
@@ -1512,7 +1547,7 @@ def test_an_omitted_unit_or_count_keeps_the_stored_value(build: Any) -> None:
     rig.worker.save_settings((AAA,), 7, first_setup=False, candle_count=200)
     rig.settle()
     assert rig.settings() == SettingsView(
-        (AAA,), 7, True, candle_unit=HOUR, candle_count=200
+        (AAA,), 7, True, candle_unit=HOUR, candle_count=200, trade=stage3_trade((AAA,))
     )  # fmt: skip
     assert len(rig.stored(AAA, HOUR)) == 200  # 같은 단위라 봉을 지우지 않는다
 
@@ -1520,14 +1555,14 @@ def test_an_omitted_unit_or_count_keeps_the_stored_value(build: Any) -> None:
 def test_a_count_that_is_not_offered_is_not_saved_and_makes_no_alert(build: Any) -> None:
     rig = build(coins=(AAA,))
     rig.start()
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.sink.clear()
     rig.worker.save_settings((AAA,), 7, first_setup=False, candle_count=150)
     rig.settle()
     assert rig.sink.items == [SaveResult("settings", False, SETTINGS_SAVE_FAILED)]
     assert rig.settings() == chosen((AAA,), 30, True)
     assert rig.alerts() == []
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
 
 
 def test_a_record_of_the_first_stage_without_a_unit_is_not_done_and_sends_no_coin_view(
@@ -1539,9 +1574,9 @@ def test_a_record_of_the_first_stage_without_a_unit_is_not_done_and_sends_no_coi
     assert isinstance(first, SettingsView)
     assert first.first_setup_done is False
     assert rig.sink.of(CoinView) == []
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     rig.advance(3 * data_thread.IDLE_SECONDS)
-    assert rig.quote.requests == []  # (라)도 없다
+    assert fetch_requests(rig) == []  # (라)도 없다
 
 
 def test_a_success_after_not_enough_candles_lets_the_next_shortage_alert_again(build: Any) -> None:
@@ -1596,7 +1631,7 @@ def test_unreadable_settings_send_failed_settings_and_make_no_requests(build: An
     (alerts_view,) = rig.sink.of(AlertsView)  # 알림센터는 그대로 보낸다(만든 A-30이 보인다)
     assert [view.code for view in alerts_view.alerts] == ["A-30"]
     assert len(rig.sink.items) == 2
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     (alert,) = rig.alerts()
     assert (alert.code, alert.category, alert.coin) == ("A-30", AlertCategory.OTHER, None)
     assert alert.detail is not None
@@ -1608,7 +1643,7 @@ def test_unreadable_settings_send_failed_settings_and_make_no_requests(build: An
     rig.worker.save_settings((AAA,), 7, first_setup=True)
     rig.settle()
     assert [type(u).__name__ for u in rig.sink.items] == ["SettingsView", "AlertsView"]
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     assert len(rig.alerts()) == 1
 
 
@@ -1617,7 +1652,7 @@ def test_unreadable_settings_are_read_again_every_sixty_minutes(build: Any) -> N
     break_settings(rig)
     rig.start()
     rig.advance(3600)  # 아직 깨져 있다: A-30은 60분이 지났으니 다시 만든다
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     assert [a.code for a in rig.alerts()] == ["A-30", "A-30"]
     assert rig.sink.of(SettingsView) == [SettingsView(state=LoadState.FAILED)]
     repair_settings(rig)
@@ -1630,11 +1665,11 @@ def test_unreadable_settings_are_read_again_every_sixty_minutes(build: Any) -> N
     ]
     assert rig.quote.candle_requests(AAA)  # 처음 설정을 마쳤으므로 받기를 시작한다
     # 그 뒤는 보통과 같다: (라)로 받는다(저장된 마지막 봉의 끝 + 10초, 06:00:10)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.advance(3609)
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     rig.advance(1)
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
 
 
 def test_an_unreadable_settings_retry_does_not_repeat_the_a30_inside_sixty_minutes(
@@ -1785,12 +1820,12 @@ def test_an_exception_in_the_first_calculation_does_not_end_the_thread(
     assert alert.detail is not None
     assert (alert.detail.stage, alert.detail.error_name) == ("켜기", "RuntimeError")
     assert alert.detail.content == "처음 셈이 깨졌다"
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.worker.retry_candles()  # 큐의 동작과 (라)가 그대로 돈다
     rig.settle()
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
     rig.advance(3610)
-    assert len(rig.quote.requests) > count + 2
+    assert len(fetch_requests(rig)) > count + 2
 
 
 def test_an_exception_in_the_first_fetch_round_does_not_end_the_thread(
@@ -1860,15 +1895,15 @@ def test_wait_idle_returns_only_once_the_clock_wait_is_on_so_a_later_advance_wak
     monkeypatch.setattr(rig.worker, "_seconds_until_due", slow)
     rig.worker.start()
     assert rig.worker.wait_idle(SAFETY)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.clock.advance(3610)  # 참을 돌려준 뒤의 `advance`는 틈과 상관없이 자료 스레드를 깨운다
     assert rig.worker.wait_idle(SAFETY)
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
     for _ in range(3):
-        count = len(rig.quote.requests)
+        count = len(fetch_requests(rig))
         rig.clock.advance(3600)
         assert rig.worker.wait_idle(SAFETY)
-        assert len(rig.quote.requests) > count
+        assert len(fetch_requests(rig)) > count
 
 
 def window_of(requests: list[Any], start: int) -> int:
@@ -1884,7 +1919,7 @@ def test_requests_through_the_worker_keep_the_limit_and_share_one_client(build: 
     for _ in range(2):
         rig.worker.retry_candles()
         rig.settle()
-    requests = rig.quote.requests
+    requests = fetch_requests(rig)
     assert len(requests) == 7
     assert [r.kind for r in requests].count("markets") == 1
     assert all(r.monotonic is not None for r in requests)
@@ -1908,11 +1943,11 @@ def test_the_a1_and_the_next_fetch_time_count_from_the_end_of_the_round(build: A
         assert alert.detail is not None
         # 저장된 봉이 없어 (라)는 다음 경계(04:00:10 UTC)다
         assert alert.detail.after == "다음 받는 때(13:00)에 다시 받습니다."
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.advance(3549)  # 04:00:10까지 3550초 남았다(끝난 때가 03:01:00이다)
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     rig.advance(1)
-    assert len(rig.quote.requests) > count
+    assert len(fetch_requests(rig)) > count
     assert rig.sink.coin(AAA)[-1].as_of > ended
 
 
@@ -2089,7 +2124,7 @@ def test_an_exception_other_than_a_storage_error_while_reading_settings_is_unrea
     rig.start()
     assert [type(u).__name__ for u in rig.sink.items] == ["SettingsView", "AlertsView"]
     assert rig.sink.items[0] == SettingsView(state=LoadState.FAILED)
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     (alert,) = rig.alerts()
     assert (alert.code, alert.coin) == ("A-30", None)
     assert alert.detail is not None
@@ -2129,14 +2164,14 @@ def test_a_first_round_that_ends_with_an_exception_is_tried_again_after_sixty_mi
     calls = break_the_round(rig, monkeypatch)
     rig.start()
     assert len(calls) == 1
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     (alert,) = rig.alerts()
     assert alert.code == "A-30"
     rig.advance(3609)  # 저장된 봉이 없어 (라)는 다음 경계(04:00:10)다
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     rig.advance(1)  # 화면의 동작 없이 (라)의 때에 받는다
     assert len(calls) == 2
-    assert len(rig.quote.requests) == 1
+    assert len(fetch_requests(rig)) == 1
     assert rig.sink.coin(AAA)[-1].state is LoadState.READY
 
 
@@ -2150,11 +2185,11 @@ def test_a_first_round_after_settings_were_read_again_that_ends_with_an_exceptio
     calls = break_the_round(rig, monkeypatch)
     rig.advance(3600)  # 설정을 다시 읽고 (가) 받기를 시작하지만 예외로 끝난다(04:00)
     assert len(calls) == 1
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     assert rig.sink.of(SettingsView)[-1] == chosen((AAA,), 30, True)
     rig.advance(3610)  # 화면의 동작 없이 (라)의 때(05:00:10)에 받는다
     assert len(calls) == 2
-    assert len(rig.quote.requests) == 1
+    assert len(fetch_requests(rig)) == 1
 
 
 def test_a_first_setup_fetch_that_ends_with_an_exception_is_retried_after_sixty_minutes(
@@ -2167,11 +2202,11 @@ def test_a_first_setup_fetch_that_ends_with_an_exception_is_retried_after_sixty_
     rig.settle()
     assert rig.sink.of(SaveResult)[-1] == SaveResult("settings", True, SETTINGS_SAVED)
     assert len(calls) == 1  # 단계가 "설정 저장"인 `_guard` 안에서 받기가 예외로 끝났다
-    assert rig.quote.requests == []
+    assert fetch_requests(rig) == []
     assert [a.detail.stage for a in rig.alerts() if a.detail] == ["설정 저장"]
     rig.advance(3610)
     assert len(calls) == 2
-    assert len(rig.quote.requests) == 1
+    assert len(fetch_requests(rig)) == 1
 
 
 def test_a_scheduled_round_that_ends_with_an_exception_does_not_spin(
@@ -2180,16 +2215,16 @@ def test_a_scheduled_round_that_ends_with_an_exception_does_not_spin(
     rig = build()
     rig.start()  # 성공: 다음 (라)는 04:00:10이다
     calls = break_the_round(rig, monkeypatch)
-    count = len(rig.quote.requests)
+    count = len(fetch_requests(rig))
     rig.advance(3610)  # (라)의 받기가 예외로 끝난다
     assert len(calls) == 1
     assert rig.worker.wait_idle(SAFETY)  # 자료 스레드는 쉰다(같은 받기를 바퀴마다 부르지 않는다)
     rig.advance(3599)
     assert len(calls) == 1  # 다음 (라)(05:00:10)가 되기 전에는 받기가 다시 불리지 않는다
-    assert len(rig.quote.requests) == count
+    assert len(fetch_requests(rig)) == count
     rig.advance(1)
     assert len(calls) == 2  # 그 때가 되면 한 번 받는다
-    assert len(rig.quote.requests) == count + 1
+    assert len(fetch_requests(rig)) == count + 1
     assert rig.worker.wait_idle(SAFETY)
     assert len(calls) == 2
 

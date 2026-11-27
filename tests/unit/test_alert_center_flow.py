@@ -11,6 +11,7 @@ import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import pytest
 from fakes.clock import DEFAULT_START, FakeClock
 from fakes.discord import OK, FakeDiscord
 from fakes.quote import FakeQuoteSource, make_candles
+from fakes.stage3 import write_stage3
 from fakes.vault import FakeVault
 
 from coin_report_trader.app import data_thread, startup_errors
@@ -58,7 +60,6 @@ from coin_report_trader.core.texts import (
 )
 from coin_report_trader.storage import alerts as alert_store
 from coin_report_trader.storage.database import migrate, open_database
-from coin_report_trader.storage.settings import write_settings
 from coin_report_trader.storage.states import DiscordState
 from coin_report_trader.vault import webhook_secret_name
 
@@ -216,7 +217,7 @@ def make_rig(
         conn = open_database(db)
         try:
             migrate(conn)
-            write_settings(
+            write_stage3(  # 3단계로 마친 DB(M3 명세 3.11.3. 23번)
                 conn, SettingsView(coins, days, True, candle_unit=HOUR, candle_count=100)
             )
         finally:
@@ -226,6 +227,8 @@ def make_rig(
     for coin in coins:
         quote.set_candles(coin, DAY, make_candles(coin, DAY, 40, last_start=TODAY_START))
         quote.set_candles(coin, HOUR, make_candles(coin, HOUR, 200, last_start=THIS_HOUR))
+    # 3단계의 켤 때와 1분마다의 손절 점검이 고른 코인의 현재가를 읽는다(M3 명세 3.9. 만든 값)
+    quote.set_prices(dict.fromkeys(coins, Decimal(1000)))
     discord = discord or FakeDiscord()
     if vault is None:
         vault = RecordingVault({secret(c): url for c, url in (saved or {}).items()})

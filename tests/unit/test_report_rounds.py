@@ -25,6 +25,7 @@ from fakes.ai import (
 )
 from fakes.clock import FakeClock
 from fakes.quote import FakeQuoteSource, make_candles, with_close
+from fakes.stage3 import write_stage3
 
 from coin_report_trader.ai import inputs as ai_inputs
 from coin_report_trader.app import report_round
@@ -66,7 +67,7 @@ from coin_report_trader.core.texts import (
 from coin_report_trader.storage import reports as report_store
 from coin_report_trader.storage.alerts import list_alerts
 from coin_report_trader.storage.database import migrate, open_database
-from coin_report_trader.storage.settings import read_settings, write_settings
+from coin_report_trader.storage.settings import read_settings
 
 AAA, BBB = "KRW-AAA", "KRW-BBB"
 HOUR = CandleUnit.MINUTE_60
@@ -180,7 +181,7 @@ def make_rig(
     try:
         migrate(conn)
         view = SettingsView(coins, 30, True, candle_unit=HOUR, candle_count=100, ai_choices=choices)
-        write_settings(conn, view)
+        write_stage3(conn, view)  # 3단계로 마친 DB(M3 명세 3.11.3. 23번)
         if seed is not None:
             seed(conn)
     finally:
@@ -501,7 +502,7 @@ def test_a_failed_session_gives_a_failed_report_and_one_a17_with_the_fixed_reaso
     assert [(i.state, i.failure) for i in rig.reports()] == [(ReportState.FAILED, kind)]
     (alert,) = rig.alerts()
     assert (alert.code, alert.coin, alert.text) == (
-        CODE_REPORT_FAILED, AAA, f"AI 보고서를 받지 못했습니다({kind}).",
+        CODE_REPORT_FAILED, AAA, f"AI 보고서를 받지 못해 이번 회차에 주문하지 않았습니다({kind}).",
     )  # fmt: skip
     assert alert.detail is not None
     assert (alert.detail.stage, alert.detail.error_name, alert.detail.content) == (

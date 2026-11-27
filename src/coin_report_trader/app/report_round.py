@@ -43,9 +43,11 @@ from coin_report_trader.core import (
     LastResult,
     LoadState,
     Mode,
+    NoOrderReason,
     QuoteError,
     ReportListView,
     ReportState,
+    RoundStage,
     RoundTrigger,
     SaveResult,
     SessionOutcome,
@@ -60,16 +62,19 @@ from coin_report_trader.core.texts import (
     ERROR_CLAUDE_NOT_FOUND,
     ERROR_VERSION_UNREADABLE,
     REPORT_UNREADABLE,
+    STAGE_ORDER,
     STAGE_REPORT,
     error_version_out_of_range,
     kst_when_text,
 )
 from coin_report_trader.storage import reports as report_store
+from coin_report_trader.storage import trading as trade_store
 from coin_report_trader.storage.candles import read_candles
 
 from . import alert_rules
 from .ai_threads import start_session
 from .problem_report import problem_source
+from .trade_round import _OrderTarget
 
 if TYPE_CHECKING:
     from coin_report_trader.app.data_thread import _CoinResult
@@ -143,6 +148,18 @@ class ReportRoundMixin:
     _set_block: Callable[..., None]
     _emit_save_failed: Callable[..., None]
     _emit_unexpected: Callable[..., None]
+    # `TradeMixin`(trade_round)이 채우는 이름
+    _sold_canceled: Any
+    _round_may_trade: Callable[[], bool]
+    _round_cleanup: Callable[..., None]
+    _set_stage: Callable[..., None]
+    _mark_method: Callable[[int], None]
+    _no_order: Callable[..., None]
+    _order_for_report: Callable[..., None]
+    _final_trades: Callable[[str], str]
+    _trade: Callable[[], Any]
+    _round_finished: Callable[[], None]
+    _post_trade_views: Callable[[], None]
 
     def _init_reports(self, runner: AiRunner | None, sessions_root: Path) -> None:
         self._sessions_root = sessions_root
@@ -321,6 +338,9 @@ class ReportRoundMixin:
             return
         if self._conn is None or self._stop.is_set():
             return
+        if not self._round_may_trade():
+            log.info("켤 때의 소급 판정과 손절 점검이 끝나지 않아 이번 회차를 건너뜁니다")
+            return
         try:
             if self._active_round is not None and report_store.has_running_report(
                 self._conn, self._active_round.round_id
@@ -363,6 +383,8 @@ class ReportRoundMixin:
         current = _Round(round_id, number, close, next_close, unit)
         self._active_round = current
         self._alert_round = number  # 이 회차 안에서 만드는 알림의 문제 보고 `round_number`
+        self._round_cleanup(round_id, number)  # 정리(M3 명세 3.5.1의 4)
+        self._set_stage(round_id, RoundStage.STATS)
         by_market = {result.market: result for result in results}
         if logged_out:
             self._write_logged_out(current, settings.coins)
@@ -390,8 +412,11 @@ class ReportRoundMixin:
                 finished_at=self._clock.now(),
             )
             report_store.finish_report(self._conn, report_id, record)
+            self._mark_method(report_id)
+            self._no_order(_target(report_id, market, current, None), NoOrderReason.NO_JUDGMENT)
             self._post_report_list(market)
-        self._emit_alert(alert_rules.logged_out(), self._rules.want_a18(), module=_MODULE)
+        spec = alert_rules.logged_out(tuple(sorted(self._sold_canceled)))
+        self._emit_alert(spec, self._rules.want_a18(), module=_MODULE)
 
     def _start_coin(self, current: _Round, market: str, stats_ok: bool) -> None:
         """코인 하나의 보고서를 쓰고 세션을 띄운다(3.5.2의 4)."""
@@ -402,6 +427,7 @@ class ReportRoundMixin:
             market=market,
             created_at=self._clock.now(),
         )
+        self._mark_method(report_id)
         try:
             self._start_coin_session(current, market, report_id, stats_ok)
         except StorageError as exc:
@@ -417,10 +443,12 @@ class ReportRoundMixin:
     ) -> None:
         if not stats_ok:
             self._skip(report_id, SkipReason.NO_STATS)
+            self._no_order(_target(report_id, market, current, None), NoOrderReason.NO_JUDGMENT)
             return
         price = self._read_price(market, current)
         if price is None:
             self._skip(report_id, SkipReason.NO_PRICE)
+            self._no_order(_target(report_id, market, current, None), NoOrderReason.NO_JUDGMENT)
             return
         read_at = self._clock.now()
         last = self._last_judgment(market, current)
@@ -445,6 +473,7 @@ class ReportRoundMixin:
             timeout_seconds=float(SESSION_TIMEOUT_SECONDS),
         )
         self._pending[report_id] = pending
+        self._set_stage(current.round_id, RoundStage.AI)
         try:
             start_session(
                 self._runner,
@@ -468,6 +497,14 @@ class ReportRoundMixin:
                 state=ReportState.ERROR, failure=name, finished_at=self._clock.now()
             )
             report_store.finish_report(self._conn, report_id, record)
+            if self._trade() is not None:
+                trade_store.set_report_order(
+                    self._conn,
+                    report_id,
+                    order_id=None,
+                    no_order_reason=NoOrderReason.NO_JUDGMENT.value,
+                    elapsed_order_s=0,
+                )
         except Exception as exc:
             log.warning("오류 보고서를 쓰지 못했습니다: %s", type(exc).__name__)
 
@@ -585,7 +622,9 @@ class ReportRoundMixin:
             ),
             ai_inputs.FILE_FINAL_LAST_JUDGMENT: ai_inputs.final_last_judgment(last_input),
             ai_inputs.FILE_FINAL_LAST_REPORT: ai_inputs.final_last_report(last_rows),
-            ai_inputs.FILE_FINAL_TRADES: ai_inputs.final_trades(),
+            ai_inputs.FILE_FINAL_TRADES: (
+                ai_inputs.final_trades() if self._trade() is None else self._final_trades(market)
+            ),
         }
 
     def _maybe_finish_round(self, current: _Round) -> None:
@@ -593,6 +632,8 @@ class ReportRoundMixin:
         try:
             if report_store.has_running_report(self._conn, current.round_id):
                 return
+            if self._trade() is not None:
+                self._set_stage(current.round_id, RoundStage.RECORD)
             report_store.finish_round(
                 self._conn,
                 current.round_id,
@@ -601,6 +642,9 @@ class ReportRoundMixin:
             )
         except StorageError as exc:
             self._ai_off(None, exc)
+            return
+        self._round_finished()
+        self._post_trade_views()
 
     # --- 세션 결과(3.5.2의 5) -------------------------------------------------------------------
 
@@ -677,6 +721,17 @@ class ReportRoundMixin:
         report_store.finish_report(self._conn, pending.report_id, record, rows)
         self._rules.a29_succeeded(alert_rules.STAGE_REPORT_SAVE, pending.market)
         self._alert_for(pending, failure, judged.reason, judged.direction)
+        target = _target(pending.report_id, pending.market, pending.round, record.elapsed_report_s)
+        try:  # 주문의 실패는 보고서를 고쳐 쓰지 않는다(그 보고서는 `OK` 그대로)
+            if failure is not None:
+                self._no_order(target, NoOrderReason.NO_JUDGMENT)
+            else:
+                self._order_for_report(target, pending.round.round_id)
+        except StorageError as exc:
+            self._emit_unexpected(STAGE_ORDER, pending.market, exc, module=_MODULE)
+        except Exception as exc:
+            log.error("주문이 실패했습니다: %s: %s", type(exc).__name__, exc)
+            self._emit_unexpected(STAGE_ORDER, pending.market, exc, module=_MODULE)
 
     def _judge(self, pending: _Pending, result: SessionResult) -> ai_answers.Judged:
         """실패한 세션은 `check()`를 한 번 더 불러 로그인 만료를 가른다(`TIMEOUT`, `LIMIT`은
@@ -707,12 +762,25 @@ class ReportRoundMixin:
             )
             return
         if failure is FailureKind.LOGGED_OUT:
-            self._emit_alert(alert_rules.logged_out(), self._rules.want_a18(), module=_MODULE)
+            spec = alert_rules.logged_out(tuple(sorted(self._sold_canceled)))
+            self._emit_alert(spec, self._rules.want_a18(), module=_MODULE)
             return
         wanted = self._rules.want_a17(market, failure.value)
         next_text = kst_when_text(pending.round.next_close, self._clock.now())
-        spec = alert_rules.report_failed(market, failure.value, reason or "", next_text)
+        spec = alert_rules.report_failed(
+            market,
+            failure.value,
+            reason or "",
+            next_text,
+            stop_only=market in self._sold_canceled,
+        )
         self._emit_alert(spec, wanted, module=_MODULE)
+
+
+def _target(
+    report_id: int, market: str, current: _Round, elapsed_report_s: int | None
+) -> _OrderTarget:
+    return _OrderTarget(report_id, market, current.close, current.next_close, elapsed_report_s)
 
 
 def _evidence_keys(last: "report_store.LastJudgment") -> tuple[tuple[AiSlot, int], ...]:

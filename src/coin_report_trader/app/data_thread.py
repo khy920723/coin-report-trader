@@ -23,6 +23,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
@@ -41,6 +42,7 @@ from coin_report_trader.core import (
     AlertView,
     AutostartStore,
     BarStats,
+    BookSource,
     CandleUnit,
     Clock,
     CoinView,
@@ -77,10 +79,13 @@ from coin_report_trader.core.texts import (
     STAGE_CANDLE_SAVE,
     STAGE_CANDLES,
     STAGE_MARKETS,
+    STAGE_ORDER,
+    STAGE_RECONCILE,
     STAGE_REPORT,
     STAGE_SETTINGS_SAVE,
     STAGE_STARTUP,
     STAGE_STATS,
+    STAGE_STOP_LOSS,
     after_candles_blocked,
     after_candles_retry,
     content_candles_failed,
@@ -101,7 +106,9 @@ from coin_report_trader.storage.candles import (
 )
 from coin_report_trader.storage.database import open_database
 from coin_report_trader.storage.settings import (
+    FIRST_SETUP_LEVEL_STAGE3,
     read_fetched_at,
+    read_first_setup_level,
     read_settings,
     write_fetched_at,
     write_settings,
@@ -135,6 +142,7 @@ from .send_types import (
     SendPort,
     WebhookResult,
 )
+from .trade_round import TradeMixin
 
 log = logging.getLogger(__name__)
 
@@ -203,6 +211,8 @@ class _SaveTask:
     candle_count: int | None = None
     autostart: bool | None = None
     ai_choices: tuple[AiChoice, ...] | None = None
+    trade: TradeSettings | None = None
+    accept_below_stop: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -244,6 +254,36 @@ type _Task = (
 )
 
 
+class _BookJoined:
+    """`Services.quote`와 따로 넘긴 `Services.book`을 한 소스로 잇는다(M3 명세 3.4). 한
+    `QuoteClient`의 요청 한도 장치로 함께 센다(3.6)."""
+
+    def __init__(self, quote: QuoteSource, book: BookSource) -> None:
+        self._quote = quote
+        self._book = book
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._quote, name)
+
+    def list_markets(self):  # type: ignore[no-untyped-def]
+        return self._quote.list_markets()
+
+    def get_candles(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        return self._quote.get_candles(*args, **kwargs)
+
+    def get_price(self, market: str) -> Decimal:
+        return self._quote.get_price(market)  # type: ignore[attr-defined,no-any-return]
+
+    def get_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
+        return self._book.get_best_prices(market)
+
+    def get_tick_size(self, market: str) -> Decimal:
+        return self._book.get_tick_size(market)
+
+    def get_minute_candles(self, market: str, *, to: datetime | None, count: int):  # type: ignore[no-untyped-def]
+        return self._book.get_minute_candles(market, to=to, count=count)
+
+
 class _WakeEvent(threading.Event):
     """자료 스레드를 깨우는 `event`. `Clock.wait`가 처음 기다리기 시작한 때를 `waiting`에 남긴다.
 
@@ -260,7 +300,7 @@ class _WakeEvent(threading.Event):
         return super().wait(timeout)
 
 
-class DataWorker(ReportRoundMixin):
+class DataWorker(TradeMixin, ReportRoundMixin):
     """자료 스레드와 그 동작 큐. `UiActions`를 지킨다(주 스레드에서 부른다)."""
 
     def __init__(
@@ -275,8 +315,12 @@ class DataWorker(ReportRoundMixin):
         autostart: AutostartStore | None = None,
         ai: AiRunner | None = None,
         sessions_root: Path | None = None,
+        book: BookSource | None = None,
+        min_order: Decimal | None = None,
     ) -> None:
         self._send = send
+        self._book = book
+        self._init_trade(min_order)
         self._problems = ProblemReport(logs_dir.parent)
         self._alert_round: int | None = None
         """회차를 쓴 뒤 그 회차 안에서 만드는 알림의 문제 보고 `round_number`."""
@@ -379,10 +423,10 @@ class DataWorker(ReportRoundMixin):
 
         `autostart`가 `None`이면 저장된 값을 그대로 둔다(M1 명세 3.16.3).
 
-        `trade`와 `accept_below_stop`은 받기만 하고 쓰지 않는다(M3 명세 4절 1번. 23번까지
-        자료 스레드는 아무것도 하지 않는다). `live`도 받기만 한다(M5 명세 4절 3번. 15번까지).
+        `trade`가 `None`이면 저장된 매매 칸을 그대로 둔다(M3 명세 3.11.2). `accept_below_stop`은
+        손절선 아래인 보유를 확인한 코인이다(3.11.4). `live`는 받기만 한다(M5 명세 4절 3번).
         """
-        del trade, accept_below_stop, live
+        del live
         self._put(
             _SaveTask(
                 tuple(coins),
@@ -392,6 +436,8 @@ class DataWorker(ReportRoundMixin):
                 candle_count,
                 autostart,
                 None if ai_choices is None else tuple(ai_choices),
+                trade,
+                tuple(accept_below_stop),
             )
         )
 
@@ -487,10 +533,13 @@ class DataWorker(ReportRoundMixin):
             self._close()
 
     def _open(self) -> None:
-        quote = self._quote
+        quote: QuoteSource | None = self._quote
         if quote is None:
             self._owned_source = HttpQuoteSource()
             quote = self._owned_source
+        if self._book is not None and not isinstance(quote, BookSource):
+            quote = _BookJoined(quote, self._book)  # `Services.book`(M3 명세 3.4)
+        self._has_book = isinstance(quote, BookSource)
         self._client = QuoteClient(quote, self._clock)
 
     def _close(self) -> None:
@@ -563,9 +612,7 @@ class DataWorker(ReportRoundMixin):
         if self._send is not None:
             for category in AlertCategory:
                 try:
-                    alert_store.settle_not_sent(
-                        self._conn, category, self._settled_state(category)
-                    )
+                    alert_store.settle_not_sent(self._conn, category, self._settled_state(category))
                 except StorageError as exc:
                     log.warning("남은 알림의 디스코드 결과를 바꾸지 못했습니다: %s", exc)
                     failure = failure or exc
@@ -597,7 +644,7 @@ class DataWorker(ReportRoundMixin):
             self._publish_alerts_first()
             return
         try:
-            view = read_settings(self._conn)
+            view = self._stage3_view(read_settings(self._conn))
         except Exception as exc:  # 읽기의 실패와 그 밖의 예외 모두 "설정을 읽지 못함"이다
             self._emit_unexpected(STAGE_STARTUP, None, exc)
             self._settings_unreadable()
@@ -614,6 +661,8 @@ class DataWorker(ReportRoundMixin):
         self._publish_alerts_first()
         self._guard(self._start_ai_status, STAGE_REPORT)
         self._guard(self._post_start_reports, STAGE_REPORT)
+        self._guard(self._load_directions, STAGE_RECONCILE)
+        self._guard(self._trade_startup, STAGE_RECONCILE)  # 소급 판정과 손절 점검(M3 명세 2의 3)
         if view.first_setup_done and view.coins:
             self._guard(self._fetch_round)
 
@@ -686,7 +735,9 @@ class DataWorker(ReportRoundMixin):
                 continue
             action = self._due_action()
             if action is not None:
-                self._guard(action)
+                self._guard(
+                    action, STAGE_STOP_LOSS if action == self._minute_check else STAGE_CANDLES
+                )
                 continue
             with self._lock:
                 if not self._queue:
@@ -747,10 +798,15 @@ class DataWorker(ReportRoundMixin):
         cleanup = self._next_cleanup_mono
         if cleanup is not None and now >= cleanup:
             return self._cleanup_old
+        # 회차와 1분 점검이 함께 되었으면 회차가 먼저다(회차의 현재가와 주문이 앞선다).
         if self._blocked_mono is not None:
-            return self._scheduled_round if now >= self._blocked_mono else None
-        due = self._next_round_mono
-        return self._scheduled_round if due is not None and now >= due else None
+            if now >= self._blocked_mono:
+                return self._scheduled_round
+        else:
+            due = self._next_round_mono
+            if due is not None and now >= due:
+                return self._scheduled_round
+        return self._minute_check if self._minute_due(now) else None
 
     def _seconds_until_due(self) -> float:
         now = self._clock.monotonic()
@@ -763,6 +819,9 @@ class DataWorker(ReportRoundMixin):
         cleanup = self._next_cleanup_mono
         if cleanup is not None and not self._settings_failed:
             due = cleanup if due is None else min(due, cleanup)
+        minute = self._stop_check_mono
+        if minute is not None and not self._settings_failed:
+            due = minute if due is None else min(due, minute)
         if due is None:
             return IDLE_SECONDS
         seconds = due - now
@@ -856,6 +915,13 @@ class DataWorker(ReportRoundMixin):
                 self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
                 self._emit_save_failed(STAGE_SETTINGS_SAVE, None, exc)
                 return
+        try:
+            if not self._check_trade_save(current, task.coins, task.trade, task.accept_below_stop):
+                return
+        except StorageError as exc:
+            self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
+            self._emit_unexpected(STAGE_SETTINGS_SAVE, None, exc)
+            return
         done = True if task.first_setup else current.first_setup_done
         autostart = current.autostart if task.autostart is None else task.autostart
         four = _four_choices(task.ai_choices)
@@ -870,6 +936,7 @@ class DataWorker(ReportRoundMixin):
             autostart_supported=current.autostart_supported,
             autostart_error=current.autostart_error,
             ai_choices=four or (),  # 빈 묶음은 저장된 칸을 그대로 둔다(M2 명세 3.10)
+            trade=task.trade,  # `None`이면 저장된 매매 칸을 건드리지 않는다(M3 명세 3.11.2)
         )
         try:
             write_settings(
@@ -878,7 +945,9 @@ class DataWorker(ReportRoundMixin):
                 drop_other_unit_candles=unit_changed,
                 clear_fetched_at=fresh,
                 autostart=task.autostart,
+                created_at=self._clock.now(),
             )
+            stored = self._stage3_view(read_settings(self._conn))
         except StorageError as exc:
             self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
             self._emit_save_failed(STAGE_SETTINGS_SAVE, None, exc)
@@ -887,12 +956,15 @@ class DataWorker(ReportRoundMixin):
             self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
             self._emit_unexpected(STAGE_SETTINGS_SAVE, None, exc)
             return
-        # 처음 설정을 마쳤다는 것은 단위와 개수가 모두 저장된 것이다(3.7).
+        # 처음 설정을 마쳤다는 것은 단위와 개수가 모두 저장된 것이다(3.7). 3단계에서는
+        # `first_setup_level` "3"과 3단계의 꼭 넣는 키도 있어야 한다(M3 명세 3.11.3).
         new = replace(
             new,
-            first_setup_done=done and unit is not None and count is not None,
+            first_setup_done=done and stored.first_setup_done,
             ai_choices=stored_choices,
+            trade=stored.trade,
         )
+        first_trade = new.first_setup_done and not current.first_setup_done
         if task.autostart is not None and new.autostart_supported:
             # 저장 때 맞추기(3.16.2): 설정 값의 저장은 이미 됐고, 레지스트리의 실패는 글로만 남는다.
             error = self._register_autostart() if task.autostart else self._remove_autostart()
@@ -906,6 +978,9 @@ class DataWorker(ReportRoundMixin):
         self._rules.a29_succeeded(STAGE_SETTINGS_SAVE, None)
         self._post(SaveResult(SAVE_TARGET_SETTINGS, True, SETTINGS_SAVED))
         self._post(new)
+        if first_trade:  # 3단계 처음 설정을 마침: 대조와 손절 점검을 한 번 하고 1분 점검을 켠다
+            self._guard(self._trade_startup, STAGE_RECONCILE)
+        self._guard(lambda: self._after_trade_save(current, new, first_trade), STAGE_ORDER)
         if four is not None:  # 네 칸을 저장한 때(저장이 성공한 뒤) `check()`(M2 명세 3.5.4)
             self._guard(self._after_ai_choices_saved, STAGE_REPORT)
         self._cleanup_old(always_post=True)  # 보관 기간을 저장한 직후(3.9)
@@ -917,6 +992,16 @@ class DataWorker(ReportRoundMixin):
                 self._send_blocked_views()
             else:
                 self._fetch_round()
+
+    def _stage3_view(self, view: SettingsView) -> SettingsView:
+        """3단계의 `first_setup_done`(M3 명세 3.11.3): `first_setup_level`이 "3"이고 3단계의 꼭
+        넣는 키가 모두 있을 때만 참이다. 예전 기록("1", "2")은 처음 설정을 다시 보인다."""
+        if not view.first_setup_done:
+            return view
+        assert self._conn is not None
+        level = read_first_setup_level(self._conn)
+        done = level == FIRST_SETUP_LEVEL_STAGE3 and view.trade is not None
+        return view if done else replace(view, first_setup_done=False)
 
     def _coins_listed(self, coins: tuple[str, ...]) -> bool:
         listed = self._markets_listed
@@ -1429,6 +1514,7 @@ class DataWorker(ReportRoundMixin):
             coin=spec.coin,
             text=spec.text,
             detail=spec.detail,
+            trade_line=spec.trade_line,
         )
         try:
             self._send.submit(SendJob(alert_id, spec.category, redact(message)))

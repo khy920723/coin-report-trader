@@ -20,6 +20,8 @@ from typing import Final
 from coin_report_trader.core import (
     AI_PARTS,
     AI_SLOT_TITLES,
+    ORDER_KIND_TITLES,
+    ORDER_SIDE_TITLES,
     REPORT_LIST_LIMIT,
     AiSlot,
     Belief,
@@ -32,6 +34,8 @@ from coin_report_trader.core import (
     LastResult,
     Mode,
     ModelTokens,
+    OrderKind,
+    OrderSide,
     ReportState,
     ReportView,
     RoundItem,
@@ -43,6 +47,7 @@ from coin_report_trader.core import (
     TokenUsage,
     Verdict,
 )
+from coin_report_trader.core.texts import order_summary_text
 from coin_report_trader.storage.database import transaction, translate_errors
 from coin_report_trader.storage.times import format_utc, parse_utc
 
@@ -335,7 +340,7 @@ def read_report(conn: sqlite3.Connection, report_id: int) -> ReportView | None:
     with translate_errors("보고서 읽기"):
         row = conn.execute(
             f"SELECT {_REPORT_COLUMNS} FROM reports JOIN rounds ON rounds.id = reports.round_id"
-            " WHERE reports.id = ?",
+            " LEFT JOIN orders ON orders.id = reports.order_id WHERE reports.id = ?",
             (report_id,),
         ).fetchone()
         if row is None:
@@ -395,7 +400,8 @@ _REPORT_COLUMNS: Final = (
     " reports.result_text, reports.last_report_id, reports.last_predicted_price,"
     " reports.last_actual_price, reports.last_diff, reports.last_hit, reports.input_tokens,"
     " reports.output_tokens, reports.cache_read_tokens, reports.cache_creation_tokens,"
-    " reports.elapsed_report_s"
+    " reports.elapsed_report_s, reports.no_order_reason, reports.elapsed_order_s, orders.kind,"
+    " orders.side, orders.price, orders.qty"
 )
 _LAST_REPORT_ID: Final = 15
 _ROW_COLUMNS: Final = (
@@ -495,7 +501,8 @@ def _report_view(
     (report_id, market, number, close, state_text, failure, base, search, candle, direction,
      predicted, reason, buy, sell, result_text, last_report_id, last_predicted, last_actual,
      last_diff, last_hit, in_tokens, out_tokens, cache_read, cache_creation,
-     elapsed) = row  # fmt: skip
+     elapsed, no_order, elapsed_order, order_kind, order_side, order_price,
+     order_qty) = row  # fmt: skip
     try:
         state = ReportState(state_text)
         tokens = (
@@ -513,6 +520,9 @@ def _report_view(
             "base_price": _decimal(base),
             "tokens": tokens,
             "elapsed_report_seconds": None if elapsed is None else int(elapsed),  # type: ignore[call-overload]
+            "order_summary": _order_summary(order_kind, order_side, order_price, order_qty),
+            "no_order_reason": None if no_order is None else str(no_order),
+            "elapsed_order_seconds": None if elapsed_order is None else int(elapsed_order),  # type: ignore[call-overload]
         }
         if state is not ReportState.OK:
             return ReportView(
@@ -559,6 +569,18 @@ def _report_view(
         )
     except (ValueError, InvalidOperation, TypeError, KeyError) as exc:
         raise StorageError("저장된 보고서의 값이 맞지 않습니다") from exc
+
+
+def _order_summary(kind: object, side: object, price: object, qty: object) -> str | None:
+    """보고서의 낸 주문의 요약(M3 명세 3.17.3. A-27과 같은 꼴). 주문이 없으면 `None`."""
+    if kind is None or side is None or qty is None:
+        return None
+    return order_summary_text(
+        ORDER_KIND_TITLES[OrderKind(str(kind))],
+        ORDER_SIDE_TITLES[OrderSide(str(side))],
+        None if price is None else Decimal(str(price)),
+        Decimal(str(qty)),
+    )
 
 
 def _view_rows(
