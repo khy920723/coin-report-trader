@@ -114,7 +114,7 @@ def test_a_failure_to_make_or_prune_is_a_storage_error(tmp_path: Path) -> None:
 
 def test_the_schema_copy_name_has_the_new_number_and_the_korean_time() -> None:
     moment = datetime(2026, 12, 4, 15, 30, 5, tzinfo=UTC)  # 한국 2026-12-05 00:30:05
-    assert schema_copy_name(moment) == "before-schema-3-20261205-003005.db"
+    assert schema_copy_name(moment) == "before-schema-4-20261205-003005.db"
 
 
 @pytest.mark.parametrize("version", [1, 2])
@@ -125,7 +125,7 @@ def test_an_old_database_is_copied_before_it_is_raised(tmp_path: Path, version: 
         copy = copy_before_upgrade(conn, tmp_path / "backups", moment)
     finally:
         conn.close()
-    assert copy == tmp_path / "backups" / "before-schema-3-20261205-003005.db"
+    assert copy == tmp_path / "backups" / "before-schema-4-20261205-003005.db"
     assert read_coins(copy) == [('["KRW-AAA"]',)]
     check = sqlite3.connect(copy)
     try:

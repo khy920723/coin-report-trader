@@ -87,13 +87,14 @@ def _alert(connection: sqlite3.Connection, **overrides: object) -> int:
 def test_migrate_creates_three_strict_tables(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "app.db")
     try:
-        assert SCHEMA_VERSION == 3
+        assert SCHEMA_VERSION == 4
         assert _tables(connection) == set()
-        assert migrate(connection) == 3
-        assert _pragmas(connection) == ("wal", 2, 3)
+        assert migrate(connection) == 4
+        assert _pragmas(connection) == ("wal", 2, 4)
         assert _tables(connection) == {
             "settings", "candles", "alerts", "rounds", "reports", "report_rows", "paper_accounts",
-            "paper_holdings", "orders", "fills", "pauses", "setting_events",
+            "paper_holdings", "orders", "fills", "pauses", "setting_events", "live_snapshots",
+            "external_changes",
         }  # fmt: skip
         columns = {
             table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
@@ -149,7 +150,7 @@ def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_pa
             migrate(_FailsOnVersionWrite(late))  # type: ignore[arg-type]
         assert _internal_tables(late) == set()
         assert _tables(late) == set()
-        assert migrate(good) == 3
+        assert migrate(good) == 4
         assert _internal_tables(good) == {"sqlite_sequence"}
     finally:
         broken.close()
@@ -160,8 +161,8 @@ def test_the_number_table_exists_after_migrate_and_not_after_a_failed_one(tmp_pa
 def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> None:
     done = SettingsView(("KRW-AAA",), 30, True, candle_unit=CandleUnit.DAY, candle_count=100)
     settings.write_settings(conn, done)
-    assert migrate(conn) == 3
-    assert migrate(conn) == 3
+    assert migrate(conn) == 4
+    assert migrate(conn) == 4
     assert settings.read_settings(conn) == done
     assert not conn.in_transaction
 
@@ -169,10 +170,10 @@ def test_migrate_at_version_one_changes_nothing(conn: sqlite3.Connection) -> Non
 def test_migrate_refuses_a_newer_number(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "app.db")
     try:
-        connection.execute("PRAGMA user_version=4")
+        connection.execute("PRAGMA user_version=5")
         with pytest.raises(StorageError):
             migrate(connection)
-        assert schema_version(connection) == 4
+        assert schema_version(connection) == 5
         assert _tables(connection) == set()
     finally:
         connection.close()
@@ -215,7 +216,7 @@ def test_migrate_failure_at_the_number_write_rolls_the_tables_back(tmp_path: Pat
             migrate(_FailsOnVersionWrite(connection))  # type: ignore[arg-type]
         assert _tables(connection) == set()
         assert _pragmas(connection) == ("wal", 2, 0)
-        assert migrate(connection) == 3
+        assert migrate(connection) == 4
     finally:
         connection.close()
 

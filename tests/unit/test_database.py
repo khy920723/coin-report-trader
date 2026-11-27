@@ -28,11 +28,11 @@ def test_open_creates_the_file_with_wal_and_full_sync_every_time(tmp_path: Path)
 
 
 def test_schema_version_starts_at_zero_and_reads_user_version(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
     conn = open_database(tmp_path / "app.db")
     try:
-        conn.execute("PRAGMA user_version=4")
-        assert schema_version(conn) == 4
+        conn.execute("PRAGMA user_version=5")
+        assert schema_version(conn) == 5
         # M0에서는 표를 만들지 않는다.
         assert conn.execute("SELECT count(*) FROM sqlite_master").fetchone() == (0,)
     finally:

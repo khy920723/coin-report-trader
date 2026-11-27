@@ -65,9 +65,9 @@ def test_an_old_database_is_copied_into_backups_before_it_is_raised(env: Any) ->
     timer = quit_soon(env)
     assert run_gui([], services=services()) == 0
     timer.stop()
-    copies = sorted((root / "backups").glob("before-schema-3-*.db"))
+    copies = sorted((root / "backups").glob("before-schema-4-*.db"))
     assert len(copies) == 1
-    assert copies[0].name.startswith("before-schema-3-2026")  # 가짜 시계의 한국 시각
+    assert copies[0].name.startswith("before-schema-4-2026")  # 가짜 시계의 한국 시각
     copy = open_database(copies[0])
     try:
         assert schema_version(copy) == 2
@@ -76,7 +76,7 @@ def test_an_old_database_is_copied_into_backups_before_it_is_raised(env: Any) ->
         copy.close()
     conn = open_database(resolve_app_paths().database_file)
     try:
-        assert schema_version(conn) == 3
+        assert schema_version(conn) == 4
     finally:
         conn.close()
 
