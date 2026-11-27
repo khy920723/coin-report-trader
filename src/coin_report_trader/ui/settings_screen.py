@@ -385,6 +385,10 @@ class SettingsScreen(QWidget):
         """걸린 칸 가운데 맨 위의 것(알림 A-15가 가는 곳). 없으면 `None`."""
         return self._fields.first_error_widget() or self._live_fields.first_error_widget()
 
+    def key_widget(self) -> QWidget:
+        """업비트 키 묶음(계정 화면의 "업비트 키 넣으러 가기"가 가는 곳)."""
+        return self._key_card
+
     def coins_widget(self) -> QWidget:
         """코인 고르기(알림 A-16이 가는 곳)."""
         return self._picker

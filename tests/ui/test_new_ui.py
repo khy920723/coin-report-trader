@@ -362,6 +362,7 @@ def test_the_screen_list_has_line_icons_and_the_same_texts_and_order(window):
     assert [nav.item(i).text() for i in range(nav.count())] == [
         "처음 설정",
         "현황",
+        "계정",
         "보고서",
         "기록",
         "설정",
