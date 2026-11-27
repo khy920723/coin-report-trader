@@ -59,6 +59,7 @@ from coin_report_trader.ui.texts import (
     DUST_TEXT,
     ERROR_PAUSE_KINDS,
     HOLDING_NONE,
+    LIVE_KRW_LABEL,
     NO_JUDGMENT_YET,
     NO_OPEN_ORDER,
     NO_VALUE,
@@ -151,7 +152,9 @@ class TodayPanel(Card):
         self.body.addWidget(self._krw)
         self.hide()
 
-    def render(self, view: TodayView | None) -> None:
+    def render(self, view: TodayView | None, *, live: bool = False) -> None:
+        """실거래에서는 "가상 원화" 줄 대신 "원화 {금액}원"(실제 계정의 주문 가능 원화)이다(M5 명세
+        3.11). 하루 손실 한도와 예산, 실현 손익은 백엔드가 실거래 값으로 보낸다."""
         self.setVisible(view is not None)
         if view is None:
             return
@@ -160,7 +163,8 @@ class TodayPanel(Card):
         self._used.setText(
             f"전체 매수 원가와 걸린 매수 주문 {won(view.used)}원 / 예산 {won(view.budget)}원"
         )
-        self._krw.setText(f"가상 원화 {won(view.paper_krw)}원")
+        krw_name = LIVE_KRW_LABEL if live else "가상 원화"
+        self._krw.setText(f"{krw_name} {won(view.paper_krw)}원")
         reached = view.limit_reached
         # 하루 손실 한도에 닿았으면 첫 줄 전체가 `error`다. 아니면 손익만 오름·내림 색이다.
         for label in (self._pnl_name, self._limit):

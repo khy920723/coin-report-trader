@@ -21,12 +21,14 @@ from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
     QDateEdit,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QStyledItemDelegate,
     QTableWidget,
@@ -42,6 +44,7 @@ from coin_report_trader.core import (
     HistoryTab,
     HistoryView,
     LoadState,
+    Mode,
     SaveResult,
     ScreenId,
     coin_label,
@@ -64,11 +67,19 @@ from coin_report_trader.ui.texts import (
     HISTORY_REPORT_TEXT,
     HISTORY_STILL_PAUSED,
     HISTORY_TAB_TITLES,
+    MODE_LIVE_RECORD,
+    MODE_PAPER_RECORD,
     NO_VALUE,
     UNCONFIRMED_TEXT,
     history_export_name,
 )
-from coin_report_trader.ui.widgets import make_label, set_role, set_tone, trend_of
+from coin_report_trader.ui.widgets import (
+    live_border_style,
+    make_label,
+    set_role,
+    set_tone,
+    trend_of,
+)
 
 DAY_START_HOUR = 9
 """하루가 바뀌는 한국 시각(M3 명세 2절)."""
@@ -77,6 +88,7 @@ TABS = (
     HistoryTab.JUDGMENTS,
     HistoryTab.ORDERS,
     HistoryTab.FILLS,
+    HistoryTab.EXTERNAL,
     HistoryTab.PAUSES,
 )
 RIGHT_COLUMNS = {
@@ -84,6 +96,7 @@ RIGHT_COLUMNS = {
     HistoryTab.JUDGMENTS: (0, 3, 4, 5, 7, 8),
     HistoryTab.ORDERS: (0, 4, 5),
     HistoryTab.FILLS: (0, 3, 4, 5, 6),
+    HistoryTab.EXTERNAL: (0, 2),
     HistoryTab.PAUSES: (0, 2),
 }
 """오른쪽에 맞추는 칸(수, 금액, 시각. 설계서 5-6의 4장)."""
@@ -109,7 +122,7 @@ def _day(value: QDate) -> date:
     return date(value.year(), value.month(), value.day())
 
 
-def _date_edit_style() -> str:
+def date_edit_style() -> str:
     """날짜 칸과 그 달력 창의 꼴. 앱 스타일시트는 `QDateEdit`을 다루지 않으므로 `theme`의 값으로
     칸(코인 고르기와 같은 꼴)과 달력(어두운 바탕, 고른 날은 `accent`)을 칠한다."""
     return (
@@ -157,6 +170,8 @@ class HistoryScreen(QWidget):
         self._rows: tuple[HistoryRow, ...] = ()
         self._selected_key: str | None = None
         self._day_touched = False
+        self._mode = Mode.PAPER
+        self._mode_touched = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
         layout.setSpacing(theme.CARD_GAP)
@@ -173,6 +188,17 @@ class HistoryScreen(QWidget):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(theme.FIELD_GAP)
+        # 모의매매 기록 / 실거래 기록(SCR-04-1. M5 명세 3.11). 서로 넘어가지 않는다.
+        self._mode_group = QButtonGroup(self)
+        self._mode_buttons: dict[Mode, QRadioButton] = {}
+        for mode, title in ((Mode.PAPER, MODE_PAPER_RECORD), (Mode.LIVE, MODE_LIVE_RECORD)):
+            button = QRadioButton(title)
+            button.setObjectName(f"historyMode_{mode.value}")
+            button.clicked.connect(lambda _checked=False, m=mode: self._on_mode_clicked(m))
+            self._mode_group.addButton(button)
+            self._mode_buttons[mode] = button
+            row.addWidget(button)
+        self._mode_buttons[Mode.PAPER].setChecked(True)
         coin_caption = make_label(HISTORY_COIN_CAPTION, "historyCoinCaption")
         self._coin = QComboBox()
         self._coin.setObjectName("historyCoin")
@@ -184,7 +210,7 @@ class HistoryScreen(QWidget):
         self._day_edit.setObjectName("historyDay")
         self._day_edit.setCalendarPopup(True)
         self._day_edit.setDisplayFormat("yyyy-MM-dd")
-        self._day_edit.setStyleSheet(_date_edit_style())
+        self._day_edit.setStyleSheet(date_edit_style())
         self._day_edit.setDate(_qdate(self._default_day()))
         self._day_edit.dateChanged.connect(self._on_day_changed)
         day_caption.setBuddy(self._day_edit)
@@ -321,6 +347,16 @@ class HistoryScreen(QWidget):
     def chosen_tab(self) -> HistoryTab:
         return self._tab
 
+    def chosen_mode(self) -> Mode:
+        return self._mode
+
+    def set_default_mode(self, mode: Mode) -> bool:
+        """지금 모드의 기록을 먼저 고른다(사용자가 고르기 전에만. 신호 없이). 바뀌었으면 참이다."""
+        if self._mode_touched or mode is self._mode:
+            return False
+        self._set_mode(mode)
+        return True
+
     def select_tab(self, tab: HistoryTab) -> None:
         """탭을 고른다(`selection_changed`를 낸다)."""
         if tab is self._tab:
@@ -330,9 +366,14 @@ class HistoryScreen(QWidget):
         self._sync_tabs()
         self.selection_changed.emit()
 
-    def choose(self, tab: HistoryTab, market: str | None, day: date) -> None:
-        """다른 화면에서 열 때 탭, 코인, 날짜를 고른다(신호를 내지 않는다). 고르기에 없는 코인은
-        "모든 코인"이다."""
+    def choose(
+        self, tab: HistoryTab, market: str | None, day: date, mode: Mode | None = None
+    ) -> None:
+        """다른 화면에서 열 때 탭, 코인, 날짜(와 그 알림의 모드)를 고른다(신호를 내지 않는다).
+        고르기에 없는 코인은 "모든 코인"이다."""
+        if mode is not None:
+            self._mode_touched = True
+            self._set_mode(mode)
         self._tab = tab
         self._selected_key = None
         self._sync_tabs()
@@ -369,6 +410,22 @@ class HistoryScreen(QWidget):
         self._export_message.show()
 
     # --- 안쪽 ---
+
+    def _set_mode(self, mode: Mode) -> None:
+        self._mode = mode
+        for key, button in self._mode_buttons.items():
+            button.setChecked(key is mode)
+        # 실거래 기록이면 표의 테두리가 `error`다(설계서 7.5).
+        card = self.findChild(QWidget, "historyCard")
+        if card is not None:
+            card.setStyleSheet(live_border_style("historyCard") if mode is Mode.LIVE else "")
+
+    def _on_mode_clicked(self, mode: Mode) -> None:
+        if mode is self._mode:
+            return
+        self._mode_touched = True
+        self._set_mode(mode)
+        self._on_changed()
 
     def _default_day(self) -> date:
         return history_day_of(self._now())

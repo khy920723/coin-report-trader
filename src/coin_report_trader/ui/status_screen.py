@@ -76,7 +76,13 @@ from coin_report_trader.ui.trade_status import (
     TodayPanel,
     error_pause_text,
 )
-from coin_report_trader.ui.widgets import make_label, set_role, set_trend, show_message
+from coin_report_trader.ui.widgets import (
+    live_border_style,
+    make_label,
+    set_role,
+    set_trend,
+    show_message,
+)
 
 MESSAGE_NAME = "statusMessage"
 CONTENT_NAME = "statusContent"
@@ -385,6 +391,11 @@ class CoinCard(Card):
             return
         super().keyPressEvent(event)
 
+    def set_live(self, live: bool) -> None:
+        """실거래이면 코인 칸의 테두리가 `error` 2px이다(설계서 4.5. M5 명세 3.11)."""
+        name = f"statusCoin_{self.market}"
+        self.setStyleSheet(live_border_style(name) if live else "")
+
     def render_trade(self, view: CoinTradeView | None) -> None:
         """코인 칸의 3단계 줄(현재가, 보유, 지난 판단, 걸린 주문 …)."""
         self._trade.render(view)
@@ -616,19 +627,23 @@ class StatusScreen(QWidget):
         round_now: RoundNowView | None = None,
         performance: PerformanceView | None = None,
         status: TradeStatusView | None = None,
+        live: bool = False,
     ) -> None:
         """`message`가 있으면 그 글 하나만 보인다. 없으면 고른 코인의 칸과 표를 그린다.
 
         3단계의 값(`trade_views`부터 `status`)이 없으면 그 자리는 보이지 않는다. 오류 멈춤의 줄은
-        글 하나만 보이는 모습에서도 보인다(설계서 4.5)."""
+        글 하나만 보이는 모습에서도 보인다(설계서 4.5). `live`가 참이면(실거래) 오늘 요약이
+        "원화 {금액}원" 줄이고, 코인 칸의 테두리가 `error` 2px이며, 모의 성적은 보이지 않는다
+        (M5 명세 3.11)."""
         show_message(self._message, message)
         self._content.setVisible(message is None)
         error_text = error_pause_text(status) if status is not None else None
         self._error_pause.setText(error_text or "")
         self._error_pause.setVisible(error_text is not None)
-        self._today.render(today)
+        self._today.render(today, live=live)
         self._round_now.render(round_now)
-        self._performance.render(performance)
+        # 모의 성적은 모의매매일 때만 보인다(M3 명세 3.16.1).
+        self._performance.render(None if live else performance)
         coins = coins[:MAX_COINS]
         self._views = views
         if coins != self._coins:
@@ -638,6 +653,7 @@ class StatusScreen(QWidget):
         for market, card in self._cards.items():
             card.render(views.get(market))
             card.render_trade((trade_views or {}).get(market))
+            card.set_live(live)
         self._render_stats()
 
     def _rebuild_cards(self) -> None:

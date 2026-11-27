@@ -33,6 +33,7 @@ from coin_report_trader.ui.texts import (
     band_alerts_text,
     resume_wait_text,
 )
+from coin_report_trader.ui.widgets import live_border_style
 
 BAND_NAME = "tradeBand"
 
@@ -136,8 +137,13 @@ class TradeBand(QFrame):
         user = status is not None and status.user_paused
         error = status is not None and status.error_paused
         mode = status.mode if status is not None else Mode.PAPER
-        self._mode.setText(BAND_MODE_PAPER if mode is Mode.PAPER else BAND_MODE_LIVE)
-        self._mode.setStyleSheet(_tag_style(theme.TEXT, bold=mode is not Mode.PAPER))
+        live = mode is Mode.LIVE
+        self._mode.setText(BAND_MODE_LIVE if live else BAND_MODE_PAPER)
+        # 실거래이면 띠 전체에 `error` 2px 테두리, 모드 글은 `error` 굵게(M5 명세 3.11).
+        self._mode.setStyleSheet(
+            _tag_style(theme.ERROR if live else theme.TEXT, bold=live)
+        )
+        self.setStyleSheet(live_border_style(BAND_NAME) if live else "")
         pause_text = BAND_PAUSE_BOTH if user and error else BAND_PAUSE_USER if user else (
             BAND_PAUSE_ERROR if error else ""
         )

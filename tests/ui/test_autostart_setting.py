@@ -154,8 +154,8 @@ def test_the_field_sits_in_the_other_values_card_under_the_retention_choice(wind
         card, retention.rect().bottomLeft()
     ).y() - 1
     # 카드는 코인, 예산과 투자 비율, 매수 비율, 손절과 한도, 봉 단위·봉 개수, Claude 모델, 그 밖의
-    # 값이다(M3 명세 3.17.5).
-    assert len(screen.findChildren(Card)) == 7
+    # 값(M3 명세 3.17.5)에 업비트 키, 실거래 설정, 모드(M5 명세 3.11)가 더해져 열이다.
+    assert len(screen.findChildren(Card)) == 10
     # 'ⓘ'는 확인란 바로 오른쪽이다.
     row = box.parentWidget().layout().itemAt(0).layout()
     assert [row.itemAt(i).widget().objectName() for i in range(2)] == [

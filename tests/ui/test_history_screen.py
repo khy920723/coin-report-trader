@@ -230,9 +230,8 @@ def test_the_history_screen_has_its_parts_and_no_empty_body(window):
     assert screen.findChild(QLabel, "screenBody") is None
     assert _find(screen, QComboBox, "historyCoin").itemText(0) == "모든 코인"
     assert isinstance(_find(screen, QDateEdit, "historyDay"), QDateEdit)
-    for tab in TABS:
+    for tab in (*TABS, "external"):  # 외부 변동 탭은 5단계에 더해졌다(M5 명세 3.11)
         assert _find(screen, QPushButton, f"historyTab_{tab}") is not None
-    assert screen.findChild(QPushButton, "historyTab_external") is None
     _find(screen, QTableWidget, "historyTable")
     _find(screen, QLabel, "historyDetail")
     assert _find(screen, QPushButton, "historyExport").text() == "CSV로 내보내기"
