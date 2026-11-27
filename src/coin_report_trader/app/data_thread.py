@@ -46,6 +46,7 @@ from coin_report_trader.core import (
     CandleUnit,
     Clock,
     CoinView,
+    ErrorPauseCause,
     HistoryTab,
     LiveSettings,
     LoadState,
@@ -58,10 +59,13 @@ from coin_report_trader.core import (
     StorageError,
     TradeSettings,
     UiUpdate,
+    coin_label,
     empty_bar_stats,
     redact,
 )
 from coin_report_trader.core.texts import (
+    AFTER_ERROR_PAUSE,
+    AFTER_UNEXPECTED,
     AUTOSTART_REGISTER_FAILED,
     AUTOSTART_REMOVE_FAILED,
     CONTENT_BLOCKED,
@@ -76,6 +80,7 @@ from coin_report_trader.core.texts import (
     SETTINGS_SAVED,
     STAGE_ALERT_DELETE,
     STAGE_ALERT_SAVE,
+    STAGE_BACKUP,
     STAGE_CANDLE_SAVE,
     STAGE_CANDLES,
     STAGE_MARKETS,
@@ -126,6 +131,7 @@ from .alert_rules import (
 )
 from .autostart import WindowsAutostart, current_command
 from .memory_alerts import MemoryAlert, MemoryAlerts
+from .pause_flow import TRADE_WRITE_STAGES, PauseMixin
 from .problem_report import (
     ProblemReport,
     ProblemRow,
@@ -134,6 +140,7 @@ from .problem_report import (
     problem_message,
     problem_source,
 )
+from .records import RecordsMixin
 from .report_round import SESSIONS_FOLDER, LoadReport, LoadReports, ReportRoundMixin, SessionDone
 from .send_types import (
     AddressState,
@@ -216,6 +223,30 @@ class _SaveTask:
 
 
 @dataclass(frozen=True)
+class _PauseTask:
+    sell_all: bool
+
+
+@dataclass(frozen=True)
+class _ResumeTask:
+    error: bool
+
+
+@dataclass(frozen=True)
+class _HistoryTask:
+    tab: HistoryTab
+    market: str | None
+    day: date
+
+
+@dataclass(frozen=True)
+class _ExportTask:
+    tab: HistoryTab
+    market: str | None
+    path: str
+
+
+@dataclass(frozen=True)
 class _Seen:
     ids: tuple[int, ...]
 
@@ -243,6 +274,10 @@ class _Webhook:
 type _Task = (
     str
     | _SaveTask
+    | _PauseTask
+    | _ResumeTask
+    | _HistoryTask
+    | _ExportTask
     | _Seen
     | _Delete
     | _Clear
@@ -300,7 +335,7 @@ class _WakeEvent(threading.Event):
         return super().wait(timeout)
 
 
-class DataWorker(TradeMixin, ReportRoundMixin):
+class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
     """자료 스레드와 그 동작 큐. `UiActions`를 지킨다(주 스레드에서 부른다)."""
 
     def __init__(
@@ -321,6 +356,8 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         self._send = send
         self._book = book
         self._init_trade(min_order)
+        self._init_pause()
+        self._init_records()
         self._problems = ProblemReport(logs_dir.parent)
         self._alert_round: int | None = None
         """회차를 쓴 뒤 그 회차 안에서 만드는 알림의 문제 보고 `round_number`."""
@@ -442,26 +479,28 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         )
 
     def pause(self) -> None:
-        """받기만 하고 하지 않는다(M3 명세 4절 1번. 23번이 멈춤을 만든다)."""
+        """'멈춤'(M3 명세 3.10.1). 큐에 넣고 바로 돌아온다."""
+        self._put(_PauseTask(False))
 
     def pause_and_sell_all(self) -> None:
-        """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
+        """'멈추고 전량 매도'(3.10.3). 화면은 확인 창을 거친 뒤에만 부른다."""
+        self._put(_PauseTask(True))
 
     def resume_user(self) -> None:
-        """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
+        self._put(_ResumeTask(False))
 
     def resume_error(self) -> None:
-        """받기만 하고 하지 않는다(M3 명세 4절 1번)."""
+        self._put(_ResumeTask(True))
 
     def load_history(
         self, tab: HistoryTab, market: str | None, day: date, mode: Mode | None = None
     ) -> None:
-        """받기만 하고 하지 않는다(M3 명세 4절 1번. 25번이 `HistoryView`를 보낸다)."""
-        del tab, market, day, mode
+        """`mode`는 받기만 한다(M5 명세 4절 3번. 지금 모드는 늘 모의매매다)."""
+        del mode
+        self._put(_HistoryTask(HistoryTab(tab), market, day))
 
     def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None:
-        """받기만 하고 하지 않는다(M3 명세 4절 1번. 25번이 쓴다)."""
-        del tab, market, path
+        self._put(_ExportTask(HistoryTab(tab), market, path))
 
     def save_upbit_key(self, access: str, secret: str, created: date) -> None:
         """받기만 하고 하지 않는다(M5 명세 4절 3번. 15번이 보관소에 쓴다). 값은 어디에도 남기지
@@ -663,7 +702,8 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         self._guard(self._post_start_reports, STAGE_REPORT)
         self._guard(self._load_directions, STAGE_RECONCILE)
         self._guard(self._trade_startup, STAGE_RECONCILE)  # 소급 판정과 손절 점검(M3 명세 2의 3)
-        if view.first_setup_done and view.coins:
+        self._guard(self._backup_check, STAGE_BACKUP)  # 하루 한 번의 DB 백업(3.13)
+        if view.first_setup_done and view.coins and self._quotes_allowed():
             self._guard(self._fetch_round)
 
     def _supported(self) -> bool:
@@ -745,6 +785,7 @@ class DataWorker(TradeMixin, ReportRoundMixin):
             self._clock.wait(self._wake, self._seconds_until_due())
 
     def _guard(self, action: Callable[[], None], stage: str = STAGE_CANDLES) -> None:
+        self._stage_now = stage
         try:
             action()
         except Exception as exc:
@@ -773,14 +814,35 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         if isinstance(task, LoadReport):
             self._guard(lambda: self._do_load_report(task), STAGE_REPORT)
             return
+        if isinstance(task, _HistoryTask):
+            self._guard(lambda: self._load_history(task), STAGE_REPORT)
+            return
+        if isinstance(task, _ExportTask):
+            self._guard(
+                lambda: self._do_export_history(task.tab, task.market, task.path), STAGE_REPORT
+            )
+            return
         if self._settings_failed or self._settings is None:
             return  # 설정을 읽지 못한 동안은 아무것도 하지 않는다.
         if isinstance(task, _SaveTask):
             self._guard(lambda: self._save_settings(task), STAGE_SETTINGS_SAVE)
+        elif isinstance(task, _PauseTask):
+            self._guard(lambda: self._do_pause(sell_all=task.sell_all), STAGE_ORDER)
+        elif isinstance(task, _ResumeTask):
+            action = self._do_resume_error if task.error else self._do_resume_user
+            self._guard(action, STAGE_RECONCILE)
         elif task == "refresh":
             self._guard(self._refresh_markets, STAGE_MARKETS)
         elif task == "retry":
             self._guard(self._retry_candles)
+
+    def _load_history(self, task: _HistoryTask) -> None:
+        """기록 화면의 줄(3.15.1). 읽지 못하면 `FAILED`를 보내고 A-30을 만든다."""
+        try:
+            self._do_load_history(task.tab, task.market, task.day)
+        except Exception as exc:
+            self._post_history_failed(task.tab, task.market, task.day)
+            self._emit_unexpected(STAGE_REPORT, None, exc)
 
     def _work_pending(self) -> bool:
         with self._lock:
@@ -798,24 +860,33 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         cleanup = self._next_cleanup_mono
         if cleanup is not None and now >= cleanup:
             return self._cleanup_old
-        # 회차와 1분 점검이 함께 되었으면 회차가 먼저다(회차의 현재가와 주문이 앞선다).
-        if self._blocked_mono is not None:
-            if now >= self._blocked_mono:
-                return self._scheduled_round
-        else:
-            due = self._next_round_mono
-            if due is not None and now >= due:
-                return self._scheduled_round
+        if self._backup_due(now):
+            return self._backup_check
+        # 회차와 1분 점검이 함께 되었으면 회차가 먼저다(회차의 현재가와 주문이 앞선다). 원인이 일시
+        # 차단인 오류 멈춤 동안은 공개 시세 요청을 하나도 내지 않으므로 받기도 없다(M3 명세 3.10.2).
+        if self._quotes_allowed():
+            if self._blocked_mono is not None:
+                if now >= self._blocked_mono:
+                    return self._scheduled_round
+            else:
+                due = self._next_round_mono
+                if due is not None and now >= due:
+                    return self._scheduled_round
         return self._minute_check if self._minute_due(now) else None
 
     def _seconds_until_due(self) -> float:
         now = self._clock.monotonic()
         if self._settings_failed:
             due = self._settings_retry_mono
+        elif not self._quotes_allowed():
+            due = None
         elif self._blocked_mono is not None:
             due = self._blocked_mono
         else:
             due = self._next_round_mono
+        backup = self._next_backup_mono
+        if backup is not None and not self._settings_failed:
+            due = backup if due is None else min(due, backup)
         cleanup = self._next_cleanup_mono
         if cleanup is not None and not self._settings_failed:
             due = cleanup if due is None else min(due, cleanup)
@@ -980,6 +1051,7 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         self._post(new)
         if first_trade:  # 3단계 처음 설정을 마침: 대조와 손절 점검을 한 번 하고 1분 점검을 켠다
             self._guard(self._trade_startup, STAGE_RECONCILE)
+            self._guard(self._backup_check, STAGE_BACKUP)
         self._guard(lambda: self._after_trade_save(current, new, first_trade), STAGE_ORDER)
         if four is not None:  # 네 칸을 저장한 때(저장이 성공한 뒤) `check()`(M2 명세 3.5.4)
             self._guard(self._after_ai_choices_saved, STAGE_REPORT)
@@ -1012,6 +1084,9 @@ class DataWorker(TradeMixin, ReportRoundMixin):
     # --- 일시 차단(2의 3) ------------------------------------------------------------------------
 
     def _is_blocked(self) -> bool:
+        """공개 시세를 요청하면 안 된다: 일시 차단 중이거나, 원인이 일시 차단인 오류 멈춤이다."""
+        if not self._quotes_allowed():
+            return True
         return self._blocked_mono is not None and self._clock.monotonic() < self._blocked_mono
 
     def _expire_block(self) -> None:
@@ -1027,6 +1102,7 @@ class DataWorker(TradeMixin, ReportRoundMixin):
             self._backoff += 1
         self._blocked_mono = self._clock.monotonic() + seconds
         self._blocked_until = self._clock.now() + timedelta(seconds=seconds)
+        self._block_pause()  # 거래를 계속 막는 오류: 오류 멈춤과 A-23(M3 명세 3.10.2)
 
     def _send_blocked_views(self) -> None:
         settings = self._settings
@@ -1368,6 +1444,11 @@ class DataWorker(TradeMixin, ReportRoundMixin):
     ) -> None:
         """오류 알림과 기타 알림이면 문제 보고 표에 한 줄을 덧붙인다. 실패해도 막지 않는다."""
         detail = spec.detail
+        text = spec.text
+        content = None if detail is None else detail.content
+        if spec.code == alert_rules.CODE_SELL_ALL_LEFT:  # 수량을 뺀다(M3 명세 3.14.3)
+            text = f"{coin_label(spec.coin or '')}: 팔지 못한 수량이 있습니다."
+            content = None
         self._write_problem(
             alert_id=alert_id,
             when=when,
@@ -1376,8 +1457,8 @@ class DataWorker(TradeMixin, ReportRoundMixin):
             stage="" if detail is None else detail.stage,
             error_name="" if detail is None else detail.error_name,
             coin=spec.coin,
-            text=spec.text,
-            content=None if detail is None else detail.content,
+            text=text,
+            content=content,
             source=source,
         )
 
@@ -1422,6 +1503,11 @@ class DataWorker(TradeMixin, ReportRoundMixin):
             log.warning("문제 보고 표에 쓰지 못했습니다: %s", type(exc).__name__)
 
     def _on_moved_alert(self, alert_id: int, parsed: "startup_errors._Parsed") -> None:
+        if parsed.kind == startup_errors.KIND_MEMORY:  # 오류 멈춤으로 다시 든다(M3 명세 3.10.2)
+            if parsed.code == alert_rules.CODE_SAVE_FAILED:
+                self._memory_error_cause = ErrorPauseCause.SAVE
+            elif parsed.code == alert_rules.CODE_UNEXPECTED:
+                self._memory_error_cause = ErrorPauseCause.UNEXPECTED
         detail = parsed.detail
         self._write_problem(
             alert_id=alert_id,
@@ -1663,9 +1749,11 @@ class DataWorker(TradeMixin, ReportRoundMixin):
     def _emit_save_failed(
         self, stage: str, coin: str | None, exc: BaseException, *, module: str | None = None
     ) -> None:
-        """A-29: 쓰기의 실패."""
-        wanted = self._rules.want_a29(stage, coin)
-        spec = alert_rules.save_failed(stage, coin, redact(str(exc)))
+        """A-29: 쓰기의 실패. 매매 DB 쓰기의 실패(`TRADE_WRITE_STAGES`)는 오류 멈춤에 든다. 알림의
+        되풀이와 따로 들고, 새로 들어가게 한 A-29는 되풀이와 상관없이 만든다(M3 명세 3.10.2)."""
+        entered = stage in TRADE_WRITE_STAGES and self._enter_error(ErrorPauseCause.SAVE, None)
+        wanted = self._rules.want_a29(stage, coin) or entered
+        spec = alert_rules.save_failed(stage, coin, redact(str(exc)), error_pause=entered)
         self._emit_alert(spec, wanted, exc=exc, module=module)
 
     def _emit_alert_save_failed(self, kind: str, exc: BaseException) -> None:
@@ -1685,15 +1773,19 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         content: str | None = None,
         module: str | None = None,
     ) -> None:
-        """A-30: 읽기의 실패와 그 밖의 예외. `after`와 `content`는 AI 보고서의 일이 정한다."""
+        """A-30: 읽기의 실패와 그 밖의 예외. 3단계(처음 설정을 마친 뒤)에서는 오류 멈춤에 들고 "그
+        뒤에 한 일"은 오류 멈춤의 글이다. 오류 멈춤은 되풀이와 따로 들고, 새로 들어가게 한 A-30은
+        되풀이와 상관없이 만든다(M3 명세 3.10.2)."""
         name = ERROR_STORAGE if isinstance(exc, StorageError) else type(exc).__name__
+        entered = self._enter_error(ErrorPauseCause.UNEXPECTED, None)
         wanted = self._rules.want_a30(stage, coin, type(exc).__name__, self._clock.monotonic())
         text = redact(str(exc)) if content is None else content
+        if self._trade_active():
+            after = AFTER_ERROR_PAUSE
         if after is None:
-            spec = alert_rules.unexpected(stage, coin, name, text)
-        else:
-            spec = alert_rules.unexpected(stage, coin, name, text, after)
-        self._emit_alert(spec, wanted, exc=exc, module=module)
+            after = AFTER_UNEXPECTED
+        spec = alert_rules.unexpected(stage, coin, name, text, after)
+        self._emit_alert(spec, wanted or entered, exc=exc, module=module)
 
     def _emit_markets_failed(self, error_name: str, content: str) -> None:
         """A-31."""

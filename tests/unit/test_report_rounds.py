@@ -452,9 +452,11 @@ def test_a_blocked_price_read_sets_the_block_and_the_next_coin_is_not_requested(
     rig.round()
     assert len(rig.quote.price_requests()) - before == 1  # 두 번째 코인은 요청하지 않았다
     assert [i.failure for i in rig.reports(AAA)] == ["현재가를 읽지 못함"]
-    assert [i.failure for i in rig.reports(BBB)] == ["현재가를 읽지 못함"]
+    # 일시 차단은 오류 멈춤이다(M3 명세 3.10.2): 회차는 거기서 멈추고 둘째 코인은 시작하지 않는다
+    assert rig.reports(BBB) == ()
     alerts = [a for a in rig.alerts() if a.code == CODE_PRICE_FAILED]
-    assert {a.coin: a.detail.error_name for a in alerts} == {AAA: ERROR_BLOCKED, BBB: ERROR_BLOCKED}
+    assert {a.coin: a.detail.error_name for a in alerts} == {AAA: ERROR_BLOCKED}
+    assert "A-23" in [a.code for a in rig.alerts()]
     assert rig.runner.requests == []
 
 
@@ -672,10 +674,10 @@ def test_a_round_that_would_start_while_the_last_one_is_running_is_skipped(
     assert rig.rows("SELECT state FROM rounds") == [("done",)]
 
 
-# --- AI 끄기(3.5.4) -----------------------------------------------------------------------------
+# --- 오류 멈춤(M3 명세 3.10.2. 2단계의 AI 끄기(3.5.4)는 3단계에서 없어졌다) ----------------------
 
 
-def test_an_exception_of_the_runner_turns_the_ai_off_with_one_a30_and_an_error_report(
+def test_an_exception_of_the_runner_enters_the_error_pause_with_one_a30_and_an_error_report(
     build: Callable[..., Rig],
 ) -> None:
     runner = FakeAiRunner()
@@ -683,25 +685,24 @@ def test_an_exception_of_the_runner_turns_the_ai_off_with_one_a30_and_an_error_r
     rig = build(coins=(AAA, BBB), runner=runner)
     rig.start()
     rig.round()
-    assert rig.statuses() == [AiStatus.ON, AiStatus.ERROR_OFF]
+    assert rig.statuses() == [AiStatus.ON]  # AI는 끄지 않는다(`ERROR_OFF`는 생기지 않는다)
     assert [(i.state, i.failure) for i in rig.reports(AAA)] == [(ReportState.ERROR, "RuntimeError")]
-    assert [i.state for i in rig.reports(BBB)] == [ReportState.OK]  # 이미 도는 세션은 끝나게 둔다
+    # 오류 멈춤에 들면서 도는 회차는 버린다: 둘째 코인의 세션은 그 결과를 버린다
+    assert rig.worker._pause.error
     other = [a for a in rig.alerts() if a.code == CODE_UNEXPECTED]
     assert len(other) == 1
     assert other[0].category is AlertCategory.OTHER
     assert other[0].detail is not None
     assert other[0].detail.stage == "AI 보고서"
-    assert other[0].detail.after == (
-        "AI를 껐습니다. 봉 받기는 계속하고, 프로그램을 다시 켜면 AI가 다시 돕니다."
-    )
+    assert other[0].detail.after == "오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다."
     before = len(runner.requests)
-    rig.round()  # 끈 뒤에는 새 세션을 띄우지 않지만 봉 받기는 계속한다
+    rig.round()  # 오류 멈춤 동안에는 새 세션을 띄우지 않지만 봉 받기는 계속한다
     assert len(runner.requests) == before
     assert rig.quote.candle_requests()
     assert rig.rows("SELECT count(*) FROM rounds") == [(1,)]
 
 
-def test_the_error_off_is_kept_until_the_program_is_started_again(
+def test_the_ai_status_is_never_error_off_and_saving_the_slots_still_checks_claude(
     tmp_path: Path, build: Callable[..., Rig]
 ) -> None:
     runner = FakeAiRunner()
@@ -709,16 +710,17 @@ def test_the_error_off_is_kept_until_the_program_is_started_again(
     rig = build(runner=runner)
     rig.start()
     rig.round()
+    assert rig.worker._pause.error
     checks = runner.check_calls
     rig.worker.save_settings(
         (AAA,), 30, first_setup=False, candle_unit=HOUR, candle_count=100, ai_choices=FOUR
     )
     rig.settle()
-    assert runner.check_calls == checks  # `ERROR_OFF`이면 부르지 않는다
-    assert rig.statuses()[-1] is AiStatus.ERROR_OFF
+    assert runner.check_calls == checks + 1  # `ERROR_OFF`로 끄는 길이 없어 늘 부른다
+    assert AiStatus.ERROR_OFF not in rig.statuses()
 
 
-def test_a_write_failure_turns_the_ai_off_with_an_a29_and_the_alert_is_not_repeated(
+def test_a_write_failure_enters_the_error_pause_with_an_a29_and_the_alert_is_not_repeated(
     build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = build()
@@ -729,14 +731,16 @@ def test_a_write_failure_turns_the_ai_off_with_an_a29_and_the_alert_is_not_repea
 
     monkeypatch.setattr(report_round.report_store, "finish_report", broken)
     rig.round()
-    assert rig.statuses()[-1] is AiStatus.ERROR_OFF
+    assert rig.statuses()[-1] is AiStatus.ON
+    assert rig.worker._pause.error
     a29 = [a for a in rig.alerts() if a.code == CODE_SAVE_FAILED]
     assert len(a29) == 1
     assert a29[0].coin == AAA
     assert a29[0].detail is not None
     assert (a29[0].detail.stage, a29[0].detail.error_name) == ("보고서 저장", "DB 오류")
     assert a29[0].detail.after == (
-        "AI를 껐습니다. 봉 받기는 계속하고, 프로그램을 다시 켜면 AI가 다시 돕니다."
+        "그 코인의 보고서를 쓰지 못해 이 회차에 그 코인의 주문을 하지 않았습니다."
+        " 오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다."
     )
     assert CODE_REPORT_DONE not in rig.codes()
 
@@ -758,10 +762,11 @@ def test_an_exception_while_handling_the_answer_hides_the_exception_text(
     assert alert.detail.content.startswith("ValueError")
     assert "답에서 온 글" not in alert.text
     assert [(i.state, i.failure) for i in rig.reports()] == [(ReportState.ERROR, "ValueError")]
-    assert rig.statuses()[-1] is AiStatus.ERROR_OFF
+    assert rig.statuses()[-1] is AiStatus.ON
+    assert rig.worker._pause.error
 
 
-def test_a_price_read_exception_that_is_not_a_quote_error_turns_the_ai_off(
+def test_a_price_read_exception_that_is_not_a_quote_error_enters_the_error_pause(
     build: Callable[..., Rig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rig = build()
@@ -772,7 +777,8 @@ def test_a_price_read_exception_that_is_not_a_quote_error_turns_the_ai_off(
 
     monkeypatch.setattr(rig.quote, "get_price", broken)
     rig.round()
-    assert rig.statuses()[-1] is AiStatus.ERROR_OFF
+    assert rig.statuses()[-1] is AiStatus.ON
+    assert rig.worker._pause.error
     assert CODE_PRICE_FAILED not in rig.codes()
     assert CODE_UNEXPECTED in rig.codes()
     assert [i.state for i in rig.reports()] == [ReportState.ERROR]

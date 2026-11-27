@@ -1038,7 +1038,11 @@ def test_a_blocked_price_read_stops_price_requests_until_the_block_ends(
     rig.advance(60)
     assert len(rig.quote.price_requests(AAA)) == count  # 차단 중에는 요청하지 않는다
     rig.advance(660)
-    assert len(rig.quote.price_requests(AAA)) > count  # 풀린 뒤에는 다시 읽는다
+    # 일시 차단은 오류 멈춤이라 차단 시각이 지나도 사용자가 풀 때까지 읽지 않는다(M3 명세 3.10.2)
+    assert len(rig.quote.price_requests(AAA)) == count
+    rig.worker.resume_error()
+    rig.settle()
+    assert len(rig.quote.price_requests(AAA)) > count  # 풀은 뒤에는 다시 읽는다
 
 
 def test_a_blocked_minute_candle_read_stops_minute_and_price_requests(

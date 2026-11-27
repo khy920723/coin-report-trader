@@ -64,6 +64,7 @@ from coin_report_trader.core.texts import (
     REPORT_UNREADABLE,
     STAGE_ORDER,
     STAGE_REPORT,
+    STAGE_REPORT_SAVE,
     error_version_out_of_range,
     kst_when_text,
 )
@@ -239,27 +240,23 @@ class ReportRoundMixin:
         if not self._ai_choices_saved():
             self._set_ai_status(AiStatus.NOT_CHOSEN, None)
             return
-        if self._ai_status is AiStatus.ERROR_OFF:
-            return
         check = self._call_check()
         if check is not None:
             self._apply_check(check)
 
     def _after_ai_choices_saved(self) -> None:
-        """네 칸을 저장한 때(저장이 성공한 뒤): `check()`를 불러 상태를 바꾼다. `ERROR_OFF`이면
-        부르지 않는다."""
-        if self._ai_status is AiStatus.ERROR_OFF:
-            return
+        """네 칸을 저장한 때(저장이 성공한 뒤): `check()`를 불러 상태를 바꾼다."""
         check = self._call_check()
         if check is not None:
             self._apply_check(check)
 
     def _ai_off(self, coin: str | None, exc: BaseException, *, hide_text: bool = False) -> None:
-        """AI 보고서의 일에서 난 오류로 AI를 끈다(3.5.4). 쓰기 실패면 A-29, 그 밖은 A-30이다.
-        `hide_text`가 참이면(답을 다루다 난 예외) A-30의 내용에 예외의 글을 쓰지 않는다."""
-        self._set_ai_status(AiStatus.ERROR_OFF, self._ai_version)
+        """AI 보고서의 일에서 난 오류(M3 명세 3.10.2). 3단계부터는 AI를 끄지 않고(`ERROR_OFF`로 끄는
+        길을 없앴다) 오류 멈춤에 든다. 쓰기 실패면 A-29("보고서 저장"), 그 밖은 A-30이다. 두 알림이
+        오류 멈춤에 들게 한다. `hide_text`가 참이면(답을 다루다 난 예외) A-30의 내용에 예외의 글을
+        쓰지 않는다."""
         if isinstance(exc, StorageError):
-            self._emit_save_failed(alert_rules.STAGE_REPORT_SAVE, coin, exc, module=_MODULE)
+            self._emit_save_failed(STAGE_REPORT_SAVE, coin, exc, module=_MODULE)
             return
         content = redact(str(exc))
         if hide_text:
@@ -334,7 +331,7 @@ class ReportRoundMixin:
         settings = self._settings
         if settings is None or not settings.first_setup_done or self._chosen() is None:
             return
-        if not self._ai_choices_saved() or self._ai_status is AiStatus.ERROR_OFF:
+        if not self._ai_choices_saved():
             return
         if self._conn is None or self._stop.is_set():
             return
@@ -391,7 +388,7 @@ class ReportRoundMixin:
             self._maybe_finish_round(current)
             return
         for market in settings.coins:
-            if self._stop.is_set() or self._ai_status is AiStatus.ERROR_OFF:
+            if self._stop.is_set() or not self._round_may_trade():
                 break
             result = by_market.get(market)
             self._start_coin(current, market, result is not None and result.stats_ok)
@@ -628,7 +625,10 @@ class ReportRoundMixin:
         }
 
     def _maybe_finish_round(self, current: _Round) -> None:
-        """그 회차의 보고서가 모두 `RUNNING`이 아니게 되면 회차를 `done`으로 쓴다."""
+        """그 회차의 보고서가 모두 `RUNNING`이 아니게 되면 회차를 `done`으로 쓴다. 멈춤이나 오류
+        멈춤으로 버린 회차(`_active_round`가 비었다)는 다시 쓰지 않는다(M3 명세 3.5.3)."""
+        if self._active_round is not current:
+            return
         try:
             if report_store.has_running_report(self._conn, current.round_id):
                 return
@@ -719,7 +719,7 @@ class ReportRoundMixin:
             for row in judged.rows
         ]
         report_store.finish_report(self._conn, pending.report_id, record, rows)
-        self._rules.a29_succeeded(alert_rules.STAGE_REPORT_SAVE, pending.market)
+        self._rules.a29_succeeded(STAGE_REPORT_SAVE, pending.market)
         self._alert_for(pending, failure, judged.reason, judged.direction)
         target = _target(pending.report_id, pending.market, pending.round, record.elapsed_report_s)
         try:  # 주문의 실패는 보고서를 고쳐 쓰지 않는다(그 보고서는 `OK` 그대로)

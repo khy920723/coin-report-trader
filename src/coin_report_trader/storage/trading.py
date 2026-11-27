@@ -93,6 +93,8 @@ class RoundRow:
     started_utc: datetime
     stage: RoundStage | None
     state: str
+    close_utc: datetime | None = None
+    ended_utc: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -662,18 +664,27 @@ def list_round_rows(
     """`started_utc`가 `start` 이상 `end` 미만인 회차. 새것이 앞이다(3.15.1의 회차 탭)."""
     with translate_errors("회차 읽기"):
         rows = conn.execute(
-            "SELECT id, number, started_utc, stage, state FROM rounds WHERE mode = ?"
-            " AND started_utc >= ? AND started_utc < ? ORDER BY started_utc DESC, id DESC",
+            "SELECT id, number, started_utc, stage, state, close_utc, ended_utc FROM rounds"
+            " WHERE mode = ? AND started_utc >= ? AND started_utc < ?"
+            " ORDER BY started_utc DESC, id DESC",
             (Mode(mode).value, format_utc(start), format_utc(end)),
         ).fetchall()
     result: list[RoundRow] = []
-    for round_id, number, started, stage, state in rows:
+    for round_id, number, started, stage, state, close, ended in rows:
         try:
             parsed_stage = None if stage is None else RoundStage(stage)
         except ValueError:
             parsed_stage = None
         result.append(
-            RoundRow(int(round_id), int(number), parse_utc(str(started)), parsed_stage, str(state))
+            RoundRow(
+                int(round_id),
+                int(number),
+                parse_utc(str(started)),
+                parsed_stage,
+                str(state),
+                None if close is None else parse_utc(str(close)),
+                None if ended is None else parse_utc(str(ended)),
+            )
         )
     return tuple(result)
 
@@ -779,6 +790,15 @@ def release_pause(conn: sqlite3.Connection, pause_id: int, *, released_at: datet
         cursor = conn.execute(
             "UPDATE pauses SET released_utc = ? WHERE id = ? AND released_utc IS NULL",
             (format_utc(released_at), pause_id),
+        )
+        return cursor.rowcount > 0
+
+
+def mark_sell_all(conn: sqlite3.Connection, pause_id: int) -> bool:
+    """풀리지 않은 멈춤에 '멈추고 전량 매도'를 눌렀다고 남긴다(`sell_all` 1. 3.10.3)."""
+    with translate_errors("멈춤 저장"), transaction(conn):
+        cursor = conn.execute(
+            "UPDATE pauses SET sell_all = 1 WHERE id = ? AND released_utc IS NULL", (pause_id,)
         )
         return cursor.rowcount > 0
 

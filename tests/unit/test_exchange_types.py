@@ -428,8 +428,9 @@ def test_the_data_thread_takes_the_new_calls_and_keeps_no_key_value(tmp_path: Pa
     worker.turn_live_off()
     worker.account_visible(True)
     worker.refresh_account()
+    assert list(worker._queue) == []  # 키와 계정의 동작은 15번 앞에는 아무 일도 큐에 넣지 않는다
     worker.load_history(HistoryTab.EXTERNAL, None, date(2026, 1, 1), Mode.LIVE)
-    assert list(worker._queue) == []
+    assert len(worker._queue) == 1  # 기록은 25번이 큐에 넣는다(외부 변동 탭은 빈 값을 보낸다)
     assert secret not in repr(vars(worker))
 
 

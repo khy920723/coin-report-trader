@@ -18,6 +18,7 @@ from coin_report_trader.core import (
     coin_label,
 )
 from coin_report_trader.core.texts import (
+    AFTER_ERROR_PAUSE,
     AFTER_MARKETS_FAILED,
     AFTER_SAVE_FAILED,
     AFTER_UNEXPECTED,
@@ -27,6 +28,7 @@ from coin_report_trader.core.texts import (
     CODE_CLAUDE_OFF,
     CODE_COIN_REMOVED,
     CODE_DAILY_LOSS,
+    CODE_ERROR_PAUSE,
     CODE_FILLED,
     CODE_LOGGED_OUT,
     CODE_MARKETS_FAILED,
@@ -39,6 +41,7 @@ from coin_report_trader.core.texts import (
     CODE_REPORT_DONE,
     CODE_REPORT_FAILED,
     CODE_SAVE_FAILED,
+    CODE_SELL_ALL_LEFT,
     CODE_STOP_FAILED,
     CODE_TOO_SMALL,
     CODE_UNEXPECTED,
@@ -50,7 +53,7 @@ from coin_report_trader.core.texts import (
     STAGE_ORDER,
     STAGE_PRICE,
     STAGE_REPORT,
-    STAGE_REPORT_SAVE,
+    STAGE_SELL_ALL,
     STAGE_STOP_LOSS,
     STOP_ONLY_LEFT,
     text_candles_failed,
@@ -106,11 +109,17 @@ def candles_failed(coin: str, stage: str, error_name: str, content: str, after: 
     )  # fmt: skip
 
 
-def save_failed(stage: str, coin: str | None, content: str) -> AlertSpec:
-    """A-29(오류 알림). 오류 이름은 늘 "DB 오류"다."""
+def save_failed(
+    stage: str, coin: str | None, content: str, *, error_pause: bool = False
+) -> AlertSpec:
+    """A-29(오류 알림). 오류 이름은 늘 "DB 오류"다. `error_pause`가 참이면(이 저장 실패가 오류
+    멈춤에 새로 들어가게 했다. M3 명세 3.10.2) 단계마다의 글 뒤에 오류 멈춤의 글을 잇는다."""
+    after = AFTER_SAVE_FAILED[stage]
+    if error_pause:
+        after = f"{after} {AFTER_ERROR_PAUSE}"
     return AlertSpec(
         AlertCategory.ERROR, CODE_SAVE_FAILED, coin, text_save_failed(stage, ERROR_STORAGE),
-        stage, ERROR_STORAGE, content, AFTER_SAVE_FAILED[stage],
+        stage, ERROR_STORAGE, content, after,
     )  # fmt: skip
 
 
@@ -140,7 +149,8 @@ def _version_text(version: tuple[int, ...]) -> str:
 
 
 AFTER_CLAUDE_OFF: Final = "AI를 껐습니다. 범위 안의 버전이 되면 다음 회차부터 다시 돕니다."
-AFTER_AI_OFF_ERROR: Final = AFTER_SAVE_FAILED[STAGE_REPORT_SAVE]
+AFTER_AI_OFF_ERROR: Final = AFTER_ERROR_PAUSE
+"""AI 보고서의 일에서 난 예외의 A-30: 3단계부터는 AI를 끄지 않고 오류 멈춤에 들어간다."""
 
 
 def price_failed(coin: str, error_name: str, next_text: str) -> AlertSpec:
@@ -325,6 +335,28 @@ def unknown_exchange(coin: str | None, stage: str, error_name: str) -> AlertSpec
         f"거래소가 알 수 없는 오류를 냈습니다({stage}, {error_name}).", stage, error_name,
         f"{stage}에서 거래소가 목록에 없는 오류를 냈습니다.",
         "그 일만 그만두고 다음 회차나 다음 1분 점검에서 다시 합니다.",
+    )  # fmt: skip
+
+
+def error_pause(stage: str, kind: str, until_text: str | None) -> AlertSpec:
+    """A-23(오류 알림): 거래를 계속 막는 오류로 오류 멈춤에 들어감(M3 명세 3.14.1). `kind`는 {오류
+    종류}("일시 차단")이고 `until_text`는 차단이 풀리는 때의 글이다."""
+    content = "거래소가 잠시 요청을 막았습니다."
+    if until_text:
+        content = f"{content} {until_text}까지 공개 시세 요청을 내지 않습니다."
+    return AlertSpec(
+        AlertCategory.ERROR, CODE_ERROR_PAUSE, None,
+        f"거래소 오류({kind})로 오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다.",
+        stage, kind, content, "사용자가 풀 때까지 회차와 손절을 하지 않습니다.",
+    )  # fmt: skip
+
+
+def sell_all_left(coin: str, qty_text: str, error_name: str) -> AlertSpec:
+    """A-25(오류 알림): '멈추고 전량 매도'에서 팔지 못한 수량(M3 명세 3.14.1)."""
+    return AlertSpec(
+        AlertCategory.ERROR, CODE_SELL_ALL_LEFT, coin, f"{qty_text}을 팔지 못했습니다.",
+        STAGE_SELL_ALL, error_name, f"{qty_text} 팔지 못했습니다.",
+        "멈춤을 풀거나 팔 수 있는 수량이 없어질 때까지 1분마다 다시 팝니다.",
     )  # fmt: skip
 
 

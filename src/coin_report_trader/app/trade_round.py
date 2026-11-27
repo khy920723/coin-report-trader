@@ -10,7 +10,8 @@
   냄(바로 체결이면 체결을 쓴다) → 보고서의 `order_id`·`no_order_reason`·`elapsed_order_s`.
 - 1분 점검(3.9): 코인마다 모의 체결 판정 → 현재가 읽기 → 손절 판정 → 필요하면 손절 매도. 켤 때도
   같은 점검을 한 번 하고(소급 판정. 3.7.4), 걸린 주문의 판정이 끝나기 전에는 회차를 돌리지 않는다.
-- 멈춤과 오류 멈춤, 전량 매도, 상태 띠의 켜는 중 값은 25번이다(이 모듈은 다루지 않는다).
+- 멈춤과 오류 멈춤, 전량 매도, 상태 띠의 켜는 중 값은 `pause_flow`(25번)다. 이 모듈은 그 상태를 보고
+  멈추기만 한다(오류 멈춤이면 1분 점검을 하지 않고, 사용자 멈춤이면 '손절 중지'일 때 하지 않는다).
 
 `DataWorker`가 갖춰야 하는 것: `_conn`, `_clock`, `_settings`, `_client`, `_rules`, `_stop`,
 `_post`,
@@ -106,6 +107,7 @@ from coin_report_trader.trading.paper.fills import (
     judge_fills,
     judge_window,
 )
+from coin_report_trader.trading.risk.pause import may_run_round, may_stop_check
 from coin_report_trader.trading.risk.stop_loss import (
     StopCheck,
     stop_line,
@@ -177,6 +179,14 @@ class TradeMixin:
     _emit_markets_failed: Callable[..., None]
     _is_blocked: Callable[[], bool]
     _set_block: Callable[..., None]
+    # `PauseMixin`(pause_flow)이 채우는 이름
+    _pause: Any
+    _sell_all_text: Callable[[str], str | None]
+    _retry_sell_all: Callable[[], None]
+    _restore_pauses: Callable[[], None]
+    _start_checks: Callable[..., None]
+    _post_pause_views: Callable[[], None]
+    _post_performance: Callable[[], None]
 
     def _init_trade(self, min_order: Decimal | None) -> None:
         self._min_order: Decimal = MIN_ORDER_FALLBACK if min_order is None else min_order
@@ -188,6 +198,8 @@ class TradeMixin:
         """이 실행에서 마지막으로 받은 유의·주의 표시(3.8.2)."""
         self._trade_ready = False
         """켤 때 걸린 주문의 소급 판정과 손절 점검을 마쳤다(그 전에는 회차를 돌리지 않는다)."""
+        self._last_quote_error = ""
+        """현재가를 마지막으로 읽지 못한 까닭의 오류 이름(A-25)."""
         self._stop_check_mono: float | None = None
         self._sold_canceled: set[str] = set()
         """이번 회차의 정리에서 매도 주문을 취소한 코인(손절만 남음. 3.14.1)."""
@@ -344,15 +356,21 @@ class TradeMixin:
     # --- 켤 때(2의 3, 3.7.4, 3.8.3) -------------------------------------------------------------
 
     def _trade_startup(self) -> None:
-        """끊긴 회차 정리 뒤: `sent` 0인 주문 닫기 → 소급 판정과 손절 점검(1분 점검 한 번) →
-        저장된 설정의 검사 → 화면의 값(켤 때 차례 5)."""
+        """끊긴 회차 정리 뒤: 멈춤 이어 가기 → `sent` 0인 주문 닫기 → 소급 판정과 손절 점검(켜는
+        중의 두 칸) → 저장된 설정의 검사 → 화면의 값(켤 때 차례 5)."""
         self._trade_ready = False
         if self._trade() is None:
             self._stop_check_mono = None
             return
+        self._restore_pauses()
         self._close_unsent()
         self._check_saved_trade(post_result=True)
-        self._minute_check()
+        if self._pause.error:  # 오류 멈춤은 풀 때까지 대조도 손절 점검도 없다(3.10.2)
+            self._stop_check_mono = self._clock.monotonic() + STOP_CHECK_INTERVAL
+            self._post_pause_views()
+            self._post_trade_views()
+            return
+        self._start_checks()
 
     def _close_unsent(self) -> None:
         """켤 때 `sent` 0인 줄(보내기 전에 꺼짐)을 `NOT_SENT`로 닫고 묶음을 푼다(3.8.3)."""
@@ -375,10 +393,22 @@ class TradeMixin:
 
     def _minute_check(self) -> None:
         """코인마다(설정 목록의 차례) 모의 체결 판정 → 현재가 읽기 → 손절 판정 → 손절 매도. 끝에
-        하루 손실 한도를 보고 화면의 값을 보낸다. 판정이 모두 끝났으면 회차를 돌릴 수 있다."""
+        하루 손실 한도를 보고 화면의 값을 보낸다. 판정이 모두 끝났으면 회차를 돌릴 수 있다.
+
+        오류 멈춤이면 아무것도 하지 않고(3.10.2), 사용자 멈춤에서 '손절 중지'이면 점검은 하지 않고
+        남은 취소와 전량 매도의 다시 팔기만 한다(3.9, 3.10.3).
+        """
         self._stop_check_mono = self._clock.monotonic() + STOP_CHECK_INTERVAL
         trade = self._trade()
         if trade is None or self._conn is None:
+            return
+        if self._pause.error:
+            self._post_trade_views()
+            return
+        if not may_stop_check(self._pause, trade.pause_stop_loss):
+            self._retry_pending_cancels()
+            self._retry_sell_all()
+            self._post_trade_views()
             return
         judged = True
         coins = self._trade_coins()
@@ -394,8 +424,18 @@ class TradeMixin:
             if order.market not in coins:  # 뺀 코인의 걸린 주문(생기지 않지만 판정은 한다)
                 judged = self._judge_orders((order,)) and judged
         self._check_daily_loss(trade)
+        self._retry_sell_all()
         self._trade_ready = self._trade_ready or judged
         self._post_trade_views()
+
+    def _retry_pending_cancels(self) -> None:
+        """멈춘 동안에도 취소가 확인되지 않은 주문은 다시 취소한다(3.7.2)."""
+        for order_id in tuple(self._cancel_pending):
+            fresh = trade_store.read_order(self._conn, order_id)
+            if fresh is not None and fresh.state is OrderState.OPEN:
+                self._cancel_order(fresh)
+            else:
+                self._cancel_pending.discard(order_id)
 
     def _judge_market(self, market: str) -> bool:
         orders = trade_store.list_open_orders(self._conn, Mode.PAPER, market)
@@ -458,10 +498,12 @@ class TradeMixin:
     def _read_quote_price(self, market: str) -> Decimal | None:
         """현재가를 읽는다(1분 점검과 설정 저장). 읽지 못하면 `None`(알림 없음. 3.9)."""
         if self._is_blocked():
+            self._last_quote_error = ERROR_BLOCKED
             return None
         try:
             price: Decimal = self._client.read_price(market)
         except QuoteError as exc:
+            self._last_quote_error = str(exc.error_name)
             if exc.error_name == ERROR_BLOCKED:
                 self._set_block(exc.retry_after)
             return None
@@ -663,7 +705,7 @@ class TradeMixin:
     def _round_may_trade(self) -> bool:
         """회차를 시작해도 되는지(1의 더함): 3단계 처음 설정을 마치지 않았으면 회차가 없고(2의 5),
         켤 때의 소급 판정과 손절 점검이 끝나기 전에도 시작하지 않는다."""
-        return self._trade() is not None and self._trade_ready
+        return self._trade() is not None and self._trade_ready and may_run_round(self._pause)
 
     def _set_stage(self, round_id: int, stage: RoundStage, number: int | None = None) -> None:
         if number is not None:
@@ -997,6 +1039,7 @@ class TradeMixin:
             )
         )
         self._post_round_now()
+        self._post_performance()
 
     def _coin_trade_view(
         self,
@@ -1037,7 +1080,7 @@ class TradeMixin:
             open_orders=tuple(order for order in opens if order.market == market),
             buy_blocked=tuple(blocked),
             caution=caution,
-            sell_all=None,
+            sell_all=self._sell_all_text(market),
             as_of=now,
         )
 
@@ -1050,7 +1093,7 @@ class TradeMixin:
                 round_number=self._round_number if running else None,
                 stage=self._round_stage if running else None,
                 next_round_utc=self._next_due,
-                paused=False,
+                paused=not may_run_round(self._pause),
                 as_of=self._clock.now(),
             )
         )

@@ -178,7 +178,7 @@ def test_the_app_actions_hand_every_new_call_to_the_data_thread() -> None:
     assert kwargs["accept_below_stop"] == ("KRW-AAA",)
 
 
-def test_the_data_thread_takes_the_new_calls_and_does_nothing_until_the_later_numbers(
+def test_the_data_thread_queues_the_pause_and_history_calls_and_not_the_settings_ones(
     tmp_path: Path,
 ) -> None:
     worker = DataWorker(
@@ -194,7 +194,8 @@ def test_the_data_thread_takes_the_new_calls_and_does_nothing_until_the_later_nu
     worker.resume_error()
     worker.load_history(HistoryTab.ROUNDS, None, date(2026, 1, 5))
     worker.export_history(HistoryTab.PAUSES, "KRW-AAA", "경로")
-    assert list(worker._queue) == []
+    assert len(worker._queue) == 6  # 25번이 여섯 동작을 모두 자료 스레드의 큐에 넣는다
+    worker._queue.clear()
     worker.save_settings(
         ("KRW-AAA",), 7, first_setup=False, trade=None, accept_below_stop=("KRW-AAA",)
     )

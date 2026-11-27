@@ -102,7 +102,7 @@ def test_c19_logged_out_fails_each_coin_without_sessions_and_one_a18_until_a_goo
 
 
 @pytest.mark.scenario("C23")
-def test_c23_an_exception_of_the_runner_turns_the_ai_off_until_the_program_starts_again(
+def test_c23_an_exception_of_the_runner_enters_the_error_pause_instead_of_turning_the_ai_off(
     build: Callable[..., Rig],
 ) -> None:
     runner = FakeAiRunner()
@@ -114,7 +114,9 @@ def test_c23_an_exception_of_the_runner_turns_the_ai_off_until_the_program_start
     assert len(unexpected) == 1
     assert unexpected[0].detail is not None
     assert unexpected[0].detail.stage == "AI 보고서"
-    assert rig.statuses()[-1] is AiStatus.ERROR_OFF
+    # 3단계부터 AI를 끄지 않고 오류 멈춤에 든다(M3 명세 3.10.2)
+    assert rig.statuses()[-1] is AiStatus.ON
+    assert AiStatus.ERROR_OFF not in rig.statuses()
     fetches = len(rig.quote.candle_requests(market=AAA))
     sessions = len(runner.requests)
     rig.round()  # 다음 봉의 때
@@ -125,6 +127,8 @@ def test_c23_an_exception_of_the_runner_turns_the_ai_off_until_the_program_start
     again = build.track(restart(rig))  # type: ignore[attr-defined]
     again.start()
     assert again.statuses()[-1] is AiStatus.ON  # 다시 켜면 ON이다
+    again.data.resume_error()  # 오류 멈춤은 다시 켜도 남아 있다. 풀면 대조 뒤 다음 회차부터 돈다
+    again.settle()
     again.round()
     assert rounds(again) == 2
     assert again.reports(AAA)[0].state is ReportState.OK
@@ -143,7 +147,7 @@ def failing_report_writes(conn: Any) -> None:
 
 
 @pytest.mark.scenario("C24")
-def test_c24_a_report_write_failure_turns_the_ai_off_with_an_a29_and_the_fetch_goes_on(
+def test_c24_a_report_write_failure_enters_the_error_pause_with_an_a29_and_the_fetch_goes_on(
     build: Callable[..., Rig],
 ) -> None:
     rig = build(seed=failing_report_writes)
@@ -153,7 +157,10 @@ def test_c24_a_report_write_failure_turns_the_ai_off_with_an_a29_and_the_fetch_g
     assert len(saved) == 1
     assert saved[0].detail is not None
     assert saved[0].detail.stage == "보고서 저장"
-    assert rig.statuses()[-1] is AiStatus.ERROR_OFF
+    assert rig.statuses()[-1] is AiStatus.ON  # 오류 멈춤에 들 뿐 AI를 끄지 않는다
+    assert saved[0].detail.after.endswith(
+        "오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다."
+    )
     fetches = len(rig.quote.candle_requests(market=AAA))
     rig.round()
     assert len(rig.quote.candle_requests(market=AAA)) > fetches  # 봉 받기는 계속된다
