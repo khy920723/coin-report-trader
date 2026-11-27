@@ -22,11 +22,16 @@
 # 빌드 뒤에 만든 exe의 판 정보를 다시 읽어 "v{판}"의 두 글과 숫자 칸을 견준다(Windows에서만. 판 정보는
 # Windows 실행 파일에만 있다).
 #
+# 안내 문서(M2 명세 3.16): 저장소의 `docs/guide.md`를 빌드한 폴더의 exe 옆에 `guide.md`로 그대로 복사한다
+# (`NOTICE.txt`와 같은 자리. 글을 바꿔 쓰지 않고 `shutil.copyfile`). 빌드 뒤에 그 파일이 있고 비지 않았으며
+# `docs/guide.md`와 바이트가 같은지 운영체제와 상관없이 본다.
+#
 # 빌드를 멈추는 경우: GPL로만 제공되는 Qt 모듈이 번들에 들어감, 개발·빌드 전용 패키지가 번들에
 # 들어감, (Windows) Python·패키지 밖에서 가져온 바이너리가 섞임, 미리 넣은 모듈(REQUIRED_MODULES)이
 # 번들에 없음, 번들에 든 패키지의 라이선스 이름이나 파일을 메타데이터에서 찾지 못함, 고지가 가리키는
 # 파일이 없음, 빌드한 번들에 Qt의 TLS 플러그인이나 QtNetwork 훅이 모은 OpenSSL 라이브러리가 있음,
-# `__version__`을 읽지 못하거나 꼴이 틀림, (Windows) 빌드한 exe의 판 정보가 다르거나 읽지 못함.
+# `__version__`을 읽지 못하거나 꼴이 틀림, (Windows) 빌드한 exe의 판 정보가 다르거나 읽지 못함,
+# 안내 문서가 없거나 비었거나 `docs/guide.md`와 바이트가 다름.
 
 import importlib.metadata
 import importlib.util
@@ -408,6 +413,25 @@ def components_text(pyside_version, packages):
     return "\n".join(lines) + "\n"
 
 
+GUIDE_SOURCE = ROOT / "docs" / "guide.md"
+GUIDE_NAME = "guide.md"
+
+
+def guide_copy_problems(source: Path, copied: Path) -> list[str]:
+    """빌드한 폴더의 안내 문서가 `docs/guide.md`와 같은지 본다(M2 명세 3.16). 같으면 빈 목록이다.
+
+    파일이 있고, 비지 않았고, 원본과 바이트가 같아야 한다. 운영체제와 상관없이 본다.
+    """
+    if not copied.is_file():
+        return [f"{GUIDE_NAME}이 없습니다"]
+    data = copied.read_bytes()
+    if not data:
+        return [f"{GUIDE_NAME}이 비었습니다"]
+    if data != source.read_bytes():
+        return [f"{GUIDE_NAME}가 docs/guide.md와 바이트가 다릅니다"]
+    return []
+
+
 try:
     VERSION_FIELDS = load_version_info().version_fields(app_version())
 except ValueError as exc:
@@ -596,3 +620,12 @@ missing = [
 ]
 if missing:
     raise SystemExit("NOTICE.txt가 가리키는 파일이 번들에 없습니다: " + ", ".join(missing))
+
+# 안내 문서(M2 명세 3.16): `docs/guide.md`를 exe 옆에 `guide.md`로 그대로 복사하고(글을 바꿔 쓰지 않는다),
+# 복사한 파일이 있고 비지 않았으며 원본과 바이트가 같은지 본다. 다르거나 없으면 빌드를 멈춘다.
+if not GUIDE_SOURCE.is_file():
+    raise SystemExit("안내 문서 docs/guide.md가 없습니다.")
+shutil.copyfile(GUIDE_SOURCE, dist_dir / GUIDE_NAME)
+guide_problems = guide_copy_problems(GUIDE_SOURCE, dist_dir / GUIDE_NAME)
+if guide_problems:
+    raise SystemExit("안내 문서를 묶음에 넣지 못했습니다: " + ", ".join(guide_problems))
