@@ -369,6 +369,8 @@ def test_the_vault_package_exports_its_names() -> None:
     assert sorted(vault.__all__) == sorted(
         [
             "SERVICE_NAME",
+            "UPBIT_ACCESS_KEY_NAME",
+            "UPBIT_SECRET_KEY_NAME",
             "WEBHOOK_NAME_PREFIX",
             "KeyringSecretStore",
             "UnavailableSecretStore",

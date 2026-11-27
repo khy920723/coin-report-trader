@@ -486,9 +486,9 @@ def test_pauses_are_written_released_and_read(conn: sqlite3.Connection) -> None:
     assert day[1].released_utc == T0 + timedelta(minutes=2)
 
 
-def test_setting_events_take_only_the_four_kinds(conn: sqlite3.Connection) -> None:
+def test_setting_events_take_only_the_five_kinds(conn: sqlite3.Connection) -> None:
     assert trading.SETTING_EVENT_KINDS == (
-        "coin_added", "coin_removed", "method_changed", "candle_count_changed",
+        "coin_added", "coin_removed", "method_changed", "candle_count_changed", "n_changed",
     )  # fmt: skip
     trading.insert_setting_event(conn, mode=PAPER, kind="coin_added", market=AAA, value=None, at=T0)
     trading.insert_setting_event(

@@ -369,15 +369,16 @@ def test_b21_an_m0_database_is_raised_to_schema_one_and_the_self_test_passes(
     assert code == 0
     conn = open_database(db_file())
     try:
-        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (4,)
         names = sorted(
             name
             for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
             if not name.startswith("sqlite_")
         )
         assert names == [
-            "alerts", "candles", "fills", "orders", "paper_accounts", "paper_holdings", "pauses",
-            "report_rows", "reports", "rounds", "setting_events", "settings",
+            "alerts", "candles", "external_changes", "fills", "live_snapshots", "orders",
+            "paper_accounts", "paper_holdings", "pauses", "report_rows", "reports", "rounds",
+            "setting_events", "settings",
         ]  # fmt: skip
         (sql,) = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'alerts'").fetchone()
         assert "AUTOINCREMENT" in sql.upper()

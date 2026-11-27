@@ -9,12 +9,15 @@
 `first_ratio`, `mr_first_ratio`, `add_ratio`, `tolerance`, `stop_ratio`, `daily_loss_limit`,
 `order_interval_s`, `trade_method`, `pause_stop_loss`, `mr_sell_unknown_fee`(`"yes"`/`"no"`),
 `mr_tolerable_loss`, `paper_funds`, `backup_days`). `first_setup_level`은 3단계에서 처음 설정을
-마치면 `"3"`이고 `"3"`은 내려가지 않는다.
+마치면 `"3"`이고 `"3"`은 내려가지 않는다. 5단계(M5 명세 3.9): `trade_mode`(`paper`/`live`. 없으면
+`paper`), `upbit_key_created`(`YYYY-MM-DD`), `live_rounds_n`(10, 30, 100, 200. 없으면 30),
+실거래 설정 셋(`live_budget`, `live_coin_ratio:{마켓 코드}`, `live_daily_loss_limit`. 없으면 비어
+있음).
 """
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Final
 
@@ -25,6 +28,7 @@ from coin_report_trader.core import (
     AiSlot,
     CandleUnit,
     Effort,
+    LiveSettings,
     Mode,
     PauseStopLoss,
     SettingsView,
@@ -59,6 +63,14 @@ KEY_MR_SELL_UNKNOWN_FEE: Final = "mr_sell_unknown_fee"
 KEY_MR_TOLERABLE_LOSS: Final = "mr_tolerable_loss"
 KEY_PAPER_FUNDS: Final = "paper_funds"
 KEY_BACKUP_DAYS: Final = "backup_days"
+KEY_TRADE_MODE: Final = "trade_mode"
+KEY_UPBIT_KEY_CREATED: Final = "upbit_key_created"
+KEY_LIVE_ROUNDS_N: Final = "live_rounds_n"
+KEY_LIVE_BUDGET: Final = "live_budget"
+KEY_LIVE_COIN_RATIO_PREFIX: Final = "live_coin_ratio:"
+KEY_LIVE_DAILY_LOSS_LIMIT: Final = "live_daily_loss_limit"
+LIVE_ROUNDS_CHOICES: Final = (10, 30, 100, 200)
+LIVE_ROUNDS_DEFAULT: Final = 30
 YES: Final = "yes"
 NO: Final = "no"
 _TRADE_KEYS: Final = (
@@ -120,6 +132,8 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
         KEY_AUTOSTART,
         *_AI_KEYS,
         *_TRADE_KEYS,
+        KEY_LIVE_BUDGET,
+        KEY_LIVE_DAILY_LOSS_LIMIT,
     )
     with translate_errors("설정 읽기"):
         rows = dict(
@@ -129,6 +143,7 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
             ).fetchall()
         )
         ratios = _read_ratios(conn)
+        live_ratios = _read_ratios(conn, KEY_LIVE_COIN_RATIO_PREFIX)
     unit = _decode_unit(rows.get(KEY_CANDLE_UNIT))
     count = _decode_count(rows.get(KEY_CANDLE_COUNT))
     level_present = _decode_level(rows.get(KEY_FIRST_SETUP_LEVEL))
@@ -142,6 +157,7 @@ def read_settings(conn: sqlite3.Connection) -> SettingsView:
         ai_choices=_decode_ai_choices(rows),
         autostart=_decode_autostart(rows.get(KEY_AUTOSTART)),
         trade=_decode_trade(rows, ratios, coins),
+        live=_decode_live(rows, live_ratios),
     )
 
 
@@ -180,6 +196,10 @@ def write_settings(
     내려가지 않는다). 처음 `"3"`이 될 때 같은 트랜잭션에서 가상 계정(모드 `paper`, 가상 자금 =
     가상 원화)을 만든다(3.11.3. 때는 `created_at`, 없으면 지금). `"3"`이 된 뒤에는 `paper_funds`를
     고쳐 쓰지 않는다(3.7.1).
+
+    5단계(M5 명세 3.7.5, 3.9): `settings.live`가 있으면 실거래 설정의 키를 같은 트랜잭션에서
+    쓴다(예산과 하루 손실 한도는 `None`이면 지운다). `None`이면 건드리지 않는다. 고른 코인 목록에
+    없는 코인의 `live_coin_ratio:{마켓 코드}`는 저장할 때마다 지운다.
     """
     if settings.retention_days is not None and settings.retention_days not in RETENTION_CHOICES:
         raise ValueError(f"보관 기간은 {RETENTION_CHOICES} 가운데 하나여야 합니다")
@@ -207,6 +227,9 @@ def write_settings(
         if trade is not None:
             _write_trade(conn, trade, keep_funds=started)
         _drop_other_ratios(conn, settings.coins)
+        if settings.live is not None:
+            _write_live(conn, settings.live)
+        _drop_other_ratios(conn, settings.coins, KEY_LIVE_COIN_RATIO_PREFIX)
         if settings.first_setup_done:
             both = unit is not None and settings.candle_count is not None
             level = FIRST_SETUP_LEVEL_STAGE1_FIX if both else FIRST_SETUP_LEVEL_M1
@@ -234,6 +257,67 @@ def read_first_setup_level(conn: sqlite3.Connection) -> str | None:
     """저장된 `first_setup_level`의 글(`"1"`, `"2"`, `"3"`). 없으면 `None`(M3 명세 3.11.3)."""
     with translate_errors("설정 읽기"):
         return _stored(conn, KEY_FIRST_SETUP_LEVEL)
+
+
+def read_trade_mode(conn: sqlite3.Connection) -> Mode:
+    """저장된 모드. 없으면 `Mode.PAPER`다(M5 명세 3.9)."""
+    with translate_errors("설정 읽기"):
+        text = _stored(conn, KEY_TRADE_MODE)
+    if text is None:
+        return Mode.PAPER
+    try:
+        return Mode(text)
+    except ValueError as exc:
+        raise StorageError("저장된 모드가 맞지 않습니다") from exc
+
+
+def write_trade_mode(conn: sqlite3.Connection, mode: Mode) -> None:
+    """모드(`paper`/`live`)를 쓴다. 매매 DB 쓰기다(M5 명세 3.9)."""
+    with translate_errors("설정 저장"), transaction(conn):
+        _put(conn, KEY_TRADE_MODE, Mode(mode).value)
+
+
+def read_key_created(conn: sqlite3.Connection) -> date | None:
+    """업비트 키를 만든 날(`upbit_key_created`). 없으면 `None`. 글이 맞지 않으면 `StorageError`."""
+    with translate_errors("설정 읽기"):
+        text = _stored(conn, KEY_UPBIT_KEY_CREATED)
+    if text is None:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise StorageError("저장된 키를 만든 날이 맞지 않습니다") from exc
+
+
+def write_key_created(conn: sqlite3.Connection, created: date) -> None:
+    """키를 만든 날을 `YYYY-MM-DD`로 쓴다."""
+    with translate_errors("설정 저장"), transaction(conn):
+        _put(conn, KEY_UPBIT_KEY_CREATED, created.isoformat())
+
+
+def delete_key_created(conn: sqlite3.Connection) -> None:
+    """키를 지울 때 `upbit_key_created`도 지운다(M5 명세 3.8)."""
+    with translate_errors("설정 저장"), transaction(conn):
+        conn.execute("DELETE FROM settings WHERE key = ?", (KEY_UPBIT_KEY_CREATED,))
+
+
+def read_live_rounds_n(conn: sqlite3.Connection) -> int:
+    """실거래 전 모의 회차 수 N(10, 30, 100, 200). 없으면 30이다(M5 명세 3.9)."""
+    with translate_errors("설정 읽기"):
+        text = _stored(conn, KEY_LIVE_ROUNDS_N)
+    if text is None:
+        return LIVE_ROUNDS_DEFAULT
+    if text not in {str(n) for n in LIVE_ROUNDS_CHOICES}:
+        raise StorageError("저장된 모의 회차 수가 맞지 않습니다")
+    return int(text)
+
+
+def write_live_rounds_n(conn: sqlite3.Connection, n: int) -> None:
+    """N을 쓴다. 10, 30, 100, 200이 아니면 `ValueError`다."""
+    if n not in LIVE_ROUNDS_CHOICES:
+        raise ValueError(f"N은 {LIVE_ROUNDS_CHOICES} 가운데 하나여야 합니다")
+    with translate_errors("설정 저장"), transaction(conn):
+        _put(conn, KEY_LIVE_ROUNDS_N, str(n))
 
 
 def read_fetched_at(conn: sqlite3.Connection, market: str) -> datetime | None:
@@ -299,12 +383,12 @@ def _stored(conn: sqlite3.Connection, key: str) -> str | None:
     return None if row is None else str(row[0])
 
 
-def _read_ratios(conn: sqlite3.Connection) -> dict[str, str]:
-    """`coin_ratio:{마켓 코드}`의 글(마켓 코드에서 글)."""
-    size = len(KEY_COIN_RATIO_PREFIX)
+def _read_ratios(conn: sqlite3.Connection, prefix: str = KEY_COIN_RATIO_PREFIX) -> dict[str, str]:
+    """`coin_ratio:{마켓 코드}`(`prefix`로 `live_coin_ratio:`)의 글(마켓 코드에서 글)."""
+    size = len(prefix)
     rows = conn.execute(
         "SELECT key, value FROM settings WHERE substr(key, 1, ?) = ?",
-        (size, KEY_COIN_RATIO_PREFIX),
+        (size, prefix),
     ).fetchall()
     return {str(key)[size:]: str(value) for key, value in rows}
 
@@ -382,6 +466,39 @@ def _decode_trade(
     )
 
 
+def _decode_live(rows: dict[str, str], ratios: dict[str, str]) -> LiveSettings | None:
+    """저장된 실거래 설정. 셋이 모두 없으면 `None`(3단계 전의 기록과 아직 넣지 않은 기록). 글이
+    맞지 않은 값은 없는 값으로 본다(설정 전체를 읽지 못한 것이 되지 않게)."""
+    budget = _number(rows.get(KEY_LIVE_BUDGET))
+    limit = _number(rows.get(KEY_LIVE_DAILY_LOSS_LIMIT))
+    coin_ratios = {
+        market: value for market, text in ratios.items() if (value := _number(text)) is not None
+    }
+    if budget is None and limit is None and not coin_ratios:
+        return None
+    return LiveSettings(budget=budget, coin_ratios=coin_ratios, daily_loss_limit=limit)
+
+
+def _write_live(conn: sqlite3.Connection, live: LiveSettings) -> None:
+    """실거래 설정의 키를 쓴다(예산과 하루 손실 한도는 `None`이면 지운다). 저장된 비율 가운데
+    `live.coin_ratios`에 없는 코인의 것은 지운다."""
+    for key, value in (
+        (KEY_LIVE_BUDGET, live.budget),
+        (KEY_LIVE_DAILY_LOSS_LIMIT, live.daily_loss_limit),
+    ):
+        if value is None:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        else:
+            _put(conn, key, str(value))
+    for market in _read_ratios(conn, KEY_LIVE_COIN_RATIO_PREFIX):
+        if market not in live.coin_ratios:
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?", (KEY_LIVE_COIN_RATIO_PREFIX + market,)
+            )
+    for market, ratio in live.coin_ratios.items():
+        _put(conn, KEY_LIVE_COIN_RATIO_PREFIX + market, str(ratio))
+
+
 def _stage3_keys_stored(conn: sqlite3.Connection, coins: tuple[str, ...]) -> bool:
     """3단계의 꼭 넣는 키가 모두 저장되어 있는지(3.11.1)."""
     keys = _TRADE_KEYS
@@ -421,11 +538,14 @@ def _write_trade(conn: sqlite3.Connection, trade: TradeSettings, *, keep_funds: 
         _put(conn, KEY_COIN_RATIO_PREFIX + market, str(ratio))
 
 
-def _drop_other_ratios(conn: sqlite3.Connection, coins: tuple[str, ...]) -> None:
-    """고른 코인 목록에 없는 코인의 `coin_ratio:{마켓 코드}`를 지운다(3.11.1)."""
-    for market in _read_ratios(conn):
+def _drop_other_ratios(
+    conn: sqlite3.Connection, coins: tuple[str, ...], prefix: str = KEY_COIN_RATIO_PREFIX
+) -> None:
+    """고른 코인 목록에 없는 코인의 `coin_ratio:{마켓 코드}`(`prefix`로 `live_coin_ratio:`)를
+    지운다(M3 명세 3.11.1, M5 명세 3.9)."""
+    for market in _read_ratios(conn, prefix):
         if market not in coins:
-            conn.execute("DELETE FROM settings WHERE key = ?", (KEY_COIN_RATIO_PREFIX + market,))
+            conn.execute("DELETE FROM settings WHERE key = ?", (prefix + market,))
 
 
 def _create_paper_account(conn: sqlite3.Connection, moment: datetime) -> None:

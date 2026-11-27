@@ -149,7 +149,7 @@ def _make_newer_database(env: Any) -> None:
     paths.ensure()
     conn = open_database(paths.database_file)
     try:
-        conn.execute("PRAGMA user_version=4")
+        conn.execute("PRAGMA user_version=5")
     finally:
         conn.close()
 
@@ -437,7 +437,7 @@ def test_the_schema_is_raised_on_the_way_in(env: Any) -> None:
     _release(held)
     conn = open_database(resolve_app_paths().database_file)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (4,)
         names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     finally:
         conn.close()
@@ -528,7 +528,7 @@ def test_the_database_is_raised_before_the_window_and_the_thread_starts_after_it
     held = _quit_when(env.app, lambda: bool(updates))
     assert run_gui([], services=_services()) == 0
     _release(held)
-    assert seen["create"] == (3, [])  # 스키마 번호는 3이고 스레드는 아직 없다
+    assert seen["create"] == (4, [])  # 스키마 번호는 3이고 스레드는 아직 없다
     assert seen["show"] == []
     assert updates  # 창을 띄운 뒤에는 자료 스레드가 첫 값을 보냈다
 

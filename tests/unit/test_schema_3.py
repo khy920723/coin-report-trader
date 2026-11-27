@@ -58,8 +58,8 @@ def made(tmp_path: Path) -> Iterator[dict[int, sqlite3.Connection]]:
 
 
 def test_the_schema_number_is_three_and_the_tables_are_the_twelve_of_the_spec() -> None:
-    assert SCHEMA_VERSION == 3
-    assert TABLES == TWELVE
+    assert SCHEMA_VERSION == 4
+    assert (*TWELVE, "live_snapshots", "external_changes") == TABLES
 
 
 @pytest.mark.parametrize("start", [0, 1, 2])
@@ -67,10 +67,10 @@ def test_every_old_number_is_raised_to_three_with_the_twelve_tables(
     made: dict[int, sqlite3.Connection], start: int
 ) -> None:
     conn = made[start]
-    assert migrate(conn) == 3
-    assert schema_version(conn) == 3
-    assert tables(conn) == set(TWELVE)
-    assert migrate(conn) == 3  # 3이면 아무것도 하지 않는다
+    assert migrate(conn) == 4
+    assert schema_version(conn) == 4
+    assert tables(conn) == {*TWELVE, "live_snapshots", "external_changes"}
+    assert migrate(conn) == 4  # 4면 아무것도 하지 않는다
 
 
 def test_the_twelve_tables_are_the_same_from_every_path(
@@ -105,11 +105,11 @@ def test_the_new_tables_have_the_columns_of_the_spec(made: dict[int, sqlite3.Con
         "orders": [
             "id", "uid", "mode", "round_id", "market", "side", "kind", "reason", "price", "qty",
             "state", "sent", "created_utc", "closed_utc", "error_name", "canceled_by_round",
-            "judged_until_utc",
+            "judged_until_utc", "executed_qty", "avg_price_at_send",
         ],
         "fills": [
             "id", "order_id", "mode", "market", "side", "price", "qty", "fee", "realized_pnl",
-            "filled_utc",
+            "filled_utc", "trade_key",
         ],
         "pauses": [
             "id", "mode", "kind", "cause", "detail", "sell_all", "started_utc", "released_utc",
@@ -144,15 +144,14 @@ def test_all_tables_are_strict_and_the_keys_follow_the_spec(
     conn.execute(order, ("u1",))
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(order, ("u1",))  # 식별값은 UNIQUE
-    conn.execute(
-        "INSERT INTO fills (order_id, mode, market, side, price, qty, fee, filled_utc)"
-        " VALUES (1, 'paper', 'KRW-AAA', 'buy', '1', '1', '0', 'x')"
+    fill = (
+        "INSERT INTO fills (order_id, mode, market, side, price, qty, fee, filled_utc, trade_key)"
+        " VALUES (1, 'paper', 'KRW-AAA', 'buy', '1', '1', '0', 'x', ?)"
     )
-    with pytest.raises(sqlite3.IntegrityError):  # 주문 하나에 체결 하나
-        conn.execute(
-            "INSERT INTO fills (order_id, mode, market, side, price, qty, fee, filled_utc)"
-            " VALUES (1, 'paper', 'KRW-AAA', 'buy', '1', '1', '0', 'x')"
-        )
+    conn.execute(fill, ("paper",))
+    with pytest.raises(sqlite3.IntegrityError):  # 주문 하나의 같은 체결(`trade_key`)은 하나(M5 3.9)
+        conn.execute(fill, ("paper",))
+    conn.execute(fill, ("t2",))  # 실거래는 주문 하나에 체결이 여럿이다
     conn.rollback()
 
 
@@ -220,5 +219,5 @@ def test_the_self_test_fails_when_a_table_is_missing(monkeypatch: pytest.MonkeyP
 
 def test_the_self_test_sees_number_three_and_twelve_tables() -> None:
     detail = check_sqlite()
-    assert "스키마 번호 3" in detail
-    assert "표 12개" in detail
+    assert "스키마 번호 4" in detail
+    assert "표 14개" in detail

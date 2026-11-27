@@ -25,6 +25,9 @@ from coin_report_trader.core.texts import ERROR_VAULT, ERROR_VAULT_UNAVAILABLE
 SERVICE_NAME: Final = APP_ID
 """keyring의 서비스 이름(`coin-report-trader`)."""
 WEBHOOK_NAME_PREFIX: Final = "discord-webhook:"
+UPBIT_ACCESS_KEY_NAME: Final = "upbit_access_key"
+UPBIT_SECRET_KEY_NAME: Final = "upbit_secret_key"
+"""업비트 키 둘의 보관소 이름(M5 명세 3.8). 값은 Windows 자격 증명 관리자에만 둔다."""
 _WINDOWS_BACKEND_MODULE: Final = "keyring.backends.Windows"
 """Windows 백엔드 클래스의 모듈. `--self-test`의 `vault` 점검과 같은 기준이다."""
 

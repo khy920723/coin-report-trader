@@ -241,8 +241,8 @@ def test_sqlite_check_uses_a_temporary_database_only(env: SimpleNamespace) -> No
     detail = st.check_sqlite()
     assert "wal" in detail
     assert "synchronous 2" in detail
-    assert "스키마 번호 3" in detail
-    assert "표 12개" in detail
+    assert "스키마 번호 4" in detail
+    assert "표 14개" in detail
     assert not (env.data_home / "coin-report-trader").exists()
 
 

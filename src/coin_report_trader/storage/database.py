@@ -1,8 +1,8 @@
 """DB 파일 열기와 스키마 올리기(M1 명세 3.7).
 
 연결마다 `journal_mode=WAL`, `synchronous=FULL`을 걸고 다시 읽어 확인한다. 스키마 번호는
-`PRAGMA user_version`이다(M0는 0, M1은 1, M2는 2, M3는 3). `open_database`는 열기만 하고, 표는
-`migrate`가 만든다.
+`PRAGMA user_version`이다(M0는 0, M1은 1, M2는 2, M3는 3, M5는 4). `open_database`는 열기만
+하고, 표는 `migrate`가 만든다.
 """
 
 import sqlite3
@@ -15,7 +15,7 @@ from coin_report_trader.storage.states import DiscordState
 
 _DISCORD_STATES = ", ".join(repr(state.value) for state in DiscordState)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """이 앱이 아는 스키마 번호."""
 
 _SCHEMA_1 = (
@@ -222,6 +222,54 @@ _SCHEMA_3 = (
 `kind`, `reason`, `state`, 멈춤의 `kind`, `cause`, 설정 바뀜의 `kind`)에도 뒤 단계가 값을 더하므로
 CHECK를 걸지 않는다."""
 
+_SCHEMA_4 = (
+    """
+    CREATE TABLE fills_v4 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL REFERENCES orders(id),
+        mode TEXT NOT NULL,
+        market TEXT NOT NULL,
+        side TEXT NOT NULL,
+        price TEXT NOT NULL,
+        qty TEXT NOT NULL,
+        fee TEXT NOT NULL,
+        realized_pnl TEXT,
+        filled_utc TEXT NOT NULL,
+        trade_key TEXT NOT NULL,
+        UNIQUE (order_id, trade_key)
+    ) STRICT
+    """,
+    "INSERT INTO fills_v4 (id, order_id, mode, market, side, price, qty, fee, realized_pnl,"
+    " filled_utc, trade_key) SELECT id, order_id, mode, market, side, price, qty, fee,"
+    " realized_pnl, filled_utc, 'paper' FROM fills",
+    "DROP TABLE fills",
+    "ALTER TABLE fills_v4 RENAME TO fills",
+    "ALTER TABLE orders ADD COLUMN executed_qty TEXT",
+    "ALTER TABLE orders ADD COLUMN avg_price_at_send TEXT",
+    """
+    CREATE TABLE live_snapshots (
+        market TEXT NOT NULL PRIMARY KEY,
+        balance TEXT NOT NULL,
+        locked TEXT NOT NULL,
+        direct_locked TEXT NOT NULL,
+        read_utc TEXT NOT NULL
+    ) STRICT
+    """,
+    """
+    CREATE TABLE external_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mode TEXT NOT NULL,
+        market TEXT NOT NULL,
+        qty_delta TEXT NOT NULL,
+        utc TEXT NOT NULL
+    ) STRICT
+    """,
+)
+"""3에서 4로 올리는 묶음(M5 명세 3.9). `fills`는 다시 만든다(`order_id`의 UNIQUE를 빼고
+`trade_key`와
+`UNIQUE (order_id, trade_key)`를 둔다. 옮긴 줄의 `trade_key`는 `"paper"`). `orders`에 열 둘을
+더하고 표 둘을 만든다."""
+
 TABLES = (
     "settings",
     "candles",
@@ -235,8 +283,10 @@ TABLES = (
     "fills",
     "pauses",
     "setting_events",
+    "live_snapshots",
+    "external_changes",
 )
-"""스키마 3의 표 열둘(M3 명세 3.18)."""
+"""스키마 4의 표 열넷(M5 명세 3.9)."""
 
 _SYNCHRONOUS_FULL = 2
 
@@ -299,7 +349,8 @@ def migrate(conn: sqlite3.Connection) -> int:
     """스키마를 이 앱이 아는 번호(`SCHEMA_VERSION`)로 올리고, 올린 뒤의 번호를 돌려준다.
 
     트랜잭션으로 잠근 뒤 다시 읽은 번호로 가른다(M2 명세 3.10, M3 명세 3.12): 0이면 표 셋
-    (`_SCHEMA_1`), 1→2, 2→3을, 1이면 1→2와 2→3을, 2면 2→3만 돌리고, 3이면 아무것도 하지 않는다.
+    (`_SCHEMA_1`), 1→2, 2→3, 3→4를, 1이면 1→2부터, 2면 2→3부터, 3이면 3→4만 돌리고,
+    4면 아무것도 하지 않는다(M5 명세 3.9).
     이 앱이 아는 것보다 큰 번호면 `StorageError`를 낸다. DDL과 번호 쓰기는 모두 그 한 트랜잭션
     안에서 `execute`로 하고(`executescript`와 `IF NOT EXISTS`는 쓰지 않는다), 번호는 끝에 한 번
     쓴다. 중간에 실패하면
@@ -314,7 +365,7 @@ def migrate(conn: sqlite3.Connection) -> int:
             version = schema_version(conn)  # 잠근 뒤에 다시 읽는다
             _check_known(version)
             if version < SCHEMA_VERSION:
-                steps = ((0, _SCHEMA_1), (1, _SCHEMA_2), (2, _SCHEMA_3))
+                steps = ((0, _SCHEMA_1), (1, _SCHEMA_2), (2, _SCHEMA_3), (3, _SCHEMA_4))
                 for start, statements in steps:
                     if version <= start:
                         for statement in statements:
