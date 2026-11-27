@@ -24,6 +24,7 @@ from acceptance.m3_d_support import (
     all_codes,
     answer,
     apply_all,
+    close_window,
     coin_view,
     d_rig,
     d_trade,
@@ -125,7 +126,7 @@ def test_d20_a_pause_cancels_the_open_order_without_a_dialog_and_stops_the_round
         assert len(rig.runner.requests) == requests  # 다음 봉의 때에 회차와 세션이 없다
         assert rounds(rig) == [(1, "done")]
     finally:
-        window.close()
+        close_window(window)
 
 
 @pytest.mark.scenario("D20")
@@ -143,7 +144,7 @@ def test_d20_with_stop_loss_stop_a_pause_leaves_no_stop_loss(
         assert status(rig).stop_loss_off is True
         assert labels(window, "tradeBandStopOff") == BAND_STOP_OFF  # 지금 손절이 동작하지 않음
     finally:
-        window.close()
+        close_window(window)
     rig.quote.set_prices({AAA: D(930)})
     advance(rig, 120)
     assert orders(rig) == []  # 손절이 없다
@@ -227,7 +228,7 @@ def test_d22_cancel_does_nothing_and_confirm_pauses_and_sells_both_coins_at_mark
         assert status(rig).user_paused is True
         assert len(fills(rig)) == 2
     finally:
-        window.close()
+        close_window(window)
 
 
 # --- D23: 전량 매도의 다시 시도 -------------------------------------------------------------------
@@ -275,7 +276,7 @@ def test_d24_an_order_write_failure_is_an_a29_and_an_error_pause_until_it_is_rel
         assert "오류 멈춤" in (labels(window, "tradeBandPause") or "")
         assert labels(window, "tradeBandStopOff") == BAND_STOP_OFF
     finally:
-        window.close()
+        close_window(window)
     prices = len(rig.quote.price_requests(AAA))
     advance(rig, 3600)  # 풀기 전에는 회차와 손절 점검이 없다
     assert rounds(rig) == [(1, "done")]

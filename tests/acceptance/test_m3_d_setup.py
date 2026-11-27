@@ -21,6 +21,7 @@ from acceptance.m3_d_support import (
     apply_all,
     blank_rig,
     choose_first_setup,
+    close_window,
     d_rig,
     d_trade,
     holding_seed,
@@ -59,8 +60,7 @@ def windows(tmp_path: Path, qapp: Any) -> Iterator[Callable[..., tuple[Rig, Any]
 
     yield factory
     for rig, window in made:
-        window.close()
-        window.deleteLater()
+        close_window(window)
         rig.stop()
 
 

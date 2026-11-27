@@ -26,6 +26,7 @@ from acceptance.m3_d_support import (
     all_codes,
     answer,
     apply_all,
+    close_window,
     d_rig,
     d_trade,
     open_window,
@@ -409,7 +410,7 @@ def test_d38_the_status_screen_shows_the_two_prediction_difference_means(
         assert cells[0][3:5] == ["▲ +0.21%", "1.13%"]  # `KRW-AAA` 줄
         assert cells[1][3:5] == ["-", "-"]  # `KRW-BBB` 줄은 둘 다 "-"
     finally:
-        window.close()
+        close_window(window)
 
 
 def _label(parent: Any, name: str) -> str:

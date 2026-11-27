@@ -60,6 +60,7 @@ __all__ = [
     "apply_all",
     "blank_rig",
     "choose_first_setup",
+    "close_window",
     "coin_view",
     "d_rig",
     "d_trade",
@@ -346,6 +347,17 @@ def open_window(rig: Rig) -> Any:
     window.show()
     apply_all(window, rig)
     return window
+
+
+def close_window(window: Any) -> None:
+    """창을 닫고 지운다(남은 창이 뒤의 시험의 `topLevelWidgets` 셈을 흐리지 않게 한다)."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    window.close()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QApplication.processEvents()
 
 
 def open_db(rig: Rig) -> Any:
