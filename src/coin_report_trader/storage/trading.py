@@ -38,13 +38,17 @@ SETTING_COIN_ADDED: Final = "coin_added"
 SETTING_COIN_REMOVED: Final = "coin_removed"
 SETTING_METHOD_CHANGED: Final = "method_changed"
 SETTING_CANDLE_COUNT_CHANGED: Final = "candle_count_changed"
+SETTING_N_CHANGED: Final = "n_changed"
 SETTING_EVENT_KINDS: Final = (
     SETTING_COIN_ADDED,
     SETTING_COIN_REMOVED,
     SETTING_METHOD_CHANGED,
     SETTING_CANDLE_COUNT_CHANGED,
+    SETTING_N_CHANGED,
 )
 """`setting_events.kind`의 값(3.16.2)."""
+PAPER_TRADE_KEY: Final = "paper"
+"""모의매매 체결의 `fills.trade_key`(M5 명세 3.9)."""
 ROUND_DISCARDED: Final = "discarded"
 """멈춤으로 버린 회차의 `rounds.state`(3.5.3)."""
 
@@ -70,6 +74,29 @@ class PauseRow:
     sell_all: bool
     started_utc: datetime
     released_utc: datetime | None
+
+
+@dataclass(frozen=True)
+class LiveSnapshotRow:
+    """표 `live_snapshots`의 한 줄: 마지막으로 읽은 실제 계정(M5 명세 3.9). `market`은 원화면
+    `KRW`다."""
+
+    market: str
+    balance: Decimal
+    locked: Decimal
+    direct_locked: Decimal
+    read_utc: datetime
+
+
+@dataclass(frozen=True)
+class ExternalChange:
+    """표 `external_changes`의 한 줄: 외부 변동(M5 명세 3.9, 3.6.6)."""
+
+    change_id: int
+    mode: Mode
+    market: str
+    qty_delta: Decimal
+    utc: datetime
 
 
 @dataclass(frozen=True)
@@ -363,6 +390,46 @@ def update_order(
         return cursor.rowcount > 0
 
 
+def update_order_exec(
+    conn: sqlite3.Connection,
+    order_id: int,
+    *,
+    executed_qty: Decimal | None = None,
+    avg_price_at_send: Decimal | None = None,
+) -> bool:
+    """실거래의 체결 수량과 매도 주문을 낼 때의 거래소 평균 매수가(M5 명세 3.9, 3.6.4)를 쓴다.
+    `None`인 값은 그대로 둔다. 둘 다 `None`이면 아무것도 쓰지 않고 줄이 있는지만 본다."""
+    sets: list[str] = []
+    values: list[object] = []
+    if executed_qty is not None:
+        sets.append("executed_qty = ?")
+        values.append(str(executed_qty))
+    if avg_price_at_send is not None:
+        sets.append("avg_price_at_send = ?")
+        values.append(str(avg_price_at_send))
+    with translate_errors("주문 저장"), transaction(conn):
+        if not sets:
+            row = conn.execute("SELECT 1 FROM orders WHERE id = ?", (order_id,)).fetchone()
+            return row is not None
+        cursor = conn.execute(
+            f"UPDATE orders SET {', '.join(sets)} WHERE id = ?", (*values, order_id)
+        )
+        return cursor.rowcount > 0
+
+
+def read_order_exec(
+    conn: sqlite3.Connection, order_id: int
+) -> tuple[Decimal | None, Decimal | None] | None:
+    """(`executed_qty`, `avg_price_at_send`). 그 주문이 없으면 `None`."""
+    with translate_errors("주문 읽기"):
+        row = conn.execute(
+            "SELECT executed_qty, avg_price_at_send FROM orders WHERE id = ?", (order_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return _optional_decimal(row[0]), _optional_decimal(row[1])
+
+
 def set_judged_until(conn: sqlite3.Connection, order_id: int, until: datetime) -> bool:
     """모의 체결 판정에서 마지막으로 본 1분봉의 끝(3.7.2)."""
     with translate_errors("주문 저장"), transaction(conn):
@@ -477,10 +544,18 @@ def last_order_time(conn: sqlite3.Connection, mode: Mode, market: str) -> dateti
 # --- 체결 ---------------------------------------------------------------------------------------
 
 
-def record_fill(conn: sqlite3.Connection, fill: FillRecord, account: PaperAccount) -> FillRecord:
+def record_fill(
+    conn: sqlite3.Connection,
+    fill: FillRecord,
+    account: PaperAccount,
+    *,
+    trade_key: str = PAPER_TRADE_KEY,
+) -> FillRecord:
     """체결 한 줄, 그 주문의 `FILLED`와 닫은 때(체결 때), 가상 계정을 한 트랜잭션에서 쓴다(3.7.2).
-    `fill.fill_id`는 보지 않고 새 번호가 든 줄을 돌려준다. 같은 주문의 체결을 두 번 쓰면
-    `StorageError`다(`fills.order_id`는 UNIQUE)."""
+    `fill.fill_id`는 보지 않고 새 번호가 든 줄을 돌려준다. 같은 주문의 같은 체결(`trade_key`)을
+    두 번
+    쓰면 `StorageError`다(`UNIQUE (order_id, trade_key)`. 모의매매는 `"paper"` 하나라 주문마다
+    한 번이다. 실거래는 거래소의 체결 식별값이 `trade_key`다. M5 명세 3.9)."""
     values = (
         fill.order_id,
         Mode(fill.mode).value,
@@ -491,11 +566,12 @@ def record_fill(conn: sqlite3.Connection, fill: FillRecord, account: PaperAccoun
         str(fill.fee),
         _text(fill.realized_pnl),
         format_utc(fill.filled_utc),
+        trade_key,
     )
     with translate_errors("주문 저장"), transaction(conn):
         cursor = conn.execute(
             "INSERT INTO fills (order_id, mode, market, side, price, qty, fee, realized_pnl,"
-            " filled_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " filled_utc, trade_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             values,
         )
         fill_id = cursor.lastrowid
@@ -854,6 +930,86 @@ def has_sold_all(conn: sqlite3.Connection, mode: Mode) -> bool:
             "SELECT 1 FROM pauses WHERE mode = ? AND sell_all = 1 LIMIT 1", (Mode(mode).value,)
         ).fetchone()
     return row is not None
+
+
+# --- 실제 계정의 마지막 읽기와 외부 변동(M5 명세 3.9) --------------------------------------------
+
+
+def replace_live_snapshots(conn: sqlite3.Connection, rows: Sequence[LiveSnapshotRow]) -> None:
+    """마지막으로 읽은 실제 계정으로 `live_snapshots` 전체를 바꾼다(한 트랜잭션)."""
+    with translate_errors("계정 저장"), transaction(conn):
+        conn.execute("DELETE FROM live_snapshots")
+        for row in rows:
+            conn.execute(
+                "INSERT INTO live_snapshots (market, balance, locked, direct_locked, read_utc)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    row.market,
+                    str(row.balance),
+                    str(row.locked),
+                    str(row.direct_locked),
+                    format_utc(row.read_utc),
+                ),
+            )
+
+
+def read_live_snapshots(conn: sqlite3.Connection) -> tuple[LiveSnapshotRow, ...]:
+    """마지막으로 읽은 실제 계정. 마켓 차례다."""
+    with translate_errors("계정 읽기"):
+        rows = conn.execute(
+            "SELECT market, balance, locked, direct_locked, read_utc FROM live_snapshots"
+            " ORDER BY market"
+        ).fetchall()
+    return tuple(
+        LiveSnapshotRow(
+            str(market), _decimal(balance), _decimal(locked), _decimal(direct), parse_utc(str(read))
+        )
+        for market, balance, locked, direct, read in rows
+    )
+
+
+def insert_external_change(
+    conn: sqlite3.Connection, *, mode: Mode, market: str, qty_delta: Decimal, at: datetime
+) -> int:
+    """외부 변동 한 줄을 쓰고 새 `id`를 돌려준다. 지우는 함수는 없다."""
+    with translate_errors("외부 변동 저장"), transaction(conn):
+        cursor = conn.execute(
+            "INSERT INTO external_changes (mode, market, qty_delta, utc) VALUES (?, ?, ?, ?)",
+            (Mode(mode).value, market, str(qty_delta), format_utc(at)),
+        )
+        change_id = cursor.lastrowid
+    if change_id is None:
+        raise StorageError("외부 변동 번호를 받지 못했습니다")
+    return change_id
+
+
+def list_external_changes(
+    conn: sqlite3.Connection,
+    mode: Mode,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    market: str | None = None,
+) -> tuple[ExternalChange, ...]:
+    """`utc`가 `start` 이상 `end` 미만(없으면 끝이 없다)인 외부 변동. 새것이 앞이다(기록 화면의
+    외부 변동 탭)."""
+    query = "SELECT id, mode, market, qty_delta, utc FROM external_changes WHERE mode = ?"
+    values: list[object] = [Mode(mode).value]
+    if start is not None:
+        query += " AND utc >= ?"
+        values.append(format_utc(start))
+    if end is not None:
+        query += " AND utc < ?"
+        values.append(format_utc(end))
+    if market is not None:
+        query += " AND market = ?"
+        values.append(market)
+    with translate_errors("외부 변동 읽기"):
+        rows = conn.execute(query + " ORDER BY utc DESC, id DESC", values).fetchall()
+    return tuple(
+        ExternalChange(int(i), Mode(m), str(mk), _decimal(delta), parse_utc(str(utc)))
+        for i, m, mk, delta, utc in rows
+    )
 
 
 # --- 설정 바뀜 -----------------------------------------------------------------------------------
