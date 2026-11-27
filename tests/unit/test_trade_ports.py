@@ -198,9 +198,9 @@ def test_the_data_thread_takes_the_new_calls_and_does_nothing_until_the_later_nu
     worker.save_settings(
         ("KRW-AAA",), 7, first_setup=False, trade=None, accept_below_stop=("KRW-AAA",)
     )
-    (saved,) = list(worker._queue)  # 설정 저장 하나뿐이다. 23번까지 `trade`는 쓰지 않는다
-    assert not hasattr(saved, "trade")
-    assert not hasattr(saved, "accept_below_stop")
+    (saved,) = list(worker._queue)  # 설정 저장 하나뿐이다. 23번부터 `trade`와 확인한 코인을 담는다
+    assert saved.trade is None
+    assert saved.accept_below_stop == ("KRW-AAA",)
 
 
 def test_the_services_get_book_and_min_order_last_and_none_by_default() -> None:

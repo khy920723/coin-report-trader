@@ -798,12 +798,15 @@ class DataWorker(TradeMixin, ReportRoundMixin):
         cleanup = self._next_cleanup_mono
         if cleanup is not None and now >= cleanup:
             return self._cleanup_old
-        if self._minute_due(now):
-            return self._minute_check
+        # 회차와 1분 점검이 함께 되었으면 회차가 먼저다(회차의 현재가와 주문이 앞선다).
         if self._blocked_mono is not None:
-            return self._scheduled_round if now >= self._blocked_mono else None
-        due = self._next_round_mono
-        return self._scheduled_round if due is not None and now >= due else None
+            if now >= self._blocked_mono:
+                return self._scheduled_round
+        else:
+            due = self._next_round_mono
+            if due is not None and now >= due:
+                return self._scheduled_round
+        return self._minute_check if self._minute_due(now) else None
 
     def _seconds_until_due(self) -> float:
         now = self._clock.monotonic()

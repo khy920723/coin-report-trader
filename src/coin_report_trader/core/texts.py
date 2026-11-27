@@ -296,8 +296,8 @@ def unit_price_text(price: Decimal) -> str:
 
 
 def qty_text(qty: Decimal) -> str:
-    """수량의 글: 뒤의 0은 떼고, 정수이면 ".0"을 붙인다(예: 6.0, 20.20202020)."""
-    shown = format(qty.normalize(), "f")
+    """수량의 글: 저장된 자리 그대로이고, 정수이면 ".0"을 붙인다(예: 6.0, 20.20202020)."""
+    shown = format(qty, "f")
     return shown if "." in shown else f"{shown}.0"
 
 

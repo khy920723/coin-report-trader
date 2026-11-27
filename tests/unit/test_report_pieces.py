@@ -90,7 +90,7 @@ def test_the_alert_texts_follow_the_table() -> None:
     )
     failed = alert_rules.report_failed("KRW-AAA", "시간 초과", "까닭 글", "10:00")
     assert failed.code == CODE_REPORT_FAILED
-    assert failed.text == "AI 보고서를 받지 못했습니다(시간 초과)."
+    assert failed.text == "AI 보고서를 받지 못해 이번 회차에 주문하지 않았습니다(시간 초과)."
     assert (failed.stage, failed.error_name, failed.content) == (
         "AI 보고서",
         "시간 초과",
