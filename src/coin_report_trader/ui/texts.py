@@ -548,9 +548,10 @@ HISTORY_TAB_TITLES: Final = {
     HistoryTab.JUDGMENTS: "판단",
     HistoryTab.ORDERS: "주문",
     HistoryTab.FILLS: "체결",
+    HistoryTab.EXTERNAL: "외부 변동",
     HistoryTab.PAUSES: "멈춤",
 }
-"""탭 다섯의 글(SCR-04-4). 외부 변동 탭은 4단계에 생긴다."""
+"""탭 여섯의 글(SCR-04-4)."""
 HISTORY_LOADING: Final = "불러오는 중"
 HISTORY_NONE: Final = "이 날의 기록이 없습니다."
 HISTORY_FAILED: Final = "기록을 읽지 못했습니다."
@@ -563,3 +564,144 @@ def history_export_name(tab_title: str, market_symbol: str | None, today_text: s
     """파일 저장 창의 처음 이름: "{탭 이름}-{코인 기호 또는 모든코인}-{YYYYMMDD}.csv"."""
     symbol = market_symbol if market_symbol else HISTORY_ALL_COINS_FILE
     return f"{tab_title}-{symbol}-{today_text}.csv"
+
+# --- 5단계의 설정: 업비트 키, 실거래 설정, 모드, 확인 창(M5 명세 3.11) ---
+KEY_TITLE: Final = "업비트 키"
+KEY_INFO: Final = (
+    "업비트 키: 자산조회, 주문조회, 주문하기 권한만. 출금 권한은 주지 않습니다.",
+    "허용 IP 등록과 고정 IP인지 확인",
+    "서브포켓을 쓸지 결정",
+    "Claude Code 업데이트와 다시 로그인",
+    "약관과 정책 확인",
+    "키는 Windows 자격 증명 관리자에만 둡니다. 화면과 파일에는 남지 않습니다.",
+    "출금 권한을 주지 마세요.",
+    "키는 1년 동안 쓸 수 있고 연장할 수 없습니다.",
+)
+"""설계서 6.6의 '실거래 전에 준비할 것' 다섯 줄과 M5 명세 3.11의 셋."""
+KEY_PRESENT: Final = "넣음"
+KEY_ABSENT: Final = "넣지 않음"
+KEY_SET_TEXT: Final = "키 넣기"
+KEY_DELETE_TEXT: Final = "키 지우기"
+KEY_LOCKED_NOTE: Final = "멈춤 상태에서만 키를 고칠 수 있습니다."
+KEY_LIVE_LOCKED_NOTE: Final = "실거래 중에는 키를 고칠 수 없습니다. 먼저 실거래를 끄세요."
+KEY_DIALOG_TITLE: Final = "업비트 키 넣기"
+KEY_ACCESS_LABEL: Final = "Access Key"
+KEY_SECRET_LABEL: Final = "Secret Key"
+KEY_CREATED_LABEL: Final = "키를 만든 날"
+KEY_SHAPE_ERROR: Final = "키의 꼴이 맞지 않습니다."
+KEY_DATE_ERROR: Final = "만든 날이 오늘보다 뒤입니다."
+KEY_MIN_LENGTH: Final = 20
+KEY_MAX_LENGTH: Final = 100
+KEY_EXPIRY_WARN_DAYS: Final = 30
+
+
+def key_created_text(day: str | None) -> str:
+    return f"만든 날: {day if day else NO_VALUE}"
+
+
+def key_expires_text(day: str | None) -> str:
+    return f"만료일: {day if day else NO_VALUE}"
+
+
+LIVE_TITLE: Final = "실거래 설정"
+LIVE_BUDGET_LABEL: Final = "실거래 예산(원)"
+LIVE_COIN_RATIO_LABEL: Final = "{coin} 실거래 투자 비율(%)"
+LIVE_DAILY_LOSS_LABEL: Final = "실거래 하루 손실 한도(원)"
+LIVE_INFO: Final = (
+    "실거래에서만 쓰는 값입니다. 모의매매의 예산, 투자 비율, 하루 손실 한도와 따로 저장됩니다.",
+    "실거래를 켜기 전에 넣어야 합니다. 실거래 중에는 고칠 수 없습니다.",
+    "실거래 예산은 실제 계정의 원화 잔고와 고른 코인 보유의 평가 금액의 합보다 클 수 없습니다.",
+)
+LIVE_LOCKED_NOTE: Final = "실거래를 끈 뒤에 고칠 수 있습니다."
+PAPER_ONLY_NOTE: Final = "모의매매에서만 바꿀 수 있습니다."
+LIVE_NEW_COIN_NOTE: Final = (
+    "실거래 중에는 새 코인을 고를 수 없습니다. 모의매매로 돌아가 모의 회차를 채우세요."
+)
+
+MODE_TITLE: Final = "모드"
+MODE_PAPER_TEXT: Final = "지금 모드: 모의매매"
+MODE_LIVE_TEXT: Final = "지금 모드: 실거래"
+LIVE_ON_TEXT: Final = "실거래 켜기"
+LIVE_OFF_TEXT: Final = "모의매매로 바꾸기"
+ROUNDS_N_LABEL: Final = "실거래 전 모의 회차 수 N"
+ROUNDS_N_VALUES: Final = (10, 30, 100, 200)
+ROUNDS_N_DEFAULT: Final = 30
+ROUNDS_N_TIPS: Final = {
+    10: "오름·내림 적중률의 95% 구간: 약 ±31%p",
+    30: "오름·내림 적중률의 95% 구간: 약 ±18%p",
+    100: "오름·내림 적중률의 95% 구간: 약 ±10%p",
+    200: "오름·내림 적중률의 95% 구간: 약 ±7%p",
+}
+"""N의 툴팁(9절. 제품 규칙 9절의 95% 구간)."""
+MODE_INFO: Final = (
+    "고른 코인마다 모의 회차를 N회 채워야 합니다.",
+    "모의매매에서 '멈추고 전량 매도'를 한 번 해야 합니다.",
+    "업비트 키가 있어야 합니다.",
+    "실거래 설정(예산, 코인별 투자 비율, 하루 손실 한도)을 넣어야 하고, 실거래 예산은 원화 잔고와 "
+    "보유 평가 금액의 합보다 클 수 없습니다.",
+    "모드는 멈춤 상태에서만 바꿀 수 있습니다.",
+    "실거래에서도 손절, 하루 손실 한도, 가격 안전 검사가 그대로 걸립니다.",
+    "실거래에서는 주문 전에 확인하는 단계 없이 판단대로 주문합니다.",
+    ADVICE_NOTICE,
+)
+"""앞의 넷은 9절의 켜는 조건이다."""
+
+
+def live_count_line(coin: str, counted: int, needed: int) -> str:
+    return f"{coin} {counted}/{needed}회"
+
+
+def sell_all_record_text(done: bool) -> str:
+    state = "했음" if done else "하지 않음"
+    return f"모의매매에서 '멈추고 전량 매도': {state}"
+
+
+LIVE_CONFIRM_TITLE: Final = "실거래를 켤까요?"
+LIVE_CONFIRM_BODY: Final = (
+    "업비트 계정으로 실제 주문을 냅니다. 멈춤을 풀면 다음 회차부터 판단대로 사람의 확인 없이 "
+    "주문합니다. 손절과 한도는 그대로 걸립니다. 이 프로그램은 투자 자문이 아니고 AI 판단은 "
+    "틀릴 수 있습니다."
+)
+LIVE_CONFIRM_OK: Final = "실거래 켜기"
+LIVE_OFF_CONFIRM_TITLE: Final = "모의매매로 바꿀까요?"
+LIVE_OFF_CONFIRM_BODY: Final = (
+    "프로그램이 건 실거래 주문을 취소합니다. 남은 실제 보유에는 손절이 없어집니다."
+)
+LIVE_OFF_CONFIRM_OK: Final = "바꾸기"
+KEY_DELETE_CONFIRM_TITLE: Final = "업비트 키를 지울까요?"
+KEY_DELETE_CONFIRM_BODY: Final = (
+    "Windows 자격 증명 관리자에서 키를 지웁니다. 다시 쓰려면 키를 새로 넣어야 합니다."
+)
+KEY_DELETE_CONFIRM_OK: Final = "지우기"
+
+
+def live_confirm_lines(
+    budget: str,
+    coins: tuple[tuple[str, str, str], ...],
+    krw: str,
+    holdings: tuple[tuple[str, str, str | None], ...],
+    total: str,
+) -> tuple[str, ...]:
+    """SCR-06-9 표의 줄(글은 모두 만들어 넘긴다). `coins`는 (코인, 비율, 금액), `holdings`는
+    (코인, 수량, 평가 금액 또는 `None`)이다. 보유가 없으면 "보유 없음"이다."""
+    lines = [f"실거래 예산 {budget}원"]
+    lines += [f"{coin}: {ratio}% · {amount}원" for coin, ratio, amount in coins]
+    lines.append(f"읽은 원화 잔고(주문 가능) {krw}원")
+    for coin, qty, value in holdings:
+        if qty == "":
+            lines.append(f"{coin} 보유: {HOLDING_NONE}")
+        else:
+            lines.append(f"{coin} 보유: {qty} · 평가 {value if value is not None else NO_VALUE}원")
+    lines.append(f"원화 잔고와 보유 평가의 합 {total}원")
+    return tuple(lines)
+
+
+def live_read_at_text(when: str) -> str:
+    return f"{when}에 읽은 값"
+
+
+# --- 기록과 보고서의 모드 고르기, 외부 변동(M5 명세 3.11) ---
+MODE_PAPER_RECORD: Final = "모의매매 기록"
+MODE_LIVE_RECORD: Final = "실거래 기록"
+LIVE_KRW_LABEL: Final = "원화"
+"""현황 오늘 요약의 실거래 줄 "원화 {금액}원"(가상 원화 대신)."""

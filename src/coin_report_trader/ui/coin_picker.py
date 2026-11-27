@@ -34,6 +34,7 @@ from coin_report_trader.ui.state import PickerKind, PickerMode, Tone
 from coin_report_trader.ui.texts import (
     CAUTION_LABEL,
     CAUTION_NOTE,
+    LIVE_NEW_COIN_NOTE,
     MOVE_DOWN_TEXT,
     MOVE_UP_TEXT,
     NO_COIN_FOUND,
@@ -71,6 +72,7 @@ class CoinPicker(QWidget):
         self._boxes: dict[str, QCheckBox] = {}
         self._rows: dict[str, QWidget] = {}
         self._locked = False
+        self._adding_locked = False
         self._search_usable = False
 
         layout = QVBoxLayout(self)
@@ -98,6 +100,10 @@ class CoinPicker(QWidget):
         self._caution_note.setStyleSheet(f"color: {theme.CAUTION};")  # 'caution' 색
         self._caution_note.hide()
         layout.addWidget(self._caution_note)
+        # 실거래 중에는 새 코인을 더할 수 없다(M5 명세 3.7.4). 빼기는 된다.
+        self._live_note = make_label(LIVE_NEW_COIN_NOTE, f"{prefix}CoinsLiveNote")
+        self._live_note.hide()
+        layout.addWidget(self._live_note)
 
         message_page = QWidget()
         message_layout = QVBoxLayout(message_page)
@@ -189,6 +195,13 @@ class CoinPicker(QWidget):
         self._update_search()
         self._pages.widget(_LIST_PAGE).setEnabled(not locked)
 
+    def set_adding_locked(self, locked: bool) -> None:
+        """실거래 중에는 새 코인을 고를 수 없다: 고르지 않은 줄이 흐리고 곁에 글이 보인다. 이미 고른
+        코인을 빼는 것과 순서를 바꾸는 것은 된다(M5 명세 3.7.4)."""
+        self._adding_locked = locked
+        self._live_note.setVisible(locked)
+        self._sync()
+
     # --- 안쪽 ---
 
     def _update_search(self) -> None:
@@ -257,8 +270,8 @@ class CoinPicker(QWidget):
         full = len(self._picks) >= MAX_COINS
         for market, box in self._boxes.items():
             box.setChecked(market in self._picks)
-            # 4개째는 고를 수 없다.
-            box.setEnabled(box.isChecked() or not full)
+            # 4개째는 고를 수 없다. 실거래 중에는 새 코인을 더할 수 없다.
+            box.setEnabled(box.isChecked() or not (full or self._adding_locked))
         self._selected.blockSignals(True)
         current = self._selected.currentRow() if select is None else select
         self._selected.clear()

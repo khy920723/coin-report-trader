@@ -19,6 +19,7 @@ from coin_report_trader.ui.texts import (
     UNIT_LABEL,
     candle_count_tooltip,
 )
+from coin_report_trader.ui.widgets import LOCK_PROPERTY
 
 
 class CandleChoice(QWidget):
@@ -87,6 +88,13 @@ class CandleChoice(QWidget):
             if button.isChecked():
                 return count
         return None
+
+    def set_locked(self, locked: bool, *, usable: bool = True) -> None:
+        """실거래 중에는 봉 단위와 개수를 바꿀 수 없다(M5 명세 3.7.4). 단추가 흐리고 `set_dim`이
+        다시 켜지 못한다. `usable`은 칸을 쓸 수 있는 때다(아니면 어차피 흐리다). 'ⓘ'는 늘 듣는다."""
+        for button in (*self._unit_buttons.values(), *self._count_buttons.values()):
+            button.setProperty(LOCK_PROPERTY, locked)
+            button.setEnabled(usable and not locked)
 
     def set_values(self, unit: CandleUnit | None, count: int | None) -> None:
         """고른 값을 바꾼다. `None`이나 목록에 없는 값이면 아무것도 고르지 않은 채로 둔다."""

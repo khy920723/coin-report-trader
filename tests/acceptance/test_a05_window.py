@@ -65,9 +65,10 @@ def test_a5_window_has_five_empty_screens_in_order(qapp: QApplication) -> None:
             # 보고서도 2단계에서, 기록도 3단계에서 채워진다.
             assert (EMPTY_BODY in texts) is (screen_id not in FILLED_SCREENS)
             assert (STATUS_BEFORE_SETUP in texts) is (screen_id is ScreenId.STATUS)
-            # 투자 자문 글은 처음 설정과 보고서(M2 명세 3.12.1)의 '꼭 읽을 글' 옆 'ⓘ'에 있다.
+            # 투자 자문 글은 처음 설정과 보고서(M2 명세 3.12.1)의 '꼭 읽을 글' 옆 'ⓘ'에 있고, 설정의
+            # '모드' 묶음의 'ⓘ'에도 있다(M5 명세 3.11).
             assert (ADVICE in _info_tips(widget)) is (
-                screen_id in (ScreenId.FIRST_SETUP, ScreenId.REPORTS)
+                screen_id in (ScreenId.FIRST_SETUP, ScreenId.REPORTS, ScreenId.SETTINGS)
             )
             assert ADVICE not in texts  # 늘 보이는 글이 아니다
         assert current_screen(window) is ScreenId.FIRST_SETUP

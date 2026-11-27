@@ -1,5 +1,7 @@
 """설정 화면(설계서 6, M1 명세 4절 15번)."""
 
+from datetime import date
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
@@ -8,9 +10,13 @@ from coin_report_trader.core import (
     SCREEN_TITLES,
     AiChoice,
     CandleUnit,
+    LiveSettings,
+    LiveStatusView,
     Market,
+    Mode,
     ScreenId,
     TradeSettings,
+    UpbitKeyView,
 )
 from coin_report_trader.core.texts import SETTINGS_SAVED
 from coin_report_trader.ui import theme
@@ -19,6 +25,8 @@ from coin_report_trader.ui.candle_choice import CandleChoice
 from coin_report_trader.ui.cards import Card, CardGrid
 from coin_report_trader.ui.coin_picker import CoinPicker
 from coin_report_trader.ui.info_icon import InfoIcon, info_text
+from coin_report_trader.ui.live_cards import ModeCard, UpbitKeyCard
+from coin_report_trader.ui.live_fields import LiveFields
 from coin_report_trader.ui.retention import RetentionChoice
 from coin_report_trader.ui.screens import TITLE_NAME, screen_object_name, title_label
 from coin_report_trader.ui.state import Message, Phase, PickerKind, PickerMode, Tone
@@ -28,6 +36,7 @@ from coin_report_trader.ui.texts import (
     AUTOSTART_LABEL,
     AUTOSTART_UNSUPPORTED,
     COINS_LABEL,
+    PAPER_ONLY_NOTE,
     RETENTION_LABEL,
     REVERT_TEXT,
     SAVE_TEXT,
@@ -106,18 +115,25 @@ class SettingsScreen(QWidget):
     """처음 설정을 마친 뒤에만 칸이 채워지고 고칠 수 있다(그 전에는 비어 있고 흐리다).
 
     저장된 코인, 봉 단위, 봉 개수, 알림 보관 기간이 골라진 채 보인다. "저장"을 누르면
-    `save_requested(coins, retention_days, candle_unit, candle_count, autostart, ai_choices, trade)`
+    `save_requested(coins, retention_days, candle_unit, candle_count, autostart, ai_choices, trade,
+    live)`
     (`autostart`는 이 실행에서 쓸 수 있을 때만 확인란의 값이고 아니면 `None`. `ai_choices`는
     여덟 칸이 모두 골라져 있을 때만 네 칸이고 아니면 `None`. `trade`는 저장된 3단계 값이 있을 때
     칸을 읽은 `TradeSettings`이고, 3단계 전의 값이면 `None`. 3단계 칸의 꼴이 틀리면 그 칸 아래에
-    글이 보이고 아무것도 내지 않는다), "다시 시도"를 누르면
+    글이 보이고 아무것도 내지 않는다. `live`는 실거래 설정 칸을 읽은 `LiveSettings`이고, 칸이 모두
+    비었거나 실거래 중이라 칸이 흐리면 `None`이다. 꼴이 틀리면 글이 보이고 아무것도 내지
+    않는다), "다시 시도"를 누르면
     `retry_requested`가 난다. 저장된 봉 단위가 없으면(옛 기록을 읽은 사이) 봉 단위는 `None`으로
     넘기고, 그러면 저장된 값을 그대로 둔다. 이 화면은 동작을 직접 부르지 않고, 보관 기간을
     줄이는 확인 창도 직접 띄우지 않는다(창이 한다).
     """
 
-    save_requested = Signal(object, int, object, object, object, object, object)
+    save_requested = Signal(object, int, object, object, object, object, object, object)
     retry_requested = Signal()
+    key_set_requested = Signal()
+    key_delete_requested = Signal()
+    live_on_requested = Signal()
+    live_off_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -132,6 +148,10 @@ class SettingsScreen(QWidget):
         self._saved_autostart = False
         self._saved_ai: tuple[AiChoice, ...] = ()
         self._saved_trade: TradeSettings | None = None
+        self._saved_live: LiveSettings | None = None
+        self._mode = Mode.PAPER
+        self._paused = False
+        self._live_state: tuple | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
@@ -162,6 +182,10 @@ class SettingsScreen(QWidget):
         self._ai_warning.hide()
         self._fields = TradeFields(PREFIX, required=False)
         self._fields.set_funds_locked(True)  # 모의매매를 시작한 뒤에는 고칠 수 없다(M3 명세 3.7.1)
+        # 5단계의 세 묶음: 업비트 키, 실거래 설정, 모드(M5 명세 3.11).
+        self._live_fields = LiveFields()
+        self._key_card = UpbitKeyCard()
+        self._mode_card = ModeCard()
         # 차례는 처음 설정과 같다(PPT 5-4 판 4의 23장). 알림 보관 기간과 자동 시작은 그 밖의 값
         # 카드에 든다.
         budget, ratio, limits, other = self._fields.cards(self._retention, self._autostart)
@@ -179,6 +203,16 @@ class SettingsScreen(QWidget):
                     card.body.addStretch(1)
             cards.append(card)
         cards.append(other)
+        # 실거래 중에는 매매 방식과 봉 개수를 바꿀 수 없고 곁에 글이 보인다(M5 명세 3.7.4).
+        self._method_note = make_label(PAPER_ONLY_NOTE, "settingsMethodLockNote")
+        set_role(self._method_note, theme.ROLE_SUB)
+        self._method_note.hide()
+        other.body.insertWidget(2, self._method_note)
+        self._candle_note = make_label(PAPER_ONLY_NOTE, "settingsCandleLockNote")
+        set_role(self._candle_note, theme.ROLE_SUB)
+        self._candle_note.hide()
+        cards[4].body.insertWidget(1, self._candle_note)
+        cards += [self._key_card, self._live_fields.card(), self._mode_card]
         grid = CardGrid(split_first=True, max_columns=2)
         grid.set_cards(cards)
         form_layout.addWidget(grid)
@@ -199,6 +233,11 @@ class SettingsScreen(QWidget):
         layout.addStretch(1)
 
         self._picker.changed.connect(self._on_picks)
+        self._live_fields.changed.connect(self._update_save)
+        self._key_card.set_requested.connect(self.key_set_requested)
+        self._key_card.delete_requested.connect(self.key_delete_requested)
+        self._mode_card.live_on_requested.connect(self.live_on_requested)
+        self._mode_card.live_off_requested.connect(self.live_off_requested)
         self._fields.changed.connect(self._update_save)
         self._candle.changed.connect(self._update_save)
         self._retention.changed.connect(self._update_save)
@@ -218,8 +257,10 @@ class SettingsScreen(QWidget):
         autostart: bool = False,
         ai_choices: tuple[AiChoice, ...] = (),
         trade: TradeSettings | None = None,
+        live: LiveSettings | None = None,
     ) -> None:
         """저장된 값을 칸에 채운다(고치던 값은 버린다). 칸을 고칠 수 있을 때만 보인다."""
+        self._saved_live = live
         self._saved_autostart = autostart
         self._saved_ai = ai_choices
         self._saved_trade = trade
@@ -235,6 +276,8 @@ class SettingsScreen(QWidget):
         self._picker.set_picks(self._saved_coins)
         self._fields.set_coins(self._saved_coins)
         self._fields.set_values(self._saved_trade)
+        self._live_fields.set_coins(self._saved_coins)
+        self._live_fields.set_values(self._saved_live)
         self._retention.set_value(self._saved_days)
         count = self._saved_count if self._saved_count is not None else DEFAULT_CANDLE_COUNT
         self._candle.set_values(self._saved_unit, count)
@@ -262,6 +305,8 @@ class SettingsScreen(QWidget):
             self._picker.set_picks(())
             self._fields.set_coins(())
             self._fields.set_values(None)
+            self._live_fields.set_coins(())
+            self._live_fields.set_values(None)
             self._retention.set_value(None)
             self._candle.set_values(None, None)
             self._autostart.set_value(False)
@@ -269,6 +314,7 @@ class SettingsScreen(QWidget):
         self._active = active
         set_dim(self._form, not active)  # 흐린 때도 'ⓘ'는 듣는다
         self._autostart.apply_enabled(active)
+        self._apply_live_state()
         self._picker.show_mode(picker)
         show_message(self._message, message)
         saved = (
@@ -296,11 +342,48 @@ class SettingsScreen(QWidget):
 
     def _on_picks(self) -> None:
         self._fields.set_coins(self._picker.picks())
+        self._live_fields.set_coins(self._picker.picks())
         self._update_save()
+
+    def set_live_state(
+        self,
+        *,
+        mode: Mode,
+        live_status: LiveStatusView | None,
+        key: UpbitKeyView | None,
+        paused: bool,
+        today: date,
+        key_message: Message | None,
+        mode_message: Message | None,
+    ) -> None:
+        """5단계의 모습을 반영한다(M5 명세 3.7.4, 3.11). 실거래 중에는 새 코인, 매매 방식, 봉 개수,
+        실거래 설정이 흐리고 곁에 글이 보인다. 키 단추는 멈춤 상태(그리고 실거래가 아닐 때)에서만
+        켜진다."""
+        self._live_state = (mode, live_status, key, paused, today, key_message, mode_message)
+        self._apply_live_state()
+
+    def _apply_live_state(self) -> None:
+        """`set_live_state`의 값을 칸에 반영한다. 칸을 흐리게 하는 `set_dim` 뒤에도 다시 부른다."""
+        if self._live_state is None:
+            return
+        mode, live_status, key, paused, today, key_message, mode_message = self._live_state
+        live = mode is Mode.LIVE
+        self._mode, self._paused = mode, paused
+        usable = self._active
+        self._picker.set_adding_locked(live)
+        self._fields.set_method_locked(live, usable=usable)
+        self._candle.set_locked(live, usable=usable)
+        self._live_fields.set_locked(live, usable=usable)
+        self._method_note.setVisible(live)
+        self._candle_note.setVisible(live)
+        self._key_card.render(key, active=usable, live=live, today=today, message=key_message)
+        self._mode_card.render(
+            mode, live_status, paused=paused, active=usable, message=mode_message
+        )
 
     def first_error_widget(self) -> QWidget | None:
         """걸린 칸 가운데 맨 위의 것(알림 A-15가 가는 곳). 없으면 `None`."""
-        return self._fields.first_error_widget()
+        return self._fields.first_error_widget() or self._live_fields.first_error_widget()
 
     def coins_widget(self) -> QWidget:
         """코인 고르기(알림 A-16이 가는 곳)."""
@@ -309,6 +392,7 @@ class SettingsScreen(QWidget):
     def show_errors(self, errors) -> None:
         """저장 뒤 검사에 걸린 칸의 글(`SaveResult.field_errors`)을 칸 아래에 보인다."""
         self._fields.show_errors(errors)
+        self._live_fields.show_errors(errors)
 
     def _on_revert(self) -> None:
         """저장하지 않은 고침을 버리고 칸을 마지막으로 받은 값으로 되돌린다(동작은 안 부른다)."""
@@ -328,6 +412,11 @@ class SettingsScreen(QWidget):
             trade = self._fields.trade()  # 꼴이 틀리면 칸 아래에 글이 보이고 저장은 부르지 않는다
             if trade is None:
                 return
+        live = None
+        if not self._live_fields.is_locked():  # 실거래 중에는 실거래 설정을 저장하지 않는다(3.7.4)
+            valid, live = self._live_fields.live()
+            if not valid:
+                return
         self.save_requested.emit(
             coins,
             days,
@@ -336,4 +425,5 @@ class SettingsScreen(QWidget):
             autostart,
             self._ai.choices(),
             trade,
+            live,
         )

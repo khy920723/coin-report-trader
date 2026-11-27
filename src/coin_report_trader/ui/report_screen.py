@@ -15,6 +15,7 @@
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QListWidget,
     QListWidgetItem,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -34,6 +36,7 @@ from coin_report_trader.core import (
     AiStatus,
     AiStatusView,
     ComparedItem,
+    Mode,
     ReportState,
     ReportView,
     RoundItem,
@@ -54,6 +57,8 @@ from coin_report_trader.ui.texts import (
     AI_NOT_CHOSEN,
     AI_NOT_FOUND,
     AI_VERSION_OFF,
+    MODE_LIVE_RECORD,
+    MODE_PAPER_RECORD,
     NO_VALUE,
     REPORT_CHECK_COLUMNS,
     REPORT_CHECKS_TITLE,
@@ -83,7 +88,7 @@ from coin_report_trader.ui.texts import (
     report_skipped_text,
     report_tokens_text,
 )
-from coin_report_trader.ui.widgets import make_label, set_role
+from coin_report_trader.ui.widgets import live_border_style, make_label, set_role
 
 AI_STATUS_TEXTS = {
     AiStatus.NOT_CHOSEN: AI_NOT_CHOSEN,
@@ -175,11 +180,15 @@ class _Section(QWidget):
 class ReportScreen(QWidget):
     coin_chosen = Signal(str)
     round_chosen = Signal(int)
+    mode_chosen = Signal(object)
+    """"모의매매 기록" / "실거래 기록"을 골랐다(`Mode`. M5 명세 3.11)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName(screen_object_name(ScreenId.REPORTS))
         self._rounds: tuple[RoundItem, ...] = ()
+        self._mode = Mode.PAPER
+        self._mode_touched = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(*(theme.SCREEN_PADDING,) * 4)
         layout.setSpacing(theme.CARD_GAP)
@@ -196,6 +205,22 @@ class ReportScreen(QWidget):
         self._pause_line.hide()
         layout.addWidget(self._pause_line)
 
+        # 모의매매 기록 / 실거래 기록(SCR-03-2. M5 명세 3.11). 지금 모드의 기록이 먼저 골라져 있다.
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        self._mode_group = QButtonGroup(self)
+        self._mode_buttons: dict[Mode, QRadioButton] = {}
+        for mode, title in ((Mode.PAPER, MODE_PAPER_RECORD), (Mode.LIVE, MODE_LIVE_RECORD)):
+            button = QRadioButton(title)
+            button.setObjectName(f"reportsMode_{mode.value}")
+            button.clicked.connect(lambda _checked=False, m=mode: self._on_mode_clicked(m))
+            self._mode_group.addButton(button)
+            self._mode_buttons[mode] = button
+            mode_row.addWidget(button)
+        self._mode_buttons[Mode.PAPER].setChecked(True)
+        mode_row.addStretch(1)
+        layout.addLayout(mode_row)
+
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(theme.CARD_GAP)
@@ -206,7 +231,7 @@ class ReportScreen(QWidget):
     # --- 만들기 ---
 
     def _build_left(self) -> QWidget:
-        left = Card()
+        left = Card("reportLeftCard")
         left.setFixedWidth(LEFT_WIDTH)
         left.body.addWidget(_line(REPORT_COIN_TITLE, group=True))
         self._coins = self._list("reportCoin")
@@ -300,6 +325,32 @@ class ReportScreen(QWidget):
         self._ai_status.setStyleSheet(f"color: {theme.ERROR};" if warning else "")
         self._ai_status.setProperty("tone", "warning" if warning else "normal")
         self._ai_status.show()
+
+    def chosen_mode(self) -> Mode:
+        return self._mode
+
+    def set_default_mode(self, mode: Mode) -> bool:
+        """지금 모드의 기록을 먼저 고른다(사용자가 고르기 전에만. 신호 없이). 바뀌었으면 참이다."""
+        if self._mode_touched or mode is self._mode:
+            return False
+        self._set_mode(mode)
+        return True
+
+    def _set_mode(self, mode: Mode) -> None:
+        self._mode = mode
+        for key, button in self._mode_buttons.items():
+            button.setChecked(key is mode)
+        # 실거래 기록이면 목록 카드의 테두리가 `error`다(설계서 5.2의 실거래 색).
+        card = self.findChild(QWidget, "reportLeftCard")
+        if card is not None:
+            card.setStyleSheet(live_border_style("reportLeftCard") if mode is Mode.LIVE else "")
+
+    def _on_mode_clicked(self, mode: Mode) -> None:
+        if mode is self._mode:
+            return
+        self._mode_touched = True
+        self._set_mode(mode)
+        self.mode_chosen.emit(mode)
 
     def set_paused(self, paused: bool) -> None:
         """멈춤이나 오류 멈춤이면 맨 위에 "멈춤 동안 새 보고서를 받지 않습니다."가 보인다."""
