@@ -157,6 +157,43 @@ class _KeepColorDelegate(QStyledItemDelegate):
             option.palette.setBrush(QPalette.ColorRole.HighlightedText, brush)
 
 
+def make_data_table(name: str) -> QTableWidget:
+    """기록과 계정 화면이 같이 쓰는 표: '판' 바탕, 머리는 보조 글 굵게, 줄 40px, 줄 사이 구분선,
+    고른 줄은 '고른 칸', 칸이 넓으면 표 안에서 가로로 넘긴다. 고른 줄에서도 칸의 글 색이 남는다."""
+    table = QTableWidget(0, 0)
+    table.setObjectName(name)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setShowGrid(False)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideNone)
+    table.setFrameShape(QFrame.Shape.NoFrame)
+    table.verticalHeader().hide()
+    table.verticalHeader().setDefaultSectionSize(theme.ROW_HEIGHT)
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    header.setStretchLastSection(False)
+    header.setHighlightSections(False)
+    table.setStyleSheet(
+        f"QTableWidget#{name} {{ background: {theme.SURFACE}; border: 0; outline: 0; }}"
+        f"QTableWidget#{name}::item {{ border-bottom: 1px solid {theme.DIVIDER};"
+        f" padding: 0 {theme.FIELD_GAP}px; }}"
+        f"QTableWidget#{name}::item:selected {{ background: {theme.SELECTED}; }}"
+        f"QTableWidget#{name}:focus {{ border: 2px solid {theme.FOCUS}; }}"
+        f"QTableCornerButton::section {{ background: {theme.SURFACE}; border: 0; }}"
+        f"QHeaderView {{ background: {theme.SURFACE}; border: 0; }}"
+        f"QHeaderView::section {{ background: {theme.SURFACE}; color: {theme.TEXT_SUB};"
+        f" border: 0; border-bottom: 1px solid {theme.DIVIDER}; font-weight: bold;"
+        f" font-size: {theme.FONT_SUB}px; padding: 0 {theme.FIELD_GAP}px;"
+        f" min-height: {theme.ROW_HEIGHT}px; }}"
+    )
+    table.setItemDelegate(_KeepColorDelegate(table))
+    return table
+
+
 class HistoryScreen(QWidget):
     selection_changed = Signal()
     report_requested = Signal(str, int)
@@ -252,37 +289,7 @@ class HistoryScreen(QWidget):
         self._message = make_label("", "historyMessage")
         set_role(self._message, theme.ROLE_SUB)
         card.body.addWidget(self._message)
-        table = QTableWidget(0, 0)
-        table.setObjectName("historyTable")
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        table.setShowGrid(False)
-        table.setWordWrap(False)
-        table.setTextElideMode(Qt.TextElideMode.ElideNone)
-        table.setFrameShape(QFrame.Shape.NoFrame)
-        table.verticalHeader().hide()
-        table.verticalHeader().setDefaultSectionSize(theme.ROW_HEIGHT)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setStretchLastSection(False)
-        header.setHighlightSections(False)
-        table.setStyleSheet(
-            f"QTableWidget#historyTable {{ background: {theme.SURFACE}; border: 0; outline: 0; }}"
-            f"QTableWidget#historyTable::item {{ border-bottom: 1px solid {theme.DIVIDER};"
-            f" padding: 0 {theme.FIELD_GAP}px; }}"
-            f"QTableWidget#historyTable::item:selected {{ background: {theme.SELECTED}; }}"
-            f"QTableWidget#historyTable:focus {{ border: 2px solid {theme.FOCUS}; }}"
-            f"QTableCornerButton::section {{ background: {theme.SURFACE}; border: 0; }}"
-            f"QHeaderView {{ background: {theme.SURFACE}; border: 0; }}"
-            f"QHeaderView::section {{ background: {theme.SURFACE}; color: {theme.TEXT_SUB};"
-            f" border: 0; border-bottom: 1px solid {theme.DIVIDER}; font-weight: bold;"
-            f" font-size: {theme.FONT_SUB}px; padding: 0 {theme.FIELD_GAP}px;"
-            f" min-height: {theme.ROW_HEIGHT}px; }}"
-        )
-        table.setItemDelegate(_KeepColorDelegate(table))
+        table = make_data_table("historyTable")
         table.itemSelectionChanged.connect(self._on_row_selected)
         self._table = table
         card.body.addWidget(table, 1)

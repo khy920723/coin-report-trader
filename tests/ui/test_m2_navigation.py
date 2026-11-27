@@ -307,16 +307,16 @@ def test_a_tab_name_has_the_unseen_count_in_parentheses_after_a_space(window):
     assert status.findChild(QPushButton, "alertTab_report").text() == "보고서 알림"
 
 
-# --- Ctrl+1~5 ---
+# --- Ctrl+1~6 ---
 
 
-def test_ctrl_1_to_5_open_the_screens_in_the_list_order(window):
+def test_ctrl_1_to_6_open_the_screens_in_the_list_order(window):
     shortcuts = {
         shortcut.key().toString(): shortcut
         for shortcut in window.findChildren(QShortcut)
         if shortcut.key().toString().startswith("Ctrl+")  # F1(도움말)은 test_help.py가 본다
     }
-    assert sorted(shortcuts) == [f"Ctrl+{n}" for n in range(1, 6)]
+    assert sorted(shortcuts) == [f"Ctrl+{n}" for n in range(1, 7)]  # 현황 다음이 계정(M5 명세 3.15.1)
     for number, screen_id in enumerate(ScreenId, start=1):
         select_screen(
             window, ScreenId.REPORTS if screen_id is not ScreenId.REPORTS else ScreenId.SETTINGS

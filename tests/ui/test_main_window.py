@@ -43,11 +43,12 @@ def test_window_basics(window):
     assert not window.isVisible()
 
 
-def test_five_screens_in_order_with_object_names(window):
+def test_six_screens_in_order_with_object_names(window):
     assert screen_order(window) == tuple(ScreenId)
     assert [s.value for s in ScreenId] == [
         "first_setup",
         "status",
+        "account",
         "reports",
         "history",
         "settings",
@@ -99,6 +100,7 @@ def test_nav_lists_titles_in_order_and_switches_screen(window):
     assert [nav.item(i).text() for i in range(nav.count())] == [
         "처음 설정",
         "현황",
+        "계정",
         "보고서",
         "기록",
         "설정",

@@ -363,7 +363,14 @@ def test_the_total_unseen_count_is_in_the_band_and_not_in_the_status_name(make_w
     window.apply(_view(unseen={AlertCategory.TRADE: 0}))
     assert _chip(window).isHidden()
     nav = _find(window, QListWidget, "screenNav")
-    assert [nav.item(i).text() for i in range(5)] == ["처음 설정", "현황", "보고서", "기록", "설정"]
+    assert [nav.item(i).text() for i in range(6)] == [
+        "처음 설정",
+        "현황",
+        "계정",
+        "보고서",
+        "기록",
+        "설정",
+    ]
 
 
 def test_a_click_on_the_alert_chip_opens_the_status_screen_at_the_first_unseen_tab(

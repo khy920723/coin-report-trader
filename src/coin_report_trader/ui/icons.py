@@ -50,9 +50,16 @@ def _clock(p: QPainter) -> None:
     p.drawPolyline([QPointF(8, 5), QPointF(8, 8), QPointF(10.5, 9.5)])
 
 
+def _wallet(p: QPainter) -> None:
+    p.drawRoundedRect(QRectF(2, 4, 12, 9), 1.5, 1.5)
+    p.drawLine(QPointF(2.5, 6.5), QPointF(12, 2.5))
+    p.drawEllipse(QRectF(10.5, 7.5, 2, 2))
+
+
 _SHAPES = {
     ScreenId.FIRST_SETUP: _flag,
     ScreenId.STATUS: _chart,
+    ScreenId.ACCOUNT: _wallet,
     ScreenId.REPORTS: _document,
     ScreenId.HISTORY: _clock,
     ScreenId.SETTINGS: _gear,

@@ -1,9 +1,9 @@
-"""창 하나와 다섯 화면의 자리, 그리고 조립(`app`)과의 연결점(`MainWindow.apply`)."""
+"""창 하나와 여섯 화면의 자리, 그리고 조립(`app`)과의 연결점(`MainWindow.apply`)."""
 
 from collections.abc import Callable
 from datetime import date, datetime
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,6 +29,8 @@ from coin_report_trader.core import (
     SAVE_TARGET_SETTINGS,
     SCREEN_TITLES,
     WINDOW_TITLE,
+    AccountState,
+    AccountView,
     AiChoice,
     AiStatusView,
     AlertCategory,
@@ -76,6 +78,7 @@ from coin_report_trader.core.texts import (
     kst_when_text,
 )
 from coin_report_trader.ui import theme
+from coin_report_trader.ui.account_screen import AccountScreen
 from coin_report_trader.ui.dialogs import ask_confirm, ask_live_confirm
 from coin_report_trader.ui.first_setup import FirstSetupScreen
 from coin_report_trader.ui.help import HelpWindow, guide_path
@@ -253,6 +256,9 @@ class MainWindow(QMainWindow):
         self._accepted_below_stop: tuple[str, ...] = ()
         self._report_coins: tuple[str, ...] | None = None
         self._report_rounds_key: object = None
+        self._account_view: AccountView | None = None
+        self._account_visible = False
+        """마지막으로 `account_visible`로 알린 값(M5 명세 3.15.4)."""
         self._live_status: LiveStatusView | None = None
         self._key_view: UpbitKeyView | None = None
         self._key_message: Message | None = None
@@ -279,6 +285,7 @@ class MainWindow(QMainWindow):
         self._status = StatusScreen()
         self._reports = ReportScreen()
         self._history = HistoryScreen()
+        self._account_screen = AccountScreen()
         for screen_id in ScreenId:
             nav.addItem(QListWidgetItem(screen_icon(screen_id), SCREEN_TITLES[screen_id]))
             if screen_id is ScreenId.FIRST_SETUP:
@@ -291,6 +298,8 @@ class MainWindow(QMainWindow):
                 stack.addWidget(_scroll_page(screen_id, self._reports))
             elif screen_id is ScreenId.HISTORY:
                 stack.addWidget(_scroll_page(screen_id, self._history))
+            elif screen_id is ScreenId.ACCOUNT:
+                stack.addWidget(_scroll_page(screen_id, self._account_screen))
             else:
                 stack.addWidget(_scroll_page(screen_id, build_screen(screen_id)))
         nav.currentRowChanged.connect(stack.setCurrentIndex)
@@ -303,7 +312,7 @@ class MainWindow(QMainWindow):
         self._stack = stack
 
         # 왼쪽 자리: 화면 이름 목록과 그 아래의 "도움말" 단추(M2 명세 3.16). 단추는 목록의 줄이
-        # 아니다(다섯 화면에 더하지 않는다).
+        # 아니다(여섯 화면에 더하지 않는다).
         help_button = QPushButton(HELP_BUTTON_TEXT)
         help_button.setObjectName(HELP_BUTTON_NAME)
         help_button.clicked.connect(self._open_help)
@@ -366,6 +375,8 @@ class MainWindow(QMainWindow):
         self._settings.live_on_requested.connect(self._on_live_on)
         self._settings.live_off_requested.connect(self._on_live_off)
         self._reports.mode_chosen.connect(self._on_report_mode)
+        self._account_screen.refresh_requested.connect(self._on_account_refresh)
+        self._account_screen.go_key_requested.connect(self._go_account_key)
         self._history.selection_changed.connect(self._on_history_selection)
         self._history.report_requested.connect(self._open_report)
         self._history.export_requested.connect(self._on_history_export)
@@ -413,12 +424,39 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         """처음 보일 때 틀의 크기를 읽어 처음 크기를 다시 맞춘다(사용자가 바꾼 크기는 두고)."""
         super().showEvent(event)
+        self._notify_account_visible()
         if self._frame_fitted:
             return
         self._frame_fitted = True
         frame = self.frameGeometry().size() - self.geometry().size()
         if (frame.width() > 0 or frame.height() > 0) and self.size() == self._auto_size:
             self._fit_to_screen(frame)
+
+    def hideEvent(self, event) -> None:
+        """트레이로 숨으면 계정 화면은 보이지 않는 것이다(M5 명세 3.15.4)."""
+        super().hideEvent(event)
+        self._notify_account_visible()
+
+    def changeEvent(self, event) -> None:
+        """창을 최소화하거나 되돌릴 때 계정 화면의 보임을 다시 알린다."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._notify_account_visible()
+
+    def _notify_account_visible(self) -> None:
+        """계정 화면이 골라져 있고 창이 최소화되거나 숨지 않았을 때만 '보인다'. 바뀔 때마다 한 번
+        `account_visible`로 알린다(보이게 되면 읽기 한 번, 보이지 않으면 읽지 않는다)."""
+        visible = (
+            self._actions is not None
+            and self.isVisible()
+            and not self.isMinimized()
+            and current_screen(self) is ScreenId.ACCOUNT
+        )
+        if visible == self._account_visible:
+            return
+        self._account_visible = visible
+        if self._actions is not None:
+            self._actions.account_visible(visible)
 
     # --- 바깥에서 쓰는 것 ---
 
@@ -464,6 +502,9 @@ class MainWindow(QMainWindow):
             self._update()
         elif isinstance(update, HistoryView):
             self._history_view = update
+            self._update()
+        elif isinstance(update, AccountView):
+            self._account_view = update
             self._update()
         elif isinstance(update, LiveStatusView):
             self._live_asked = False  # 막힌 까닭이 왔으면 확인 창 없이 끝난 것이다
@@ -976,7 +1017,39 @@ class MainWindow(QMainWindow):
         elif list(ScreenId)[index] is ScreenId.HISTORY:
             self._history.reset_day()  # 처음에는 오늘(M3 명세 3.17.4)
             self._request_history()  # 화면을 열 때 지금 고른 것으로 한 번 부른다
+        self._notify_account_visible()  # 계정 화면을 고르거나 떠날 때(M5 명세 3.15.4)
         self._update()
+
+    # --- 계정 화면(M5 명세 3.15) ---
+
+    def _account_state(self) -> AccountState:
+        """처음 설정 전이면 그 상태, 값이 오면 그 값의 상태, 오기 전이면 키가 없는지 본다."""
+        if not self._first_setup_done():
+            return AccountState.BEFORE_SETUP
+        if self._account_view is not None:
+            return self._account_view.state
+        if self._key_view is not None and not self._key_view.present:
+            return AccountState.NO_KEY
+        return AccountState.LOADING
+
+    def _render_account(self) -> None:
+        state = self._account_state()
+        view = self._account_view if state not in (
+            AccountState.BEFORE_SETUP,
+            AccountState.NO_KEY,
+            AccountState.LOADING,
+        ) else None
+        self._account_screen.render(state=state, view=view)
+
+    def _on_account_refresh(self) -> None:
+        """"새로 고침": 읽는 중이면 단추가 흐려 눌리지 않는다."""
+        if self._actions is not None and self._phase is Phase.READY:
+            self._actions.refresh_account()
+
+    def _go_account_key(self) -> None:
+        """"업비트 키 넣으러 가기": 설정 화면의 '업비트 키' 묶음으로 간다."""
+        select_screen(self, ScreenId.SETTINGS)
+        self._scroll_page_to(self._settings, self._settings.key_widget())
 
     # --- 보고서 화면(M2 명세 3.12.1) ---
 
@@ -1175,7 +1248,7 @@ class MainWindow(QMainWindow):
         self._help.open_help()
 
     def _open_screen(self, screen_id: ScreenId) -> None:
-        """Ctrl+1~5: 화면 이름 목록에서 그 줄을 누른 것과 같다."""
+        """Ctrl+1~6: 화면 이름 목록에서 그 줄을 누른 것과 같다."""
         select_screen(self, screen_id)
         if screen_id is ScreenId.STATUS:
             self._hold_seen = False
@@ -1377,6 +1450,7 @@ class MainWindow(QMainWindow):
             legacy=self._legacy_record(),
         )
         self._sync_record_modes()
+        self._render_account()
         self._render_reports()
         self._render_history()
         paused = self._trade_status is not None and (
@@ -1446,8 +1520,8 @@ def create_main_window(context: UiContext) -> MainWindow:
     - 창: `objectName`이 `mainWindow`, 제목이 `WINDOW_TITLE`, 상태 줄은 `statusLine` 라벨.
     - 자리의 순서: `screen_order(window)`. `ScreenId` 순서의 튜플이다.
     - 자리 위젯: `screen_widget(window, screen_id)`. `objectName`은 `screen_<ScreenId 값>`이다.
-      다섯 자리 모두 제목 라벨 `screenTitle`(글은 `SCREEN_TITLES`)이 있다.
-      빈 화면 문구 라벨 `screenBody`는 어느 자리에도 없다(다섯 자리 모두 채워졌다).
+      여섯 자리 모두 제목 라벨 `screenTitle`(글은 `SCREEN_TITLES`)이 있다.
+      빈 화면 문구 라벨 `screenBody`는 어느 자리에도 없다(여섯 자리 모두 채워졌다).
     - 지금 보이는 자리: `current_screen(window)`. 켰을 때는 `ScreenId.FIRST_SETUP`이다.
       자리를 바꾸려면 `select_screen(window, screen_id)`나 `screenNav` 목록에서 고른다.
     - 경고 색: 글 라벨의 동적 속성 `tone`("normal" 또는 "warning")으로 알아본다
@@ -1561,11 +1635,17 @@ def create_main_window(context: UiContext) -> MainWindow:
       "현황 ({n})"이다. 사용자가 그 줄을 누른 것은 `screenNav.itemClicked`로 알린다(시험은
       `itemClicked.emit(item)`). `select_screen`은 누른 것이 아니라서 마지막에 고른 탭을
       그대로 둔다.
-    - 왼쪽 자리 `screenLeft`(M2 명세 3.16): 화면 이름 목록 `screenNav`(줄은 다섯 그대로)과 그 아래의
+    - 왼쪽 자리 `screenLeft`(M2 명세 3.16): 화면 이름 목록 `screenNav`(줄은 여섯 그대로)과 그 아래의
       "도움말" 단추 `helpButton`. 단추나 F1은 도움말 창(`ui/help.py`의 `HelpWindow`, 객체 이름
       `helpWindow`, 글 칸 `helpText`, 못 읽음의 글 `helpMessage`)을 연다. 이미 열려 있으면 그 창을
       앞으로 낸다. 글은 `guide_path()`의 파일이고, 창을 열 때마다 읽는다.
-    - Ctrl+1~5는 화면 이름 목록의 위에서 1~5째 줄을 누른 것과 같다.
+    - Ctrl+1~6은 화면 이름 목록의 위에서 1~6째 줄을 누른 것과 같다(현황 다음이 계정).
+    - 계정 자리(`screen_account`, M5 명세 3.15.3): "새로 고침" `accountRefresh`, 글
+      `accountMessage`, `accountGoKey`, 묶음 `accountSummary`('ⓘ' `accountSummaryInfo`, 값
+      `accountKrwAvailable`, `accountKrwLocked`, `accountHoldingsValue`, `accountTotalAssets`,
+      `accountTotalBuy`, `accountTotalPnl`, `accountTotalPnlRate`, `accountReadAt`,
+      `accountExcluded`), 표 `accountTable`과 표 자리의 글 `accountTableNote`. 창이 계정 자리를
+      고르거나 떠나고 최소화·숨음·복원될 때 `account_visible`을 부른다.
     - 보고서 자리(`screen_reports`, M2 명세 3.12.1): 맨 위 줄 `reportAiStatus`, 코인 `reportCoin`
       (`QListWidget`), 회차 `reportRounds`(`QListWidget`), 글 하나만 보이는 모습 `reportMessage`,
       `reportAiMark`, 오른쪽 `reportDetailScroll`(`QScrollArea`)의 묶음 `reportLastResult`,

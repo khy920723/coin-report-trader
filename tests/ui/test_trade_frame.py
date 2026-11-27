@@ -77,6 +77,10 @@ class Actions:
 
     def load_history(self, tab, market, day, mode=None) -> None: ...
 
+    def account_visible(self, visible) -> None: ...
+
+    def refresh_account(self) -> None: ...
+
     def mark_seen(self, alert_ids) -> None: ...
 
     def delete_alert(self, alert_id) -> None: ...
@@ -389,6 +393,7 @@ def test_the_nav_names_have_no_count_and_the_band_is_the_only_place_for_it(windo
     assert [nav.item(i).text() for i in range(nav.count())] == [
         "처음 설정",
         "현황",
+        "계정",
         "보고서",
         "기록",
         "설정",
