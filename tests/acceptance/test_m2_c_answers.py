@@ -559,7 +559,7 @@ def test_c15_a_timeout_or_a_limit_is_a_failed_report_with_its_a17(
     item = only(rig)
     assert (item.state, item.failure) == (ReportState.FAILED, failure)
     (alert,) = [a for a in rig.alerts() if a.code == "A-17"]
-    assert alert.text == f"AI 보고서를 받지 못했습니다({failure})."
+    assert alert.text == f"AI 보고서를 받지 못해 이번 회차에 주문하지 않았습니다({failure})."
     # 판단의 칸이 모두 비어 있고 줄 표도 없다(`read_report`가 아니라 DB를 직접 본다).
     assert rig.rows(
         "SELECT search_judgment, search_status, candle_judgment, direction, predicted_price,"
