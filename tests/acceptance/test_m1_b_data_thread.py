@@ -84,7 +84,12 @@ def test_b11_a_block_stops_every_request_until_it_ends_then_fetches_once(rigs) -
     # 둘째 코인에는 `LOADING`이 오지 않는다(요청하기 전에 받기가 멈췄다).
     assert [v.state for v in rig.sink.coin(BBB)][-1:] == [LoadState.FAILED]
     assert LoadState.LOADING not in [v.state for v in rig.sink.coin(BBB)[1:]]
-    assert codes(rig) == [("A-1", AAA, ERROR_BLOCKED), ("A-1", BBB, ERROR_BLOCKED)]
+    # 3단계부터 일시 차단은 오류 멈춤이다: 들어갈 때 A-23 하나(M3 명세 3.10.2)
+    assert codes(rig) == [
+        ("A-23", None, ERROR_BLOCKED),
+        ("A-1", AAA, ERROR_BLOCKED),
+        ("A-1", BBB, ERROR_BLOCKED),
+    ]
     requests = len(rig.quote.requests)
     # 차단 중: "다시 시도"와 코인 목록 받기는 요청을 내지 않고, 차단 묶음의 `CoinView`만 다시 온다.
     rig.sink.clear()
@@ -95,11 +100,17 @@ def test_b11_a_block_stops_every_request_until_it_ends_then_fetches_once(rigs) -
     for coin in (AAA, BBB):
         (view,) = rig.sink.coin(coin)
         assert (view.state, view.blocked_until) == (LoadState.FAILED, until)
-    assert len(codes(rig)) == 2  # A-1은 더 생기지 않는다
-    # 120초가 지난 때에 저절로 한 번 받는다.
+    assert len(codes(rig)) == 3  # A-1은 더 생기지 않는다
+    # 120초가 지나도 오류 멈춤이라 저절로 받지 않는다. 사용자가 풀면 대조 뒤 다시 받을 수 있다.
     rig.advance(119)
     assert len(rig.quote.requests) == requests
     rig.advance(1)
+    rig.advance(3600)
+    assert len(rig.quote.requests) == requests
+    rig.data.resume_error()
+    rig.settle()
+    rig.data.retry_candles()
+    rig.settle()
     after = rig.quote.candle_requests()[len(rig.quote.candle_requests()) - 2 :]
     assert sorted(r.market for r in after) == [AAA, BBB]
     assert rig.sink.coin(AAA)[-1].state in (LoadState.READY, LoadState.NO_DATA)
@@ -135,7 +146,11 @@ def test_b11_blocks_without_a_wait_grow_five_minutes_then_ten(rigs) -> None:
         assert view.blocked_until is not None
         wait = (view.blocked_until - rig.clock.now()).total_seconds()
         waits.append(wait)
-        rig.advance(wait)
+        rig.advance(wait)  # 일시 차단은 오류 멈춤이라 풀고 다시 받아야 다음 차단을 받는다
+        rig.data.resume_error()
+        rig.settle()
+        rig.data.retry_candles()
+        rig.settle()
     assert waits == [300.0, 120.0, 600.0]  # 5분, 120초, 10분
 
 
@@ -325,7 +340,8 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
         )  # fmt: skip
     new = codes(rig)[alerts_before:]  # 센 기준과 자르는 기준이 같다(A-27, A-28을 뺀 목록)
     assert [(code, name) for code, _coin, name in new] == [
-        ("A-31", ERROR_BLOCKED)
+        ("A-23", ERROR_BLOCKED),  # 일시 차단은 오류 멈춤이다(M3 명세 3.10.2)
+        ("A-31", ERROR_BLOCKED),
     ]  # 고른 코인의 A-1은 생기지 않는다
     requests = len(rig.quote.requests)
     rig.sink.clear()
@@ -337,7 +353,7 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
         **{**markets_view.__dict__, "as_of": rig.sink.of(MarketsView)[-1].as_of}
     )
     assert all(rig.sink.coin(c)[-1].blocked_until == until for c in (AAA, BBB))
-    assert len(codes(rig)) == alerts_before + 1  # A-31도 A-1도 더 생기지 않는다
+    assert len(codes(rig)) == alerts_before + 2  # A-23과 A-31 뒤로 A-31도 A-1도 더 생기지 않는다
     window = create_main_window(UiContext("0.0.1", "X", None))
     try:
         window.apply(SettingsView((), None, False))
@@ -347,7 +363,14 @@ def test_b34_a_block_of_the_market_list_stops_every_request_for_its_wait(rigs, q
     finally:
         window.deleteLater()
     markets_before = len(rig.quote.market_requests())
-    rig.advance(120)  # 봉은 저절로 받는다. 코인 목록은 다시 부를 때 받는다
+    rig.advance(
+        120
+    )  # 오류 멈춤이라 저절로 받지 않는다. 풀면 받을 수 있고 코인 목록은 다시 부를 때 받는다
+    assert len(rig.quote.requests) == requests
+    rig.data.resume_error()
+    rig.settle()
+    rig.data.retry_candles()
+    rig.settle()
     assert len(rig.quote.candle_requests()) > 0
     assert len(rig.quote.requests) > requests
     assert len(rig.quote.market_requests()) == markets_before

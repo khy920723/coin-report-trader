@@ -29,12 +29,14 @@ from coin_report_trader.core import (
     LoadState,
     Market,
     MarketsView,
+    PerformanceView,
     QuoteError,
     RoundNowView,
     SaveResult,
     SettingsView,
     StorageError,
     TodayView,
+    TradeStatusView,
     UiUpdate,
     empty_bar_stats,
 )
@@ -74,14 +76,18 @@ class Sink:
 
     items: list[UiUpdate] = field(default_factory=list)
     trade: list[UiUpdate] = field(default_factory=list)
-    """3단계의 매매 값(`CoinTradeView`, `TodayView`, `RoundNowView`. M3 명세 3.17.2). 1·2단계의 값을
-    보는 시험의 `items`에 섞이지 않게 따로 모은다."""
+    """3단계의 매매 값(`CoinTradeView`, `TodayView`, `RoundNowView`. M3 명세 3.17.2와 25번의
+    `TradeStatusView`, `PerformanceView`). 1·2단계의 값을 보는 시험의 `items`에 섞이지 않게 따로
+    모은다."""
     threads: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __call__(self, update: UiUpdate) -> None:
         with self.lock:
-            if isinstance(update, CoinTradeView | TodayView | RoundNowView):
+            if isinstance(
+                update,
+                CoinTradeView | TodayView | RoundNowView | TradeStatusView | PerformanceView,
+            ):
                 self.trade.append(update)
             else:
                 self.items.append(update)
@@ -836,7 +842,8 @@ def test_failing_to_read_the_stored_candles_before_a_fetch_is_an_a30_of_the_cand
     assert alert.text == "예상하지 못한 오류가 났습니다(DB 오류)."
     assert alert.detail is not None
     assert alert.detail.stage == "봉 받기"
-    assert alert.detail.after == "그 일을 그만두고 다음 일을 계속합니다."
+    # 3단계부터 A-30은 오류 멈춤에 든다(M3 명세 3.10.2, 3.14.1)
+    assert alert.detail.after == "오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다."
     rig.advance(3610)  # 같은 단계에 같은 예외 종류는 60분 안에 다시 만들지 않는다
     assert len(rig.alerts()) == 2  # 60분이 지났으므로 다시 만든다
     rig.worker.retry_candles()
@@ -854,13 +861,14 @@ def test_a_failed_fetched_at_write_is_an_a29_keeps_the_old_time_and_the_steps(
     rig.worker.retry_candles()  # 시간을 주지 않은 차단: 늘리는 차례가 한 칸 간다
     rig.settle()
     assert rig.worker._backoff == 1
-    assert len(rig.alerts()) == 1
+    assert len(candle_alerts(rig)) == 1
 
     def refuse(conn: Any, market: str, moment: datetime) -> None:
         raise StorageError("받은 때 저장에 실패했습니다: OperationalError")
 
     monkeypatch.setattr(data_thread, "write_fetched_at", refuse)
-    rig.advance(300)  # 차단이 끝나 저절로 받는다: 요청과 봉 저장은 되고 fetched_at 쓰기만 실패한다
+    # 차단이 끝나 오류 멈춤을 풀고 받는다: 요청과 봉 저장은 되고 fetched_at 쓰기만 실패한다
+    after_block(rig, 300)
     view = rig.sink.coin(AAA)[-1]
     assert (view.state, view.error_name) == (LoadState.FAILED, "DB 오류")
     assert view.fetched_at == NOW  # 앞의 값 그대로다(받기 전체가 성공하지 않았다)
@@ -868,7 +876,7 @@ def test_a_failed_fetched_at_write_is_an_a29_keeps_the_old_time_and_the_steps(
     assert view.stats is not None
     assert view.stats.bar_count == 100
     assert rig.worker._backoff == 1  # 늘리는 차례를 처음으로 돌리지 않는다
-    alerts = rig.alerts()
+    alerts = candle_alerts(rig)
     assert [a.code for a in alerts] == ["A-1", "A-29"]
     assert alerts[1].detail is not None
     assert alerts[1].detail.stage == "봉 저장"
@@ -960,6 +968,22 @@ def blocked_views(rig: Rig, market: str) -> list[CoinView]:
     return [v for v in rig.sink.coin(market) if v.error_name == ERROR_BLOCKED]
 
 
+def candle_alerts(rig: Rig) -> list[Any]:
+    """오류 멈춤의 A-23(M3 명세 3.10.2. 일시 차단은 오류 멈춤이다)을 뺀 알림. 3단계 전부터 있던
+    시험이 A-1, A-31 같은 알림만 세게 한다."""
+    return [a for a in rig.alerts() if a.code != "A-23"]
+
+
+def after_block(rig: Rig, seconds: float) -> None:
+    """차단 시각까지 시계를 옮긴 뒤 오류 멈춤을 풀고 다시 받는다. 일시 차단은 3단계부터 오류
+    멈춤이라 저절로 다시 받지 않는다(M3 명세 3.10.2). 풀면 대조 뒤 다음 예정 시각부터 돈다."""
+    rig.advance(seconds)
+    rig.worker.resume_error()
+    rig.settle()
+    rig.worker.retry_candles()
+    rig.settle()
+
+
 def test_a_block_stops_the_round_and_marks_every_unrequested_coin(build: Any) -> None:
     rig = build(coins=(AAA, BBB))
     block(rig, 120.0)
@@ -971,8 +995,9 @@ def test_a_block_stops_the_round_and_marks_every_unrequested_coin(build: Any) ->
     for view in (first[-1], second[-1]):
         assert (view.error_name, view.blocked_until, view.as_of) == (ERROR_BLOCKED, until, NOW)
     assert [r.market for r in rig.quote.candle_requests()] == [AAA]  # 앞 코인의 요청만 나갔다
-    alerts = rig.alerts()
+    alerts = candle_alerts(rig)
     assert [(a.code, a.coin) for a in alerts] == [("A-1", AAA), ("A-1", BBB)]
+    assert [a.code for a in rig.alerts()].count("A-23") == 1  # 오류 멈춤에 들어갈 때 한 번
     contents = [a.detail.content for a in alerts if a.detail]
     assert contents == [
         "거래소가 공개 시세 요청을 잠시 막았습니다.",
@@ -997,7 +1022,7 @@ def test_while_blocked_nothing_is_requested_and_it_is_fetched_once_after(build: 
         (AAA, LoadState.FAILED, ERROR_BLOCKED),
         (BBB, LoadState.FAILED, ERROR_BLOCKED),
     ]
-    assert len(rig.alerts()) == 2
+    assert len(candle_alerts(rig)) == 2
     # 차단 중의 코인 목록: 요청 없이 "일시 차단 중", A-31 없음
     rig.worker.refresh_markets()
     rig.settle()
@@ -1006,16 +1031,20 @@ def test_while_blocked_nothing_is_requested_and_it_is_fetched_once_after(build: 
     assert (view.state, view.error_name, view.blocked_until) == (
         LoadState.FAILED, ERROR_BLOCKED, NOW + timedelta(seconds=120),
     )  # fmt: skip
-    assert len(rig.alerts()) == 2
+    assert len(candle_alerts(rig)) == 2
     rig.advance(119)
     assert len(fetch_requests(rig)) == sent
-    rig.advance(1)  # blocked_until: 저절로 한 번 받는다
+    rig.advance(1)  # blocked_until: 오류 멈춤이라 저절로 받지 않는다(M3 명세 3.10.2)
+    rig.advance(3600)
+    assert len(fetch_requests(rig)) == sent
+    rig.worker.resume_error()  # 풀면 대조 뒤 받는다
+    rig.settle()
+    rig.worker.retry_candles()
+    rig.settle()
     assert len(rig.quote.candle_requests(AAA)) > 0
     assert {r.market for r in rig.quote.candle_requests()[sent:]} == {AAA, BBB}
     after = len(fetch_requests(rig))
-    rig.advance(3489)  # 그 받기(03:02) 뒤의 (라)는 저장된 마지막 봉(03:00)의 끝 + 10초(04:00:10)다
-    assert len(fetch_requests(rig)) == after
-    rig.advance(1)
+    rig.advance(3600)  # 다음 (라)는 저장된 마지막 봉의 끝 + 10초 뒤다
     assert len(fetch_requests(rig)) > after
 
 
@@ -1048,7 +1077,12 @@ def test_a_fetch_time_inside_a_block_does_nothing_and_the_block_end_fetches_once
     assert len(fetch_requests(rig)) == requests
     assert rig.sink.coin(AAA)[-1].fetched_at == fetched
     assert rig.worker._backoff == backoff
-    rig.advance(1)  # blocked_until: 저절로 한 번 받는다
+    rig.advance(1)  # blocked_until: 오류 멈춤이라 저절로 받지 않는다(M3 명세 3.10.2)
+    assert len(fetch_requests(rig)) == requests
+    rig.worker.resume_error()  # 풀고 다시 받는다
+    rig.settle()
+    rig.worker.retry_candles()
+    rig.settle()
     assert len(fetch_requests(rig)) == requests + 1  # 고른 단위 하나
     assert states(rig.sink.coin(AAA))[-2:] == [LoadState.LOADING, LoadState.READY]
 
@@ -1067,7 +1101,7 @@ def test_a_save_during_a_block_saves_then_sends_blocked_views_without_requests(b
     assert kinds == ["SaveResult", "SettingsView", "AlertsView", "CoinView"]
     assert rig.sink.coin(AAA)[0].error_name == ERROR_BLOCKED
     assert len(fetch_requests(rig)) == count
-    assert len(rig.alerts()) == 1  # A-1은 처음 받기의 것 하나뿐이다
+    assert len(candle_alerts(rig)) == 1  # A-1은 처음 받기의 것 하나뿐이다
 
 
 def seconds_blocked(rig: Rig) -> float:
@@ -1082,7 +1116,7 @@ def test_the_backoff_steps_when_the_exchange_gives_no_time(build: Any) -> None:
     rig.start()
     seen = [seconds_blocked(rig)]
     for _ in range(6):
-        rig.advance(seen[-1])  # 차단이 끝나면 저절로 받고 또 차단을 받는다
+        after_block(rig, seen[-1])  # 차단이 끝나면 풀고 다시 받아 또 차단을 받는다
         seen.append(seconds_blocked(rig))
     assert seen == [300, 600, 1200, 2400, 3600, 3600, 3600]
 
@@ -1096,7 +1130,7 @@ def test_a_time_given_by_the_exchange_does_not_move_the_steps(build: Any) -> Non
     rig.start()
     seen = [seconds_blocked(rig)]
     for _ in range(2):
-        rig.advance(seen[-1])
+        after_block(rig, seen[-1])
         seen.append(seconds_blocked(rig))
     assert seen == [300, 120, 600]
 
@@ -1109,9 +1143,9 @@ def test_a_success_returns_the_steps_to_the_start(build: Any) -> None:
     )  # fmt: skip
     rig.start()
     assert seconds_blocked(rig) == 300
-    rig.advance(300)
+    after_block(rig, 300)
     assert seconds_blocked(rig) == 600
-    rig.advance(600)  # 성공(03:15): 처음으로 돌아간다
+    after_block(rig, 600)  # 성공(03:15): 처음으로 돌아간다
     assert rig.sink.coin(AAA)[-1].state is LoadState.READY
     rig.advance(2710)  # 다음 (라)는 04:00:10이다
     assert seconds_blocked(rig) == 300
@@ -1132,7 +1166,7 @@ def test_the_list_of_markets_shares_the_steps_with_the_candles(build: Any) -> No
     rig.quote.script(QuoteError(ERROR_BLOCKED), kind="markets")
     rig.start()  # 봉이 차단: 5분
     assert seconds_blocked(rig) == 300
-    rig.advance(300)  # 저절로 받는 봉은 차단이 아닌 실패다(차례를 처음으로 돌리지 않는다)
+    after_block(rig, 300)  # 풀고 받는 봉은 차단이 아닌 실패다(차례를 처음으로 돌리지 않는다)
     assert rig.sink.coin(AAA)[-1].error_name == ERROR_NETWORK
     rig.worker.refresh_markets()
     rig.settle()
@@ -1239,7 +1273,7 @@ def test_a_block_on_the_list_is_an_a31_and_blocks_the_coins(build: Any) -> None:
     assert (view.state, view.error_name, view.blocked_until) == (
         LoadState.FAILED, ERROR_BLOCKED, NOW + timedelta(seconds=90),
     )  # fmt: skip
-    (alert,) = rig.alerts()
+    (alert,) = candle_alerts(rig)
     assert alert.code == "A-31"
     assert alert.detail is not None
     assert alert.detail.content == "거래소가 공개 시세 요청을 잠시 막았습니다."
@@ -1722,7 +1756,7 @@ def test_a_block_after_a_save_failure_leaves_only_the_block_alert(
     monkeypatch.setattr(data_thread, "write_candles", refuse)
     fail(rig, QuoteError(ERROR_BLOCKED, 90.0), unit=HOUR)
     rig.start()
-    (alert,) = rig.alerts()
+    (alert,) = candle_alerts(rig)
     assert alert.code == "A-1"
     assert rig.sink.coin(AAA)[-1].error_name == ERROR_BLOCKED
 
@@ -1987,7 +2021,7 @@ def test_an_earlier_failed_coin_also_gets_the_block_time_when_a_later_coin_is_bl
     fail(rig, QuoteError(ERROR_TIMEOUT), unit=HOUR, market=AAA)
     block(rig, 120.0, market=BBB)
     rig.start()
-    first, second = rig.alerts()
+    first, second = candle_alerts(rig)
     assert (first.coin, second.coin) == (AAA, BBB)
     assert first.text == "봉 통계를 만들지 못했습니다(시간 초과)."
     assert first.detail is not None

@@ -56,6 +56,16 @@ _IPV6: Final = re.compile(
 _PATH: Final = re.compile(
     r"(?<!\w)[A-Za-z]:[\\/]\S*|\\\\\S*|(?<![\w:/])/[^\s/]*/\S*"
 )  # 드라이브 글자, `\\`, 낱말이나 `:`·`/` 바로 뒤가 아닌 `/`로 시작해 `/`가 하나 더 든 경로
+_UUID: Final = re.compile(
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+)
+_NUMBER: Final = re.compile(
+    r"(?<![\d.,])(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{5,}(?:\.\d+)?|\d+\.\d{3,})(?![\d])"
+)
+"""쉼표로 세 자리씩 나눈 수, 정수 부분이 다섯 자리 이상인 수, 소수점 뒤가 세 자리 이상인 수
+(금액, 잔고, 수량. M3 명세 3.14.3)."""
+MASK_UUID: Final = "(식별값)"
+MASK_NUMBER: Final = "(수)"
 _SPACES: Final = re.compile(r"\r\n|\n|\r|\t")
 
 
@@ -128,11 +138,14 @@ def problem_message(
     env: Mapping[str, str] | None = None,
 ) -> str:
     """가린 내용: 알림의 글에 내용이 있으면 ` · ` 뒤에 이은 한 줄. 차례대로 `redact`, IP 주소,
-    남은 절대 경로, 줄바꿈과 탭, 500자 자르기를 거친다."""
+    식별값(uuid 꼴), 금액·수량 꼴의 수(M3 명세 3.14.3), 남은 절대 경로, 줄바꿈과 탭, 500자 자르기를
+    거친다."""
     joined = text if not content else f"{text} · {content}"
     masked = redact(joined, secrets, env)
     masked = _IPV4.sub(MASK_IP, masked)
     masked = _IPV6.sub(_mask_ipv6, masked)
+    masked = _UUID.sub(MASK_UUID, masked)
+    masked = _NUMBER.sub(MASK_NUMBER, masked)
     masked = _PATH.sub(MASK_PATH, masked)
     masked = _SPACES.sub(" ", masked)
     return masked[:MAX_MESSAGE_CHARS]

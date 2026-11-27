@@ -166,6 +166,21 @@ def test_the_message_masks_addresses_and_paths_and_flattens_lines(raw: str, expe
     assert pr.problem_message(raw, None) == expected
 
 
+def test_the_message_masks_order_uuids_and_money_like_numbers_in_a_fixed_order() -> None:
+    """3단계(M3 명세 3.14.3): IP 주소와 절대 경로 사이에 식별값(uuid 꼴)과 수를 가린다."""
+    raw = "주문 9f1c2a4e-0b3d-4c5e-8f6a-1b2c3d4e5f60의 금액 10,000원, 수량 10.10101010"
+    assert pr.problem_message(raw, None) == "주문 (식별값)의 금액 (수)원, 수량 (수)"
+    upper = "9F1C2A4E-0B3D-4C5E-8F6A-1B2C3D4E5F60"
+    assert pr.problem_message(upper, None) == "(식별값)"
+    # 정수 부분이 다섯 자리 이상, 쉼표로 세 자리씩 나눈 수, 소수점 뒤 세 자리 이상은 가린다
+    assert pr.problem_message("12345 12345.6 1,234 0.123", None) == "(수) (수) (수) (수)"
+    # 시각 글, 두세 자리의 정수, 판 번호, 네 자리 수, 소수점 뒤 두 자리까지는 그대로다
+    keep = "10:30:00 12 123 1234 v0.3.0 1.5 12.34 회차 25"
+    assert pr.problem_message(keep, None) == keep
+    # IP 주소는 수로 바뀌기 전에 가려진다
+    assert pr.problem_message("192.168.100.200", None) == pr.MASK_IP
+
+
 def test_the_message_uses_the_user_folder_mask_first_and_is_cut_at_500_characters() -> None:
     out = pr.problem_message("글", f"{user_dir('u1')}/data/app.db")
     assert "u1" not in out

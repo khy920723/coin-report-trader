@@ -200,7 +200,7 @@ AFTER_SAVE_FAILED: Final[Mapping[str, str]] = MappingProxyType(
         STAGE_WEBHOOK_DELETE: "저장된 주소는 그대로 남아 있습니다.",
         STAGE_STARTUP: "창을 띄우지 못하고 끝냈습니다. 다음에 켤 때 다시 시도합니다.",
         STAGE_REPORT_SAVE: (
-            "AI를 껐습니다. 봉 받기는 계속하고, 프로그램을 다시 켜면 AI가 다시 돕니다."
+            "그 코인의 보고서를 쓰지 못해 이 회차에 그 코인의 주문을 하지 않았습니다."
         ),
         STAGE_ORDER_SAVE: "쓰지 못한 주문은 내지 않았고, 쓰지 못한 체결은 반영하지 않았습니다.",
         STAGE_PAUSE_SAVE: (
@@ -213,6 +213,8 @@ AFTER_SAVE_FAILED: Final[Mapping[str, str]] = MappingProxyType(
     }
 )
 AFTER_UNEXPECTED: Final = "그 일을 그만두고 다음 일을 계속합니다."
+AFTER_ERROR_PAUSE: Final = "오류 멈춤에 들어갔습니다. 지금 손절이 동작하지 않습니다."
+"""3단계: A-30의 "그 뒤에 한 일"이고, A-29의 단계 글 뒤에 이은 글이다(M3 명세 3.10.2, 3.14.1)."""
 
 # --- 화면의 글 ---
 WEBHOOK_BAD_FORMAT: Final = "디스코드 웹후크 주소의 형식이 아닙니다."
@@ -332,6 +334,9 @@ def order_placed_summary_text(summary: str) -> str:
     return f"이 판단으로 낸 주문: {summary}"
 
 
+STARTING_RECONCILE: Final = "켜는 중: 거래소와 맞춰 보는 중"
+STARTING_STOP_CHECK: Final = "켜는 중: 손절 점검"
+"""상태 띠의 켜는 중 칸(M3 명세 2의 3, `TradeStatusView.starting_step`)."""
 STOP_ONLY_LEFT: Final = "매도 주문을 다시 걸지 못했습니다. 다음 회차까지 손절만 남습니다."
 """손절만 남음의 덧붙임(M3 명세 3.14.1)."""
 BELOW_STOP_PRICE_UNREAD: Final = "현재가를 읽지 못해 확인하지 못했습니다. 다시 저장하세요."
