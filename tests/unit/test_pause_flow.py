@@ -426,3 +426,20 @@ def test_the_a25_row_of_the_problem_table_has_no_quantity(build: Callable[..., R
     assert [row["message"] for row in found] == ["AAA: 팔지 못한 수량이 있습니다."]
     assert found[0]["stage"] == "긴급 매도"
     assert found[0]["error_name"] == "네트워크 끊김"
+
+
+def test_the_same_failing_order_write_makes_a_new_a29_each_time_the_pause_is_released(
+    build: Callable[..., Rig],
+) -> None:
+    rig = build()
+    rig.start()
+    break_orders(rig)
+    rig.answer(direction="오를 것", buy_price="99")
+    rig.round()
+    assert rig.codes().count("A-29") == 1
+    rig.worker.resume_error()
+    rig.settle()
+    rig.answer(direction="오를 것", buy_price="99", result_text="지난 결과", compared=PARTS)
+    rig.round()  # 같은 저장이 성공하지 않은 채 또 실패해도 오류 멈춤이고 A-29가 다시 생긴다
+    assert rig.status().error_paused is True
+    assert rig.codes().count("A-29") == 2
