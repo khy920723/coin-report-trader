@@ -564,3 +564,25 @@ def test_f17_removing_a_coin_in_live_drops_its_live_ratio(build: Callable[..., L
     assert saved(rig).coins == (AAA,)
     ratios = rig.query("SELECT key, value FROM settings WHERE key LIKE 'live_coin_ratio:%'")
     assert ratios == [(f"live_coin_ratio:{AAA}", "50")]
+
+
+def test_turning_off_cancels_an_order_that_is_still_open_and_raises_a20_once(
+    build: Callable[..., LiveRig],
+) -> None:
+    from fakes.ai import answered, good_answers
+    from fakes.upbit import CANCEL_FAILS
+
+    rig = go_live(build)
+    act(rig, rig.worker.resume_user)
+    rig.runner.plan(AAA, lambda req: answered(good_answers(AAA, buy_price="990", predicted="1010")))
+    rig.round()
+    (uid,) = rig.query("SELECT uid FROM orders WHERE mode = 'live'")
+    rig.upbit.script(CANCEL_FAILS, method="DELETE", path="/v1/order")
+    act(rig, rig.worker.pause)  # 취소가 한 번 거절되어 주문이 걸린 채 남는다
+    assert rig.query("SELECT state FROM orders WHERE mode = 'live'") == [("open",)]
+    assert rig.upbit.order_state(uid[0]) == "wait"
+    act(rig, rig.worker.turn_live_off)  # 끄기가 남은 주문을 취소한다
+    assert rig.mode() == "paper"
+    assert rig.query("SELECT state FROM orders WHERE mode = 'live'") == [("canceled",)]
+    assert rig.upbit.order_state(uid[0]) == "cancel"
+    assert [a.code for a in rig.alerts()].count("A-20") == 1

@@ -628,3 +628,51 @@ def test_the_live_daily_loss_counts_only_live_fills(build: Callable[..., LiveRig
     # 100 × 940 − 47 − 100 × 1,000 × 1.0005 = −6,097원: 하루 손실 한도 3,000원에 닿았다
     assert "A-12" in rig.codes()
     assert rig.sink.of(TodayView)[-1].limit_reached is True
+
+
+# --- 취소 전 조회와 닫은 때(3.6.4, 3.9) -----------------------------------------------------------
+
+
+def _closed_utc(rig: LiveRig, uid: str) -> str:
+    """닫은 때가 쓰였고 주문을 낸 때 뒤, 지금 시계 앞이다(요청마다 가짜 시계가 조금 간다)."""
+    now = rig.clock.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    ((created, closed),) = rig.query(
+        "SELECT created_utc, closed_utc FROM orders WHERE uid = ?", uid
+    )
+    assert closed is not None
+    assert created < closed <= now
+    return str(closed)
+
+
+def test_the_cleanup_queries_before_canceling_and_a_filled_order_is_not_canceled(
+    build: Callable[..., LiveRig],
+) -> None:
+    rig = running(build)
+    plan(rig, AAA, direction="오를 것", buy_price="990")
+    rig.round()
+    uid = stored_uid(rig)
+    ((qty,),) = rig.query("SELECT qty FROM orders WHERE uid = ?", uid)
+    rig.upbit.fill(uid, Decimal(qty), price=Decimal(990))  # 거래소에서는 이미 체결되었다
+    plan(rig, AAA, direction="오를 것", buy_price="990", result_text="지난 결과", compared=PARTS)
+    rig.round()  # 정리가 취소하기 전에 조회한다
+    assert rig.upbit_calls("DELETE", ORDER) == []  # 체결된 주문에는 취소를 보내지 않는다
+    ((state, executed),) = rig.query("SELECT state, executed_qty FROM orders WHERE uid = ?", uid)
+    assert (state, Decimal(executed)) == ("filled", Decimal(qty))
+    assert len(rig.query("SELECT 1 FROM fills WHERE mode = 'live'")) >= 1
+    _closed_utc(rig, uid)  # 체결로 닫은 때는 그때의 시계다
+
+
+def test_a_canceled_live_order_gets_its_closed_time_and_an_open_one_has_none(
+    build: Callable[..., LiveRig],
+) -> None:
+    rig = running(build)
+    plan(rig, AAA, direction="오를 것", buy_price="990")
+    rig.round()
+    uid = stored_uid(rig)
+    assert rig.query("SELECT closed_utc FROM orders WHERE uid = ?", uid) == [(None,)]
+    plan(rig, AAA, direction="오를 것", buy_price="990", result_text="지난 결과", compared=PARTS)
+    rig.round()  # 정리가 첫 주문을 취소하고 둘째 주문이 걸린다
+    assert rig.query("SELECT state FROM orders WHERE uid = ?", uid) == [("canceled",)]
+    _closed_utc(rig, uid)
+    open_rows = rig.query("SELECT closed_utc FROM orders WHERE state = 'open' AND mode = 'live'")
+    assert open_rows == [(None,)]
