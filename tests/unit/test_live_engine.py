@@ -1,7 +1,8 @@
 """5단계 잇기: 실거래의 거래소 경계 부르기(M5 명세 3.6, 3.5.5, 4절 15번, 6절의 F5~F15, F24, F34).
 
 가짜 업비트(`FakeUpbitTransport`), 가짜 시세, 가짜 시계, 가짜 보관소로만 돈다. 값은 모두 만든
-값이다. 실거래의 체결은 시험의 `SqlLiveFills`로 쓴다(`storage/`에 그 함수가 아직 없다).
+값이다. 실거래의 체결은 `SqlLiveFills`(진짜 저장 함수를 부름)로 쓴다. `fills=False`이면 프로그램의
+`StoredLiveFills`다.
 """
 
 import itertools
@@ -276,17 +277,50 @@ def test_partial_fills_are_written_once_each_and_the_rest_stays_a_holding(
     assert rig.codes().count("A-28") == 2
 
 
-def test_a_live_fill_without_a_fill_store_is_a29_and_an_error_pause(
+def test_the_program_s_own_fill_store_writes_a_live_partial_fill(
+    build: Callable[..., LiveRig],
+) -> None:
+    """실제 프로그램의 `StoredLiveFills`(시험의 것을 넣지 않음)로 부분 체결을 쓴다: A-29도 오류
+    멈춤도 없고, 체결 한 줄과 체결 수량만 쓰고 주문은 걸린 그대로다(3.6.4)."""
+    rig = running(build, holdings={"AAA": (Decimal(10), Decimal(1000))}, fills=False)
+    assert type(rig.worker._live_fill_store).__name__ == "StoredLiveFills"
+    plan(rig, AAA, direction="내릴 것", sell_price="1010")
+    rig.round()
+    uid = stored_uid(rig)
+    rig.upbit.fill(uid, Decimal(2), price=Decimal(1010))
+    rig.advance(60)
+    assert rig.status().error_paused is False
+    assert "A-29" not in rig.codes()
+    rows = rig.query("SELECT mode, qty, price, trade_key FROM fills WHERE mode = 'live'")
+    assert [(mode, qty, price) for mode, qty, price, _ in rows] == [("live", "2", "1010")]
+    assert rows[0][3] not in ("", "paper")
+    assert rig.query("SELECT state, executed_qty FROM orders WHERE uid = ?", uid) == [("open", "2")]
+    assert rig.codes().count("A-28") == 1
+    rig.advance(60)  # 다음 조회에서 같은 체결을 다시 쓰지 않는다
+    assert len(rig.query("SELECT id FROM fills WHERE mode = 'live'")) == 1
+    assert "A-29" not in rig.codes()
+
+
+def test_a_live_fill_that_cannot_be_written_is_a29_and_an_error_pause(
     build: Callable[..., LiveRig],
 ) -> None:
     rig = running(build, holdings={"AAA": (Decimal(10), Decimal(1000))}, fills=False)
     plan(rig, AAA, direction="내릴 것", sell_price="1010")
     rig.round()
-    rig.upbit.fill(stored_uid(rig), Decimal(2), price=Decimal(1010))
+    uid = stored_uid(rig)
+    rig.execute(
+        "CREATE TRIGGER no_live_fills BEFORE INSERT ON fills WHEN NEW.mode = 'live'"
+        " BEGIN SELECT RAISE(ABORT, 'x'); END"
+    )
+    rig.upbit.fill(uid, Decimal(2), price=Decimal(1010))
     rig.advance(60)
     assert rig.status().error_paused is True
     assert rig.status().error_cause is ErrorPauseCause.SAVE
-    assert "A-29" in rig.codes()
+    (a29,) = [a for a in rig.alerts() if a.code == "A-29"]
+    assert a29.detail is not None
+    assert a29.detail.stage == "주문 저장"
+    assert rig.query("SELECT count(*) FROM fills") == [(0,)]
+    assert rig.query("SELECT state FROM orders WHERE uid = ?", uid) == [("open",)]
 
 
 # --- 정리의 취소 실패(3.6.4), F9 ----------------------------------------------------------------

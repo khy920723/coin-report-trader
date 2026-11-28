@@ -189,6 +189,7 @@ class LiveMixin:
     _write_start_snapshots: Callable[[ExchangeAccount], None]
     _is_blocked: Callable[[], bool]
     _on_key_changed: Callable[[], None]
+    _paper_engine: Callable[[], tuple[Any, Any]]
 
     def _init_live(
         self,
@@ -198,7 +199,8 @@ class LiveMixin:
     ) -> None:
         self._mode = Mode.PAPER
         self._exchange: Any = None
-        """지금 모드의 `ExchangePort`(실거래만. 모의매매는 3단계 엔진을 부른다)."""
+        """지금 모드의 `ExchangePort`(`select_exchange`가 고른 것. 켤 때 모드를 읽고 정한다.
+        모의매매는 `PaperExchange`, 실거래는 `UpbitExchange`. 실거래에서 키가 없으면 `None`)."""
         self._vault: SecretStore | None = vault
         self._real_vault = real_vault and vault is None
         self._transport: UpbitTransport | None = transport
@@ -449,6 +451,8 @@ class LiveMixin:
                     allowed=_allowed(),
                     clock=self._clock,
                 )
+        if self._mode is Mode.PAPER:
+            self._paper_engine()  # 모의매매의 `PaperExchange`를 고른다(15번)
         self._key_expiry_alert()
 
     def _post_live_views(self) -> None:
@@ -727,6 +731,7 @@ class LiveMixin:
             return
         self._mode = Mode.PAPER
         self._exchange = None
+        self._paper_engine()  # 모의매매의 `PaperExchange`로 바꾼다(15번)
         self._live_account = None
         self._cancel_pending.clear()
         self._emit_alert(alert_rules.live_off(leftover), True, module=_MODULE)

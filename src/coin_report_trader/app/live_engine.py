@@ -22,10 +22,10 @@ DB는 `storage/`의 함수로만 만진다.
 - 오류(3.5.5): 거래를 계속 막는 오류는 오류 멈춤과 A-23(일시 차단은 `_set_block`), 목록에 없는
   오류는 정해진 알림이 없는 일이면 A-24, 잠깐의 문제는 그 일만 실패다.
 
-실거래의 체결 쓰기: `storage/`에는 체결 한 줄만 쓰는 함수(가상 계정을 쓰지 않고, 주문을 `FILLED`로
-바꾸지 않는 것)와 그 주문의 쓴 `trade_key`를 읽는 함수가 없다(`record_fill`은 모의매매의 가상 계정을
-함께 쓴다). 그래서 체결은 `_live_fill_store`(`LiveFillStore`)로 쓰고, 그것이 없으면 쓰기의 실패
-(A-29 "주문 저장"과 오류 멈춤)다. 저장 함수가 생기면 그 자리에 잇는다(15번의 보고).
+실거래의 체결 쓰기: 체결은 `_live_fill_store`(`LiveFillStore`)로 쓴다. 실제 프로그램의 것은
+`StoredLiveFills`이고 `storage/trading.py`의 `record_live_fill`(체결 한 줄만. 가상 계정과 주문의
+상태는 쓰지 않는다)과 `fill_trade_keys`(그 주문의 쓴 `trade_key`)를 부른다. 쓰지 못하면
+(`StorageError`) A-29("주문 저장")와 오류 멈춤이다(3.6.4, M3 명세 3.10.2).
 """
 
 import logging
@@ -88,12 +88,10 @@ log = logging.getLogger(__name__)
 _MODULE: Final = __name__.removeprefix("coin_report_trader.")
 _ZERO: Final = Decimal(0)
 _FAR: Final = timedelta(days=36500)
-LIVE_FILL_UNSUPPORTED: Final = "실거래 체결을 쓰는 저장 함수가 없습니다"
-"""`_live_fill_store`가 없을 때의 `StorageError`의 글(모듈 설명)."""
 
 
 class LiveFillStore(Protocol):
-    """실거래 체결의 쓰기와 읽기(모듈 설명). `storage/`의 함수가 생기면 그것으로 갖춘다."""
+    """실거래 체결의 쓰기와 읽기(모듈 설명). 실제 프로그램은 `StoredLiveFills`다."""
 
     def write(self, conn: sqlite3.Connection, fill: FillRecord, trade_key: str) -> FillRecord:
         """체결 한 줄만 쓴다(주문의 상태와 계정은 쓰지 않는다). 실패는 `StorageError`다."""
@@ -102,6 +100,19 @@ class LiveFillStore(Protocol):
     def trade_keys(self, conn: sqlite3.Connection, order_id: int) -> frozenset[str]:
         """그 주문에 이미 쓴 체결의 `trade_key`."""
         ...
+
+
+class StoredLiveFills:
+    """`LiveFillStore`를 `storage/trading.py`의 함수로 갖춘 것(모듈 설명)."""
+
+    def write(self, conn: sqlite3.Connection, fill: FillRecord, trade_key: str) -> FillRecord:
+        return trade_store.record_live_fill(conn, fill, trade_key)
+
+    def trade_keys(self, conn: sqlite3.Connection, order_id: int) -> frozenset[str]:
+        return trade_store.fill_trade_keys(conn, order_id)
+
+    def __repr__(self) -> str:
+        return "StoredLiveFills()"
 
 
 class LiveEngineMixin:
@@ -139,8 +150,8 @@ class LiveEngineMixin:
         """앞의 목록을 읽을 때까지 쓴 실거래 체결의 가장 큰 번호(A-7)."""
         self._live_block_pending: tuple[float | None] | None = None
         """계정 화면이 받은 일시 차단(장치에 남아 매매의 다음 요청에 걸린다. 3.5.3)."""
-        self._live_fill_store: LiveFillStore | None = None
-        """실거래 체결을 쓰는 곳(모듈 설명). 없으면 쓰기의 실패다."""
+        self._live_fill_store: LiveFillStore = StoredLiveFills()
+        """실거래 체결을 쓰는 곳(모듈 설명)."""
 
     # --- 묻기 ---------------------------------------------------------------------------------
 
@@ -149,8 +160,12 @@ class LiveEngineMixin:
 
     def _live_ready(self) -> bool:
         """매매 엔진이 거래소에 요청해도 되는지. 계정 화면이 받은 일시 차단이 남아 있으면 그 차단을
-        지금 걸고(오류 멈춤과 A-23) 거짓이다(3.5.3, 3.15.5)."""
-        if self._exchange is None or (self._pause.error and not self._reconciling):
+        지금 걸고(오류 멈춤과 A-23) 거짓이다(3.5.3, 3.15.5). 모의매매의 경계(`PaperExchange`)는
+        실거래가 아니므로 거짓이다."""
+        exchange = self._exchange
+        if exchange is None or exchange.mode is not Mode.LIVE:
+            return False
+        if self._pause.error and not self._reconciling:
             return False
         pending = self._live_block_pending
         if pending is not None:
@@ -513,16 +528,10 @@ class LiveEngineMixin:
         return snapshot
 
     def _write_live_fill(self, record: FillRecord, trade_key: str) -> FillRecord:
-        store = self._live_fill_store
-        if store is None:
-            raise StorageError(LIVE_FILL_UNSUPPORTED)
-        return store.write(self._conn, record, trade_key)
+        return self._live_fill_store.write(self._conn, record, trade_key)
 
     def _live_trade_keys(self, order_id: int) -> frozenset[str]:
-        store = self._live_fill_store
-        if store is None:
-            return frozenset()
-        return store.trade_keys(self._conn, order_id)
+        return self._live_fill_store.trade_keys(self._conn, order_id)
 
     def _live_judge(self, order: OrderRecord) -> bool | None:
         """걸린·확인 안 됨 주문 하나를 조회한다. 끝났으면(체결, 취소, 보내지 않음) 참, 걸린 그대로면

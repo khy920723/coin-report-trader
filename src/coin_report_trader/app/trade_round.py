@@ -6,10 +6,16 @@
 
 - 회차의 주문(3.5.1의 4, 6, 7): 정리(걸린 주문의 취소 전 판정과 취소, 유의·주의를 위한 코인 목록)
   → 코인마다 세션이 끝난 차례로 계정 읽기(가상 계정, 새 현재가, 호가 단위) → `decide` →
-  `check_cancel_cap`, 손절 뒤라 새로 사지 않음, `check_buy` → 식별값을 먼저 저장하고 모의 엔진에
-  냄(바로 체결이면 체결을 쓴다) → 보고서의 `order_id`·`no_order_reason`·`elapsed_order_s`.
+  `check_cancel_cap`, 손절 뒤라 새로 사지 않음, `check_buy` → 최우선 호가를 읽고 식별값을 먼저
+  저장한 뒤 거래소 경계에 냄(바로 체결이면 경계가 체결을 쓴다) → 보고서의 `order_id`·
+  `no_order_reason`·`elapsed_order_s`.
 - 1분 점검(3.9): 코인마다 모의 체결 판정 → 현재가 읽기 → 손절 판정 → 필요하면 손절 매도. 켤 때도
   같은 점검을 한 번 하고(소급 판정. 3.7.4), 걸린 주문의 판정이 끝나기 전에는 회차를 돌리지 않는다.
+- 거래소 경계(M5 명세 4절 15번): 모의매매의 주문, 체결 판정, 취소는 `select_exchange`가 고른
+  `PaperExchange`(`ExchangePort`)로 한다. 가상 계정·주문·체결은 `SqlitePaperStore`로 읽고 쓴다.
+  3단계의 동작과 기록은 그대로다: 최우선 호가는 주문 줄을 쓰기 전에 한 번 읽어 `place`에 넘기고
+  (읽지 못하면 줄이 없다), 공개 시세를 요청하기 전의 검사(호가 소스가 없음, 일시 차단)와 그 실패의
+  처리, 체결을 쓰지 못한 때의 A-29는 이 모듈이 한다(`_PaperQuotes`, `_PaperStore`).
 - 멈춤과 오류 멈춤, 전량 매도, 상태 띠의 켜는 중 값은 `pause_flow`(25번)다. 이 모듈은 그 상태를 보고
   멈추기만 한다(오류 멈춤이면 1분 점검을 하지 않고, 사용자 멈춤이면 '손절 중지'일 때 하지 않는다).
 
@@ -62,6 +68,8 @@ from coin_report_trader.core import (
     coin_label,
 )
 from coin_report_trader.core.clock import KST
+from coin_report_trader.core.errors import ExchangeError
+from coin_report_trader.core.exchange import OrderSnapshot
 from coin_report_trader.core.texts import (
     BELOW_STOP_PRICE_UNREAD,
     CODE_NO_AVG,
@@ -80,7 +88,8 @@ from coin_report_trader.core.texts import (
 from coin_report_trader.storage import reports as report_store
 from coin_report_trader.storage import trading as trade_store
 from coin_report_trader.storage.backups import DAY_START_HOUR, backup_day
-from coin_report_trader.trading.live import live_krw_enough
+from coin_report_trader.storage.paper_store import SqlitePaperStore
+from coin_report_trader.trading.live import live_krw_enough, select_exchange
 from coin_report_trader.trading.orders import (
     BuyContext,
     check_buy,
@@ -93,20 +102,10 @@ from coin_report_trader.trading.orders import (
     widen_price,
 )
 from coin_report_trader.trading.paper import (
-    apply_fill,
     holding_of,
     is_dust,
-    lock_order,
     sellable_qty,
     unlock_order,
-)
-from coin_report_trader.trading.paper.fills import (
-    Fill,
-    PendingOrder,
-    fill_on_place,
-    first_judged_until,
-    judge_fills,
-    judge_window,
 )
 from coin_report_trader.trading.risk.pause import may_run_round, may_stop_check
 from coin_report_trader.trading.risk.stop_loss import (
@@ -152,6 +151,70 @@ def _day_bounds(now: datetime) -> tuple[datetime, datetime]:
     day = backup_day(now)
     start = datetime.combine(day, time(DAY_START_HOUR), tzinfo=KST)
     return start, start + timedelta(days=1)
+
+
+class _QuotesHeld(Exception):
+    """모의매매의 거래소 경계가 공개 시세를 요청하려 할 때 3단계 그대로 이 모듈이 멈춘 것: 요청하기
+    전의 검사에 걸렸거나(`error`가 `None`: 호가 소스가 없음, 일시 차단) 요청이 실패했다(`error`).
+    `PaperExchange`는 쓰기 전에 공개 시세를 읽으므로, 이 예외가 지나갈 때 경계는 아무것도 쓰지
+    않았다. 이 모듈이 받아 3단계의 차례로 다룬다(실패면 `_quote_failed`)."""
+
+    def __init__(self, error: QuoteError | None) -> None:
+        super().__init__("공개 시세를 요청하지 않음" if error is None else error.error_name)
+        self.error = error
+
+
+class _FillNotWritten(StorageError):
+    """모의 체결 한 줄(체결, 주문의 `FILLED`, 가상 계정)을 쓰지 못했다(M3 명세 3.7.2: A-29 "주문
+    저장"과 오류 멈춤). 처음 난 `StorageError`는 `__cause__`다. 다른 쓰기와 읽기의 실패는 3단계처럼
+    그대로 `StorageError`다."""
+
+
+class _PaperQuotes:
+    """`PaperExchange`에 넘기는 공개 시세(최우선 호가와 1분봉). 3단계의 요청 앞 검사를 그대로 한다:
+    호가 소스가 없거나 공개 시세를 요청하면 안 되면 요청하지 않고, 요청이 실패하면 그 오류를
+    `_QuotesHeld`에 담아 이 모듈로 올린다."""
+
+    def __init__(self, worker: "TradeMixin") -> None:
+        self._worker = worker
+
+    def _client(self) -> Any:
+        worker = self._worker
+        if not worker._has_book or worker._is_blocked():
+            raise _QuotesHeld(None)
+        return worker._client
+
+    def read_best_prices(self, market: str) -> tuple[Decimal, Decimal]:
+        client = self._client()
+        try:
+            ask, bid = client.read_best_prices(market)
+        except QuoteError as exc:
+            raise _QuotesHeld(exc) from exc
+        return Decimal(ask), Decimal(bid)
+
+    def fetch_minutes(self, market: str, *, since: datetime, until: datetime) -> Any:
+        client = self._client()
+        try:
+            return client.fetch_minutes(market, since=since, until=until)
+        except QuoteError as exc:
+            raise _QuotesHeld(exc) from exc
+
+    def __repr__(self) -> str:
+        return "_PaperQuotes()"
+
+
+class _PaperStore(SqlitePaperStore):
+    """모의매매의 `PaperStore`. 체결 쓰기의 실패만 `_FillNotWritten`으로 가른다(3단계의 A-29)."""
+
+    def __init__(self, conn: Any) -> None:
+        super().__init__(conn)
+        self.conn = conn
+
+    def apply_fill(self, fill: FillRecord, account: PaperAccount) -> FillRecord:
+        try:
+            return super().apply_fill(fill, account)
+        except StorageError as exc:
+            raise _FillNotWritten(str(exc)) from exc
 
 
 def _summary(order: OrderRecord | OrderPlan) -> str:
@@ -205,6 +268,7 @@ class TradeMixin:
     _live_close_unsent: Callable[[], None]
     _live_lists: Callable[[], bool]
     _live_startup: Callable[[], None]
+    _exchange: Any
 
     def _init_trade(self, min_order: Decimal | None) -> None:
         self._min_order: Decimal = MIN_ORDER_FALLBACK if min_order is None else min_order
@@ -235,6 +299,8 @@ class TradeMixin:
         self._round_number: int | None = None
         self._tick_error_name = NoOrderReason.NO_PRICE_OR_TICK.value
         """호가 단위를 마지막으로 읽지 못한 까닭의 오류 이름(주문 때의 A-2)."""
+        self._paper_made: tuple[Any, _PaperStore, Any] | None = None
+        """(연결, 저장 어댑터, `PaperExchange`). 연결마다 하나를 만든다(`_paper_engine`)."""
 
     # --- 묻기 ---------------------------------------------------------------------------------
 
@@ -274,6 +340,26 @@ class TradeMixin:
         if self._mode is Mode.LIVE:
             return self._live_limits_account()
         return self._db_account()
+
+    def _paper_engine(self) -> tuple[_PaperStore, Any]:
+        """모의매매의 저장 어댑터와 거래소 경계(`select_exchange`가 고른 `PaperExchange`. M5 명세
+        3.4, 15번). 연결마다 하나다. 모의매매이면 `_exchange`도 그것이다."""
+        made = self._paper_made
+        if made is None or made[0] is not self._conn:
+            store = _PaperStore(self._conn)
+            exchange = select_exchange(
+                Mode.PAPER,
+                paper_store=store,
+                client=None,
+                allowed=False,
+                quotes=_PaperQuotes(self),  # type: ignore[arg-type]
+                clock=self._clock,
+                min_order=self._min_order,
+            )
+            made = self._paper_made = (self._conn, store, exchange)
+        if self._mode is Mode.PAPER:
+            self._exchange = made[2]
+        return made[1], made[2]
 
     def _coin_min(self, market: str) -> Decimal:
         """그 코인의 최소 주문 금액(실거래는 그 코인의 주문 가능 정보. M5 명세 3.6.1)."""
@@ -554,32 +640,34 @@ class TradeMixin:
         return ok
 
     def _judge_one(self, order: OrderRecord) -> bool | None:
-        """주문 하나를 지금 바로 앞의 완성된 1분봉까지 판정한다. 체결이면 참, 걸린 그대로면 거짓,
-        1분봉을 받지 못하면 `None`. 실거래는 거래소에 조회한다(M5 명세 3.6.4)."""
+        """주문 하나를 지금 바로 앞의 완성된 1분봉까지 판정한다(거래소 경계의 `query`). 체결이면 참,
+        걸린 그대로면 거짓, 1분봉을 받지 못하면 `None`. 실거래는 거래소에 조회한다(M5 명세
+        3.6.4)."""
         if order.mode is Mode.LIVE:
             return self._live_judge(order)
-        judged = trade_store.read_judged_until(self._conn, order.order_id)
-        if judged is None:
-            judged = first_judged_until(order.created_utc)
-        window = judge_window(judged, self._clock.now())
-        if window is None:
-            return False
-        since, until = window
-        if not self._has_book or self._is_blocked():
-            return None
+        _, exchange = self._paper_engine()
         try:
-            minutes = self._client.fetch_minutes(order.market, since=since, until=until)
-        except QuoteError as exc:
+            snapshot: OrderSnapshot | None = exchange.query(order.uid)
+        except _QuotesHeld as held:
+            if held.error is not None:
+                self._quote_failed(order.market, STAGE_RECONCILE, held.error)
+            return None
+        except ExchangeError as exc:
             self._quote_failed(order.market, STAGE_RECONCILE, exc)
             return None
-        fills = judge_fills([PendingOrder(order, judged)], minutes)
-        if fills:
-            self._settle(order, fills[0])
+        except _FillNotWritten as exc:
+            self._paper_fill_failed(order, exc)
             return True
-        trade_store.set_judged_until(self._conn, order.order_id, until)
+        if snapshot is None:
+            return None
+        if snapshot.state is OrderState.FILLED:
+            self._paper_filled(order, snapshot)
+            return True
         return False
 
-    def _quote_failed(self, market: str | None, stage: str, exc: QuoteError) -> None:
+    def _quote_failed(
+        self, market: str | None, stage: str, exc: QuoteError | ExchangeError
+    ) -> None:
         """정해진 알림이 없는 일의 공개 시세 실패(3.8.4): 일시 차단은 차단을 걸고, 목록에 없는
         오류는 A-24(같은 코인, 같은 오류 이름은 60분에 한 번), 잠깐의 문제는 알림이 없다."""
         branch = error_branch(exc.error_name)
@@ -704,57 +792,100 @@ class TradeMixin:
             if judged:
                 self._cancel_pending.discard(order.order_id)
                 return False
-        now = self._clock.now()
         account = self._db_account()
         if order.kind is OrderKind.LIMIT and _locked(account, order):
-            trade_store.write_paper_account(self._conn, Mode.PAPER, unlock_order(account, order))
+            return self._paper_cancel(order, by_round)
+        # 묶인 것이 없는 주문(시장가, 넣을 때의 체결을 쓰지 못한 지정가): 풀 것 없이 닫는다(3단계)
         trade_store.update_order(
             self._conn,
             order.order_id,
             state=OrderState.CANCELED,
-            closed_at=now,
+            closed_at=self._clock.now(),
             canceled_by_round=True if by_round else None,
         )
         self._cancel_pending.discard(order.order_id)
         return True
 
+    def _paper_cancel(self, order: OrderRecord, by_round: bool) -> bool:
+        """판정한 뒤의 모의 취소를 거래소 경계로 한다(묶음을 풀고 `CANCELED`). 취소했으면 참."""
+        _, exchange = self._paper_engine()
+        try:
+            snapshot: OrderSnapshot | None = exchange.cancel(order.uid)
+        except _QuotesHeld as held:  # 판정한 뒤 분이 바뀌어 다시 판정하려다 멈춤
+            if held.error is not None:
+                self._quote_failed(order.market, STAGE_RECONCILE, held.error)
+            self._cancel_pending.add(order.order_id)
+            return False
+        except _FillNotWritten as exc:
+            self._paper_fill_failed(order, exc)
+            self._cancel_pending.discard(order.order_id)
+            return False
+        if snapshot is None:
+            return False
+        if snapshot.state is OrderState.FILLED:
+            self._paper_filled(order, snapshot)
+            return False
+        if snapshot.state is not OrderState.CANCELED:  # 판정하지 못해 걸린 그대로
+            self._cancel_pending.add(order.order_id)
+            return False
+        if by_round:
+            closed = trade_store.read_order(self._conn, order.order_id)
+            trade_store.update_order(
+                self._conn,
+                order.order_id,
+                state=OrderState.CANCELED,
+                closed_at=None if closed is None else closed.closed_utc,
+                canceled_by_round=True,
+            )
+        self._cancel_pending.discard(order.order_id)
+        return True
+
     def _place(self, plan: OrderPlan, round_id: int | None) -> int | str:
-        """식별값과 주문 값을 먼저 쓰고(3.8.3) 모의 엔진에 낸다. 낸 주문의 번호, 내지 못하면 그
-        오류 이름(최우선 호가를 읽지 못함)을 돌려준다. 주문을 쓰지 못하면 A-29("주문 저장")와
-        `StorageError`의 이름이다. 실거래는 거래소 경계에 낸다(M5 명세 3.6.2)."""
+        """최우선 호가를 읽고, 식별값과 주문 값을 먼저 쓰고(3.8.3) 거래소 경계(`PaperExchange`)에
+        낸 뒤 `sent` 1과 상태를 쓴다. 낸 주문의 번호, 내지 못하면 그 오류 이름(최우선 호가를 읽지
+        못함)을 돌려준다. 주문을 쓰지 못하면 A-29("주문 저장")와 `StorageError`의 이름이다. 실거래는
+        `UpbitExchange`에 낸다(M5 명세 3.6.2)."""
         if self._mode is Mode.LIVE:
             order_id, error = self._live_place(plan, round_id)
             if error is not None or order_id is None:
                 return error or ERROR_STORAGE
             return order_id
-        failed = self._read_book(plan.market)
-        if isinstance(failed, str):
-            return failed
-        ask, bid = failed
-        now = self._clock.now()
+        best = self._read_book(plan.market)  # 주문 줄을 쓰기 전에 읽는다(읽지 못하면 줄이 없다)
+        if isinstance(best, str):
+            return best
+        store, exchange = self._paper_engine()
         try:
-            order = trade_store.insert_order(
-                self._conn,
+            order = store.insert_order(
                 plan,
                 mode=Mode.PAPER,
                 uid=new_uid(),
                 round_id=round_id,
-                created_at=now,
-                judged_until=first_judged_until(now),
+                created_utc=self._clock.now(),
             )
         except StorageError as exc:
             self._emit_save_failed(STAGE_ORDER_SAVE, plan.market, exc, module=_MODULE)
             return ERROR_STORAGE
         self._rules.a29_succeeded(STAGE_ORDER_SAVE, plan.market)
-        fill = fill_on_place(order, ask, bid, now)
-        account = self._db_account()
-        if fill is None:
-            account = lock_order(account, order)
-            trade_store.write_paper_account(self._conn, Mode.PAPER, account)
-        trade_store.update_order(self._conn, order.order_id, state=OrderState.OPEN, sent=True)
+        account = self._db_account()  # A-27의 잔고 줄(묶음은 원화와 보유 수량을 바꾸지 않는다)
+        try:
+            result = exchange.place(plan, order.uid, best=best)
+        except _FillNotWritten as exc:  # 넣을 때의 체결을 쓰지 못함: 낸 주문은 걸린 그대로다
+            store.update_order(order.order_id, state=OrderState.OPEN, sent=True)
+            self._order_alert(order, plan.amount, account)
+            self._paper_fill_failed(order, exc)
+            return order.order_id
+        snapshot = result.snapshot
+        assert snapshot is not None  # 최우선 호가를 넘겼으므로 모의매매는 늘 낸다
+        filled = snapshot.state is OrderState.FILLED
+        store.update_order(
+            order.order_id,
+            state=snapshot.state,
+            closed_utc=snapshot.trades[0].filled_utc if filled else None,
+            sent=True,
+        )
         self._order_alert(order, plan.amount, account)
-        if fill is not None:
-            self._settle(order, fill)
+        if filled:
+            self._paper_filled(order, snapshot)
         return order.order_id
 
     def _read_book(self, market: str) -> tuple[Decimal, Decimal] | str:
@@ -770,34 +901,21 @@ class TradeMixin:
             return str(exc.error_name)
         return Decimal(ask), Decimal(bid)
 
-    def _settle(self, order: OrderRecord, fill: Fill) -> FillRecord | None:
-        """체결 하나를 계정에 넣어 체결 줄, 주문의 `FILLED`, 계정을 한 트랜잭션에서 쓴다. 쓰지
-        못하면 아무것도 바뀌지 않고 A-29("주문 저장")다."""
-        settlement = apply_fill(self._db_account(), order, fill)
-        record = FillRecord(
-            fill_id=0,
-            order_id=order.order_id,
-            mode=Mode.PAPER,
-            market=order.market,
-            side=order.side,
-            price=fill.price,
-            qty=fill.qty,
-            fee=settlement.fee,
-            realized_pnl=settlement.realized_pnl,
-            filled_utc=fill.filled_utc,
-        )
-        try:
-            written: FillRecord = trade_store.record_fill(self._conn, record, settlement.account)
-        except StorageError as exc:
-            self._emit_save_failed(STAGE_ORDER_SAVE, order.market, exc, module=_MODULE)
-            return None
+    def _paper_filled(self, order: OrderRecord, snapshot: OrderSnapshot) -> None:
+        """거래소 경계가 쓴 모의 체결(체결 줄, 주문의 `FILLED`, 계정을 한 트랜잭션. M3 명세 3.7.2)의
+        뒤: A-29의 되풀이를 풀고 A-28(셋째 줄은 체결 뒤의 가상 계정)."""
+        trade = snapshot.trades[0]
         self._rules.a29_succeeded(STAGE_ORDER_SAVE, order.market)
         self._cancel_pending.discard(order.order_id)
-        line = self._balance_line(order.market, fill.price * fill.qty, settlement.account)
+        line = self._balance_line(order.market, trade.price * trade.qty, self._db_account())
         side = ORDER_SIDE_TITLES[order.side]
-        spec = alert_rules.filled(order.market, side, fill.qty, fill.price, line)
+        spec = alert_rules.filled(order.market, side, trade.qty, trade.price, line)
         self._emit_alert(spec, True, module=_MODULE)
-        return written
+
+    def _paper_fill_failed(self, order: OrderRecord, exc: _FillNotWritten) -> None:
+        """모의 체결을 쓰지 못함: 아무것도 바뀌지 않았고 A-29("주문 저장")와 오류 멈춤이다."""
+        cause = exc.__cause__ if isinstance(exc.__cause__, StorageError) else exc
+        self._emit_save_failed(STAGE_ORDER_SAVE, order.market, cause, module=_MODULE)
 
     def _order_alert(self, order: OrderRecord, amount: Decimal, account: PaperAccount) -> None:
         line = self._balance_line(order.market, amount, account)

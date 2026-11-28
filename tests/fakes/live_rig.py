@@ -10,8 +10,9 @@
   `KRW-AAA`의 모의 회차 N(30)회, 모의매매의 전량 매도 기록, 가짜 업비트의 수수료율 0.0005와 최소
   주문 금액 5,000원, 실거래 설정은 예산 100,000원·`KRW-AAA` 100%·하루 손실 한도 3,000원, 가짜
   업비트의 계정은 원화 200,000원·보유 없음. 사용자 멈춤 상태로 켠다(`paused`).
-- `SqlLiveFills`: 실거래 체결의 쓰기(시험만의 것. `storage/`에 실거래 체결만 쓰는 함수가 생기기
-  전에 `DataWorker._live_fill_store`에 넣는다).
+- `SqlLiveFills`: 실거래 체결의 쓰기와 읽기(`DataWorker._live_fill_store`에 넣는다). 진짜 저장
+  함수(`storage/trading.py`의 `record_live_fill`, `fill_trade_keys`)를 부른다. `fills=False`이면
+  넣지 않고 프로그램의 것(`StoredLiveFills`)을 그대로 쓴다.
 """
 
 import sqlite3
@@ -37,9 +38,8 @@ from coin_report_trader.core import (
 )
 from coin_report_trader.storage import reports as report_store
 from coin_report_trader.storage import trading as trade_store
-from coin_report_trader.storage.database import migrate, open_database, transaction
+from coin_report_trader.storage.database import migrate, open_database
 from coin_report_trader.storage.settings import write_key_created, write_trade_mode
-from coin_report_trader.storage.times import format_utc
 from coin_report_trader.vault import UPBIT_ACCESS_KEY_NAME, UPBIT_SECRET_KEY_NAME
 from fakes.ai import FakeAiRunner
 from fakes.clock import FakeClock
@@ -63,32 +63,14 @@ TODAY = date(2026, 1, 5)
 
 
 class SqlLiveFills:
-    """실거래 체결 한 줄을 쓰고 읽는 시험의 것(`app/live_engine.py`의 `LiveFillStore`)."""
+    """실거래 체결 한 줄을 쓰고 읽는 것(`app/live_engine.py`의 `LiveFillStore`). 진짜 저장 함수를
+    부른다."""
 
     def write(self, conn: sqlite3.Connection, fill: FillRecord, trade_key: str) -> FillRecord:
-        with transaction(conn):
-            cursor = conn.execute(
-                "INSERT INTO fills (order_id, mode, market, side, price, qty, fee, realized_pnl,"
-                " filled_utc, trade_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    fill.order_id,
-                    fill.mode.value,
-                    fill.market,
-                    fill.side.value,
-                    str(fill.price),
-                    str(fill.qty),
-                    str(fill.fee),
-                    None if fill.realized_pnl is None else str(fill.realized_pnl),
-                    format_utc(fill.filled_utc),
-                    trade_key,
-                ),
-            )
-        assert cursor.lastrowid is not None
-        return replace(fill, fill_id=cursor.lastrowid)
+        return trade_store.record_live_fill(conn, fill, trade_key)
 
     def trade_keys(self, conn: sqlite3.Connection, order_id: int) -> frozenset[str]:
-        rows = conn.execute("SELECT trade_key FROM fills WHERE order_id = ?", (order_id,))
-        return frozenset(str(row[0]) for row in rows.fetchall())
+        return trade_store.fill_trade_keys(conn, order_id)
 
 
 @dataclass
