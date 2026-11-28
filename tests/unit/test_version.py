@@ -70,11 +70,11 @@ def test_the_four_places_carry_the_same_version_in_the_required_form(version_inf
     assert fields["strings"]["FileVersion"] == f"v{version}"
 
 
-def test_this_release_is_v0_1_4(version_info) -> None:
-    assert coin_report_trader.__version__ == "0.1.4"
-    fields = version_info.version_fields("0.1.4")
-    assert fields["filevers"] == fields["prodvers"] == (0, 1, 4, 0)
-    assert fields["strings"]["ProductVersion"] == fields["strings"]["FileVersion"] == "v0.1.4"
+def test_this_release_is_v0_2_0(version_info) -> None:
+    assert coin_report_trader.__version__ == "0.2.0"
+    fields = version_info.version_fields("0.2.0")
+    assert fields["filevers"] == fields["prodvers"] == (0, 2, 0, 0)
+    assert fields["strings"]["ProductVersion"] == fields["strings"]["FileVersion"] == "v0.2.0"
 
 
 def test_the_fields_follow_section_3_15(version_info) -> None:
