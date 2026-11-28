@@ -336,7 +336,7 @@ def test_d32_a_schema_two_database_gets_a_copy_before_it_is_raised(
     timer.start(0)
     assert run_gui([], services=services) == 0
     timer.stop()
-    copies = sorted((paths.root / "backups").glob("before-schema-3-*.db"))
+    copies = sorted((paths.root / "backups").glob("before-schema-4-*.db"))
     assert len(copies) == 1  # 올리기 전에 사본이 먼저 생겼다
     check = open_database(copies[0])
     try:
@@ -345,7 +345,7 @@ def test_d32_a_schema_two_database_gets_a_copy_before_it_is_raised(
         check.close()
     live = open_database(paths.database_file)
     try:
-        assert schema_version(live) == 3
+        assert schema_version(live) == 4
     finally:
         live.close()
 
