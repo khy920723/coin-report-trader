@@ -55,7 +55,7 @@ from coin_report_trader.core import (
 )
 from coin_report_trader.core.texts import ERROR_NETWORK
 from coin_report_trader.storage import database
-from coin_report_trader.storage.database import open_database, schema_version
+from coin_report_trader.storage.database import SCHEMA_VERSION, open_database, schema_version
 from coin_report_trader.ui import screen_widget, select_screen
 
 D = Decimal
@@ -336,7 +336,8 @@ def test_d32_a_schema_two_database_gets_a_copy_before_it_is_raised(
     timer.start(0)
     assert run_gui([], services=services) == 0
     timer.stop()
-    copies = sorted((paths.root / "backups").glob("before-schema-3-*.db"))
+    # 사본의 이름은 올린 뒤의 번호다(스키마 3의 명세는 `before-schema-3-…`. 5단계 11번이 4로 올렸다)
+    copies = sorted((paths.root / "backups").glob(f"before-schema-{SCHEMA_VERSION}-*.db"))
     assert len(copies) == 1  # 올리기 전에 사본이 먼저 생겼다
     check = open_database(copies[0])
     try:
@@ -345,7 +346,7 @@ def test_d32_a_schema_two_database_gets_a_copy_before_it_is_raised(
         check.close()
     live = open_database(paths.database_file)
     try:
-        assert schema_version(live) == 3
+        assert schema_version(live) == SCHEMA_VERSION
     finally:
         live.close()
 
