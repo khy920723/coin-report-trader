@@ -45,6 +45,7 @@ from coin_report_trader.core import (
     ReportView,
     RoundItem,
     SettingsView,
+    TradeSettings,
     UiUpdate,
 )
 from coin_report_trader.storage import reports as report_store
@@ -209,10 +210,12 @@ def seed_db(
     coins: tuple[str, ...] = (AAA,),
     choices: tuple[AiChoice, ...] = FOUR,
     seed: Callable[[Any], None] | None = None,
+    trade: TradeSettings | None = None,
 ) -> Path:
     """`root/data/app.db`를 만들어 설정을 쓴다.
 
-    `choices`가 빈 튜플이면 네 칸이 없다(2단계 전의 기록).
+    `choices`가 빈 튜플이면 네 칸이 없다(2단계 전의 기록). `trade`는 3단계 값(M3 수용 시험이 정한다.
+    없으면 `planted_trade`의 만든 값).
     """
     db = root / "data" / "app.db"
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +231,7 @@ def seed_db(
             candle_unit=HOUR,
             candle_count=100,
             ai_choices=choices,
-            trade=planted_trade(coins),
+            trade=trade if trade is not None else planted_trade(coins),
         )
         write_settings(conn, view)
         if seed is not None:
@@ -261,12 +264,14 @@ def make_rig(
     discord: FakeDiscord | None = None,
     vault: FakeVault | None = None,
     saved: dict[AlertCategory, str] | None = None,
+    trade: TradeSettings | None = None,
+    min_order: Decimal | None = None,
 ) -> Rig:
     """`fresh`이면 `root` 아래에 DB를 새로 만들어 설정을 쓴다. 아니면 있는 DB를 그대로 쓴다."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "logs").mkdir(exist_ok=True)
     if fresh:
-        seed_db(root, coins=coins, choices=choices, seed=seed)
+        seed_db(root, coins=coins, choices=choices, seed=seed, trade=trade)
     clock = clock or FakeClock()
     quote = quote or fake_quote(clock, coins)
     runner = runner or FakeAiRunner()
@@ -283,6 +288,7 @@ def make_rig(
         sink=sink,
         send=send,
         ai=runner,
+        min_order=min_order,
     )
     send.attach(data)
     return Rig(data, send, sink, clock, quote, runner, discord, vault, root)
