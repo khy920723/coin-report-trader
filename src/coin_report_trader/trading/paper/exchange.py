@@ -10,9 +10,12 @@
   `MIN_ORDER_FALLBACK` 5,000원)다.
 - 주문(`place`): `app`이 식별값과 주문 값을 먼저 `orders`에 쓴 뒤(3.8.3) 부른다. 최우선 호가를 읽어
   넣을 때의 바로 체결이면 체결 한 줄과 계정을 한 트랜잭션으로 쓰고(`PaperStore.apply_fill`), 아니면
-  묶음을 더해 계정을 쓴다. 최우선 호가를 읽지 못하면 내지 않고 그 오류 이름을 준다(A-2).
+  묶음을 더해 계정을 쓴다. 최우선 호가를 읽지 못하면 내지 않고 그 오류 이름을 준다(A-2). 3단계의
+  차례(최우선 호가를 읽은 뒤에 주문 줄을 씀. 읽지 못하면 줄이 없다)대로 `app`이 주문 줄을 쓰기 전에
+  최우선 호가를 읽었으면 그 값을 `best`로 넘기고, 그때는 다시 읽지 않는다.
 - 조회(`query`): 걸린 지정가 주문을 1분봉으로 판정한다(M3 명세 3.7.2). 마지막으로 본 1분봉의 끝은
-  이 객체가 기억하고, 모르면(다시 켬) 건 때를 올림한 분부터 본다(3.7.4의 소급 판정과 같다).
+  `PaperStore`의 `orders.judged_until_utc`로 읽고 쓴다(M3 명세 3.12). 없으면 건 때를 올림한 분부터
+  본다. 다시 켜도 저장된 자리부터 이어 본다(3.7.4의 소급 판정).
 - 취소(`cancel`): 취소하기 전에 한 번 더 판정한다. 체결이면 취소하지 않고 체결로 쓴다. 1분봉을 받지
   못하면 취소하지 않고 걸린 그대로 준다(취소가 확인되지 않은 주문. M3 명세 3.7.2).
 - 모의매매에는 부분 체결, 취소 실패, 주문 거절, 응답 없음이 없다(9절).
@@ -78,7 +81,6 @@ class PaperExchange:
         self._quotes = quotes
         self._clock = clock
         self._min_order = MIN_ORDER_FALLBACK if min_order is None else min_order
-        self._judged: dict[str, datetime] = {}
 
     def __repr__(self) -> str:
         return "PaperExchange()"
@@ -111,7 +113,11 @@ class PaperExchange:
             max_total=None,
         )
 
-    def place(self, plan: OrderPlan, uid: str) -> PlaceResult:
+    def place(
+        self, plan: OrderPlan, uid: str, *, best: tuple[Decimal, Decimal] | None = None
+    ) -> PlaceResult:
+        """`best`는 `app`이 주문 줄을 쓰기 전에 읽은 (최우선 매도 호가, 최우선 매수 호가)다(모듈
+        설명). 없으면 여기서 읽는다."""
         order = self._store.find_order(uid)
         if order is None or order.state is not OrderState.OPEN:
             raise ValueError("식별값과 주문 값을 먼저 걸림으로 써야 한다(3.8.3)")
@@ -123,20 +129,20 @@ class PaperExchange:
             plan.qty,
         ):
             raise ValueError("저장한 주문과 낼 주문이 다르다")
-        failed: QuoteError | None = None
-        best = (Decimal(0), Decimal(0))
-        try:
-            best = self._quotes.read_best_prices(plan.market)
-        except QuoteError as exc:
-            failed = exc
-        if failed is not None:
-            return PlaceResult(snapshot=None, error_name=failed.error_name, unknown=False)
+        if best is None:
+            failed: QuoteError | None = None
+            best = (Decimal(0), Decimal(0))
+            try:
+                best = self._quotes.read_best_prices(plan.market)
+            except QuoteError as exc:
+                failed = exc
+            if failed is not None:
+                return PlaceResult(snapshot=None, error_name=failed.error_name, unknown=False)
         ask, bid = best
         fill = fill_on_place(order, ask, bid, self._clock.now())
         if fill is not None:
             return PlaceResult(snapshot=self._settle(order, fill), error_name=None, unknown=False)
         self._store.write_account(Mode.PAPER, lock_order(self._account(), order))
-        self._judged[uid] = first_judged_until(order.created_utc)
         return PlaceResult(snapshot=_snapshot(order, ()), error_name=None, unknown=False)
 
     def query(self, uid: str) -> OrderSnapshot | None:
@@ -145,8 +151,8 @@ class PaperExchange:
             return None
         if order.state is not OrderState.OPEN:
             return self._closed_snapshot(order)
-        minutes, until = self._minutes(order)
-        return self._judge(order, minutes, until)
+        minutes, judged, until = self._minutes(order)
+        return self._judge(order, minutes, judged, until)
 
     def cancel(self, uid: str) -> OrderSnapshot | None:
         order = self._store.find_order(uid)
@@ -156,20 +162,20 @@ class PaperExchange:
             return self._closed_snapshot(order)
         failed = False
         minutes: tuple[MinuteCandle, ...] = ()
+        judged_until = first_judged_until(order.created_utc)
         until: datetime | None = None
         try:
-            minutes, until = self._minutes(order)
+            minutes, judged_until, until = self._minutes(order)
         except ExchangeError:
             failed = True
         if failed:
             return _snapshot(order, ())  # 판정하지 못하면 취소하지 않는다(걸린 그대로)
-        judged = self._judge(order, minutes, until)
+        judged = self._judge(order, minutes, judged_until, until)
         if judged.state is not OrderState.OPEN:
             return judged
         now = self._clock.now()
         self._store.write_account(Mode.PAPER, unlock_order(self._account(), order))
         self._store.update_order(order.order_id, state=OrderState.CANCELED, closed_utc=now)
-        self._judged.pop(uid, None)
         return _snapshot(replace(order, state=OrderState.CANCELED, closed_utc=now), ())
 
     def open_orders(self, market: str) -> tuple[OrderSnapshot, ...]:
@@ -183,12 +189,20 @@ class PaperExchange:
             raise ValueError("가상 계정이 아직 없다(처음 설정 전)")
         return account
 
-    def _minutes(self, order: OrderRecord) -> tuple[tuple[MinuteCandle, ...], datetime | None]:
-        """판정할 1분봉과 그 구간의 끝. 볼 봉이 없으면 `((), None)`. 받지 못하면 `ExchangeError`."""
-        judged = self._judged.get(order.uid, first_judged_until(order.created_utc))
+    def _judged_until(self, order: OrderRecord) -> datetime:
+        """저장된 판정한 때. 없으면 건 때를 올림한 분이다(3.7.2)."""
+        stored = self._store.read_judged_until(order.order_id)
+        return first_judged_until(order.created_utc) if stored is None else stored
+
+    def _minutes(
+        self, order: OrderRecord
+    ) -> tuple[tuple[MinuteCandle, ...], datetime, datetime | None]:
+        """판정할 1분봉, 저장된 판정한 때, 구간의 끝. 볼 봉이 없으면 끝이 `None`이다. 받지 못하면
+        `ExchangeError`."""
+        judged = self._judged_until(order)
         window = judge_window(judged, self._clock.now())
         if window is None:
-            return (), None
+            return (), judged, None
         since, until = window
         failed: QuoteError | None = None
         minutes: tuple[MinuteCandle, ...] = ()
@@ -198,18 +212,21 @@ class PaperExchange:
             failed = exc
         if failed is not None:
             raise ExchangeError(failed.error_name, failed.retry_after)
-        return minutes, until
+        return minutes, judged, until
 
     def _judge(
-        self, order: OrderRecord, minutes: tuple[MinuteCandle, ...], until: datetime | None
+        self,
+        order: OrderRecord,
+        minutes: tuple[MinuteCandle, ...],
+        judged: datetime,
+        until: datetime | None,
     ) -> OrderSnapshot:
         if until is None:
             return _snapshot(order, ())
-        judged = self._judged.get(order.uid, first_judged_until(order.created_utc))
         fills = judge_fills([PendingOrder(order, judged)], minutes)
         if fills:
             return self._settle(order, fills[0])
-        self._judged[order.uid] = until
+        self._store.set_judged_until(order.order_id, until)
         return _snapshot(order, ())
 
     def _settle(self, order: OrderRecord, fill: Fill) -> OrderSnapshot:
@@ -228,7 +245,6 @@ class PaperExchange:
             filled_utc=fill.filled_utc,
         )
         written = self._store.apply_fill(record, settlement.account)
-        self._judged.pop(order.uid, None)
         filled = replace(order, state=OrderState.FILLED, closed_utc=fill.filled_utc)
         return _snapshot(filled, (written,))
 

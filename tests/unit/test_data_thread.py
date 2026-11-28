@@ -26,6 +26,7 @@ from coin_report_trader.core import (
     CandleUnit,
     CoinTradeView,
     CoinView,
+    LiveStatusView,
     LoadState,
     Market,
     MarketsView,
@@ -38,6 +39,7 @@ from coin_report_trader.core import (
     TodayView,
     TradeStatusView,
     UiUpdate,
+    UpbitKeyView,
     empty_bar_stats,
 )
 from coin_report_trader.core.texts import (
@@ -77,8 +79,8 @@ class Sink:
     items: list[UiUpdate] = field(default_factory=list)
     trade: list[UiUpdate] = field(default_factory=list)
     """3단계의 매매 값(`CoinTradeView`, `TodayView`, `RoundNowView`. M3 명세 3.17.2와 25번의
-    `TradeStatusView`, `PerformanceView`). 1·2단계의 값을 보는 시험의 `items`에 섞이지 않게 따로
-    모은다."""
+    `TradeStatusView`, `PerformanceView`)과 5단계의 모드와 키의 값(`LiveStatusView`,
+    `UpbitKeyView`. M5 명세 15번). 1·2단계의 값을 보는 시험의 `items`에 섞이지 않게 따로 모은다."""
     threads: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -86,7 +88,13 @@ class Sink:
         with self.lock:
             if isinstance(
                 update,
-                CoinTradeView | TodayView | RoundNowView | TradeStatusView | PerformanceView,
+                CoinTradeView
+                | TodayView
+                | RoundNowView
+                | TradeStatusView
+                | PerformanceView
+                | LiveStatusView
+                | UpbitKeyView,
             ):
                 self.trade.append(update)
             else:

@@ -37,6 +37,7 @@ from coin_report_trader.core.texts import (
     STAGE_ORDER_SAVE,
     STAGE_PAUSE_SAVE,
     STAGE_REPORT_SAVE,
+    STAGE_SELL_ALL,
     STARTING_RECONCILE,
     STARTING_STOP_CHECK,
     kst_when_text,
@@ -110,6 +111,12 @@ class PauseMixin:
     stop_ai: Callable[[], None]
     _rules: Any
     _min_order: Decimal
+    _mode: Mode
+    _trade_account: Callable[[], Any]
+    _coin_min: Callable[[str], Decimal]
+    _engine_read: Callable[..., Any]
+    _live_reconcile: Callable[[], bool]
+    _post_live_views: Callable[[], None]
 
     def _init_pause(self) -> None:
         self._pause = PauseState()
@@ -179,7 +186,7 @@ class PauseMixin:
         try:
             pause_id = trade_store.insert_pause(
                 self._conn,
-                mode=Mode.PAPER,
+                mode=self._mode,
                 kind=kind,
                 cause=cause,
                 detail=detail,
@@ -204,8 +211,11 @@ class PauseMixin:
     def _restore_pauses(self) -> None:
         """켤 때: 풀리지 않은 멈춤을 읽어 이어 가고, 앞 실행에서 표에 쓰지 못한 A-29·A-30이 있었으면
         오류 멈춤으로 다시 든다(3.10.2의 '메모리의 오류 멈춤')."""
-        try:
-            rows = trade_store.current_pauses(self._conn, Mode.PAPER)
+        try:  # 모드를 바꿔도 멈춤은 이어진다: 두 모드의 풀리지 않은 멈춤을 모두 읽는다
+            rows = (
+                *trade_store.current_pauses(self._conn, Mode.PAPER),
+                *trade_store.current_pauses(self._conn, Mode.LIVE),
+            )
         except StorageError as exc:
             log.warning("멈춤을 읽지 못했습니다: %s", exc)
             rows = ()
@@ -249,7 +259,7 @@ class PauseMixin:
         self._post_trade_views()
 
     def _cancel_all_orders(self) -> None:
-        for order in trade_store.list_open_orders(self._conn, Mode.PAPER):
+        for order in trade_store.list_open_orders(self._conn, self._mode):
             self._cancel_order(order)
 
     def _discard_running_round(self) -> None:
@@ -321,9 +331,12 @@ class PauseMixin:
         self._start_checks(reconciled=True)
 
     def _reconcile(self) -> bool:
-        """걸린 주문을 모두 1분봉으로 소급 판정한다(3.7.4). 모두 판정했으면 참."""
+        """걸린 주문을 모두 1분봉으로 소급 판정한다(3.7.4). 모두 판정했으면 참. 실거래는 거래소와
+        맞춰 본다(M5 명세 3.6.5)."""
         self._reconciling = True
         try:
+            if self._mode is Mode.LIVE:
+                return bool(self._live_reconcile())
             return bool(self._judge_orders(trade_store.list_open_orders(self._conn, Mode.PAPER)))
         finally:
             self._reconciling = False
@@ -352,6 +365,8 @@ class PauseMixin:
     def _sell_all_begin(self) -> None:
         self._sell_all_state = {}
         self._sell_all_alerted = set()
+        if self._mode is Mode.LIVE:
+            self._engine_read(STAGE_SELL_ALL)  # 취소한 뒤의 실제 계정(M5 명세 3.6.1)
         for market in self._trade_coins():
             self._sell_all_coin(market)
 
@@ -367,7 +382,12 @@ class PauseMixin:
         trade: TradeSettings | None = self._trade()
         if trade is None:
             return
-        holding = holding_of(self._db_account(), market)
+        try:
+            account = self._trade_account()
+        except StorageError:
+            self._sell_all_failed(market, SellAllResult.RETRYING, _ZERO, "")
+            return
+        holding = holding_of(account, market)
         if holding is None or holding.qty <= 0:
             self._sell_all_state[market] = (SellAllResult.DONE, None)
             return
@@ -385,7 +405,11 @@ class PauseMixin:
             self._sell_all_failed(market, SellAllResult.RETRYING, qty, self._tick_error_name)
             return
         decision = stop_loss_plan(
-            holding, price, trade, OrderRules(tick, self._min_order), reason=OrderReason.SELL_ALL
+            holding,
+            price,
+            trade,
+            OrderRules(tick, self._coin_min(market)),
+            reason=OrderReason.SELL_ALL,
         )
         if decision.plan is None:
             self._sell_all_failed(market, SellAllResult.LEFT, qty, TOO_SMALL_NAME)
@@ -394,7 +418,9 @@ class PauseMixin:
         if isinstance(result, str):
             self._sell_all_failed(market, SellAllResult.RETRYING, qty, result)
             return
-        left = holding_of(self._db_account(), market)
+        if self._mode is Mode.LIVE:
+            self._engine_read(STAGE_SELL_ALL, market)
+        left = holding_of(self._trade_account(), market)
         if left is None or left.qty <= 0:
             self._sell_all_state[market] = (SellAllResult.DONE, None)
         else:
@@ -424,7 +450,7 @@ class PauseMixin:
         """오류 멈춤 동안 취소하지 못한 주문의 요약("{코인} {주문 요약}")."""
         items: list[str] = []
         try:
-            orders = trade_store.list_open_orders(self._conn, Mode.PAPER)
+            orders = trade_store.list_open_orders(self._conn, self._mode)
         except StorageError:
             return ()
         for order in orders:
@@ -434,6 +460,10 @@ class PauseMixin:
     def _post_pause_views(self) -> None:
         self._post_trade_status()
         self._post_round_now()
+        try:  # 켜는 조건과 키를 고칠 수 있는지가 멈춤 상태를 본다(M5 명세 3.7.2, 3.8)
+            self._post_live_views()
+        except Exception as exc:
+            log.warning("실거래 상태를 보내지 못했습니다: %s", type(exc).__name__)
 
     def _post_trade_status(self) -> None:
         trade: TradeSettings | None = self._trade()
@@ -454,6 +484,7 @@ class PauseMixin:
                 blocked_until=self._blocked_until if exchange else None,
                 uncanceled=self._uncanceled_orders() if state.error else (),
                 as_of=now,
+                mode=self._mode,
             )
         )
 

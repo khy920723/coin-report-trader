@@ -2,7 +2,8 @@
 더한 열. 가격·수량·금액은 `Decimal`의 글, 시각은 UTC 글이다(M1 명세 3.7).
 
 쓰기는 모두 하나의 트랜잭션이고 DB 오류는 `StorageError`다. 체결 하나는 `fills`의 줄, 그 주문의
-`FILLED`와 닫은 때, 가상 계정을 한 트랜잭션에서 쓴다(3.7.2). 주문, 체결, 멈춤, 설정 바뀜을 지우는
+`FILLED`와 닫은 때, 가상 계정을 한 트랜잭션에서 쓴다(3.7.2). 실거래의 체결은 체결 한 줄만 쓴다
+(`record_live_fill`. M5 명세 3.6.4). 주문, 체결, 멈춤, 설정 바뀜을 지우는
 함수는 없다(REQ-DATA-008). 이름은 명세가 정하지 않아 이 파일이 정했다.
 """
 
@@ -596,6 +597,66 @@ def record_fill(
         realized_pnl=fill.realized_pnl,
         filled_utc=fill.filled_utc,
     )
+
+
+def record_live_fill(conn: sqlite3.Connection, fill: FillRecord, trade_key: str) -> FillRecord:
+    """실거래 체결 한 줄만 쓴다(M5 명세 3.6.4, 3.9). 가상 계정은 쓰지 않고, 그 주문의 상태와 닫은
+    때도 바꾸지 않는다(실거래는 상태가 아니라 체결 수량으로 판정하고, 상태와 체결 수량은 부르는 쪽이
+    조회의 결과로 따로 쓴다. 3.6.3, 3.6.4). `trade_key`는 거래소의 체결 식별값이고, 같은 주문의
+    같은 `trade_key`를 두 번 쓰면 `StorageError`다(`UNIQUE (order_id, trade_key)`). 그 실거래 주문이
+    없어도 `StorageError`다. `fill.fill_id`는 보지 않고 새 번호가 든 줄을 돌려준다. 모의매매의
+    체결은 `record_fill`로 쓴다(실거래 체결이 아니면 `ValueError`)."""
+    if Mode(fill.mode) is not Mode.LIVE:
+        raise ValueError("실거래 체결만 쓴다(모의매매는 record_fill)")
+    if not trade_key:
+        raise ValueError("실거래 체결에는 거래소의 체결 식별값이 있어야 한다")
+    values = (
+        fill.order_id,
+        Mode.LIVE.value,
+        fill.market,
+        OrderSide(fill.side).value,
+        str(fill.price),
+        str(fill.qty),
+        str(fill.fee),
+        _text(fill.realized_pnl),
+        format_utc(fill.filled_utc),
+        trade_key,
+    )
+    with translate_errors("주문 저장"), transaction(conn):
+        found = conn.execute(
+            "SELECT 1 FROM orders WHERE id = ? AND mode = ?", (fill.order_id, Mode.LIVE.value)
+        ).fetchone()
+        if found is None:
+            raise StorageError("체결의 주문이 없습니다")
+        cursor = conn.execute(
+            "INSERT INTO fills (order_id, mode, market, side, price, qty, fee, realized_pnl,"
+            " filled_utc, trade_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            values,
+        )
+        fill_id = cursor.lastrowid
+    if fill_id is None:
+        raise StorageError("체결 번호를 받지 못했습니다")
+    return FillRecord(
+        fill_id=fill_id,
+        order_id=fill.order_id,
+        mode=Mode.LIVE,
+        market=fill.market,
+        side=fill.side,
+        price=fill.price,
+        qty=fill.qty,
+        fee=fill.fee,
+        realized_pnl=fill.realized_pnl,
+        filled_utc=fill.filled_utc,
+    )
+
+
+def fill_trade_keys(conn: sqlite3.Connection, order_id: int) -> frozenset[str]:
+    """그 주문에 이미 쓴 체결의 `trade_key`(실거래의 "아직 쓰지 않은 체결"을 가른다. 3.6.4)."""
+    with translate_errors("체결 읽기"):
+        rows = conn.execute(
+            "SELECT trade_key FROM fills WHERE order_id = ?", (order_id,)
+        ).fetchall()
+    return frozenset(str(row[0]) for row in rows)
 
 
 def fills_of(conn: sqlite3.Connection, order_id: int) -> tuple[FillRecord, ...]:

@@ -231,7 +231,7 @@ def test_the_paper_store_is_a_protocol_of_account_orders_and_fills() -> None:
     members = {n for n in dir(PaperStore) if not n.startswith("_")}
     assert members == {
         "read_account", "write_account", "insert_order", "update_order", "find_order",
-        "open_orders", "apply_fill", "fills_of",
+        "open_orders", "apply_fill", "fills_of", "read_judged_until", "set_judged_until",
     }  # fmt: skip
 
     class Store:
@@ -243,6 +243,8 @@ def test_the_paper_store_is_a_protocol_of_account_orders_and_fills() -> None:
         def open_orders(self, mode: Mode, market: str | None = None) -> tuple[Any, ...]: ...
         def apply_fill(self, fill: Any, account: Any) -> Any: ...
         def fills_of(self, order_id: int) -> tuple[Any, ...]: ...
+        def read_judged_until(self, order_id: int) -> None: ...
+        def set_judged_until(self, order_id: int, until: Any) -> None: ...
 
     assert isinstance(Store(), PaperStore)
     assert not isinstance(object(), PaperStore)
@@ -428,9 +430,9 @@ def test_the_data_thread_takes_the_new_calls_and_keeps_no_key_value(tmp_path: Pa
     worker.turn_live_off()
     worker.account_visible(True)
     worker.refresh_account()
-    assert list(worker._queue) == []  # 키와 계정의 동작은 15번 앞에는 아무 일도 큐에 넣지 않는다
+    assert len(worker._queue) == 7  # 15번부터 키, 켜기·끄기, 계정의 동작을 큐에 넣는다
     worker.load_history(HistoryTab.EXTERNAL, None, date(2026, 1, 1), Mode.LIVE)
-    assert len(worker._queue) == 1  # 기록은 25번이 큐에 넣는다(외부 변동 탭은 빈 값을 보낸다)
+    assert len(worker._queue) == 8  # 기록은 25번부터 큐에 넣는다(외부 변동 탭은 빈 값을 보낸다)
     assert secret not in repr(vars(worker))
 
 

@@ -100,8 +100,9 @@ _TITLES: Final = {
         "시각", "코인", "매수·매도", "체결 가격", "체결 수량", "수수료", "실현 손익",
     ),
     HistoryTab.PAUSES: ("시작 시각", "종류", "푼 시각"),
+    HistoryTab.EXTERNAL: ("시각", "코인", "수량 변화"),
 }  # fmt: skip
-"""화면의 머리글(3.15.1)."""
+"""화면의 머리글(3.15.1. 외부 변동 탭은 M5 명세 3.11)."""
 HISTORY_COLUMNS: Final = {
     HistoryTab.ROUNDS: ("number", "started_utc", "stage", "state", "close_utc", "ended_utc"),
     HistoryTab.JUDGMENTS: (
@@ -116,6 +117,7 @@ HISTORY_COLUMNS: Final = {
     HistoryTab.PAUSES: (
         "started_utc", "kind", "cause", "detail", "sell_all", "released_utc",
     ),
+    HistoryTab.EXTERNAL: ("utc", "market", "qty_delta"),
 }  # fmt: skip
 """CSV의 머리줄(3.15.2)."""
 _NUMBER: Final = re.compile(r"-?\d+(?:\.\d+)?")
@@ -138,12 +140,12 @@ _ENUMS: Final[Mapping[str, frozenset[str]]] = {
 _NUMERIC_COLUMNS: Final = frozenset(
     {
         "number", "round_number", "predicted_price", "actual_price", "diff", "buy_price",
-        "sell_price", "price", "qty", "fee", "realized_pnl", "sell_all",
+        "sell_price", "price", "qty", "fee", "realized_pnl", "sell_all", "qty_delta",
     }
 )  # fmt: skip
 _TIME_COLUMNS: Final = frozenset(
     {"started_utc", "close_utc", "ended_utc", "created_utc", "closed_utc", "filled_utc",
-     "released_utc"}
+     "released_utc", "utc"}
 )  # fmt: skip
 
 
@@ -171,6 +173,17 @@ def _signed_percent(ratio: Decimal) -> str:
     if percent < 0:
         return f"▼ -{abs(percent)}%"
     return "0.00%"
+
+
+KRW_CODE: Final = "KRW"
+KRW_TITLE: Final = "원화"
+"""외부 변동 탭의 원화 줄의 코인 칸(M5 명세 3.10의 A-22와 같은 글)."""
+
+
+def _signed_qty(delta: Decimal) -> str:
+    """수량 변화의 글: 부호를 붙인다(늘면 +, 줄면 -)."""
+    shown = format(delta.normalize(), "f")
+    return shown if delta < 0 else f"+{shown}"
 
 
 def _price(value: str | Decimal | None) -> str:
@@ -216,15 +229,23 @@ class RecordsMixin:
     _rules: Any
     _emit_save_failed: Callable[..., None]
     _db_account: Callable[[], Any]
+    _mode: Mode
 
     def _init_records(self) -> None:
         self._next_backup_mono: float | None = None
+        self._history_mode: Mode | None = None
+        """기록 화면이 마지막으로 고른 모드(`load_history`의 `mode`. 내보내기도 그 기록이다)."""
+
+    def _records_mode(self) -> Mode:
+        """기록 화면과 내보내기의 모드: 고른 것이 없으면 지금 모드(M5 명세 3.4, 3.11)."""
+        chosen = self._history_mode
+        return self._mode if chosen is None else chosen
 
     # --- 기록 화면(3.15.1) -------------------------------------------------------------------
 
     def _do_load_history(self, tab: HistoryTab, market: str | None, day: date) -> None:
         """`HistoryView`를 보낸다. 읽지 못하면 `FAILED`다(호출한 쪽이 A-30을 만든다)."""
-        if tab not in _TITLES:  # 외부 변동 탭은 4·5단계다
+        if tab not in _TITLES:
             self._post(HistoryView(tab, market, day, (), (), LoadState.NO_DATA))
             return
         start, end = day_bounds(day)
@@ -246,11 +267,28 @@ class RecordsMixin:
             return self._order_rows(market, start, end)
         if tab is HistoryTab.FILLS:
             return self._fill_rows(market, start, end)
+        if tab is HistoryTab.EXTERNAL:
+            return self._external_rows(market, start, end)
         return self._pause_rows_view(start, end)
+
+    def _external_rows(
+        self, market: str | None, start: datetime, end: datetime
+    ) -> list[HistoryRow]:
+        """외부 변동 탭(M5 명세 3.11): 시각, 코인(원화는 "원화"), 수량 변화."""
+        out: list[HistoryRow] = []
+        for change in trade_store.list_external_changes(
+            self._conn, self._records_mode(), start=start, end=end, market=market
+        ):
+            coin = KRW_TITLE if change.market == KRW_CODE else coin_label(change.market)
+            cells = (kst_datetime_text(change.utc), coin, _signed_qty(change.qty_delta))
+            out.append(HistoryRow(f"external-{change.change_id}", cells, (), None, change.market))
+        return out
 
     def _round_rows(self, start: datetime, end: datetime) -> list[HistoryRow]:
         out: list[HistoryRow] = []
-        for row in trade_store.list_round_rows(self._conn, Mode.PAPER, start=start, end=end):
+        for row in trade_store.list_round_rows(
+            self._conn, self._records_mode(), start=start, end=end
+        ):
             stage = NO_VALUE if row.stage is None else row.stage.value
             result = ROUND_RESULTS.get(row.state, "도는 중")
             when = kst_datetime_text(row.started_utc)
@@ -260,11 +298,19 @@ class RecordsMixin:
         return out
 
     def _judgments(
-        self, market: str | None, start: datetime | None, end: datetime | None
+        self,
+        market: str | None,
+        start: datetime | None,
+        end: datetime | None,
+        mode: Mode | None = None,
     ) -> list[_Judgment]:
         now = self._clock.now()
         rows = trade_store.list_judgment_rows(
-            self._conn, Mode.PAPER, start=start, end=end, market=market
+            self._conn,
+            self._records_mode() if mode is None else mode,
+            start=start,
+            end=end,
+            market=market,
         )
         closes: dict[tuple[str, str], dict[datetime, Decimal]] = {}
         out: list[_Judgment] = []
@@ -348,7 +394,7 @@ class RecordsMixin:
     def _order_rows(self, market: str | None, start: datetime, end: datetime) -> list[HistoryRow]:
         out: list[HistoryRow] = []
         for order in trade_store.list_orders(
-            self._conn, Mode.PAPER, start=start, end=end, market=market
+            self._conn, self._records_mode(), start=start, end=end, market=market
         ):
             cells = (
                 kst_datetime_text(order.created_utc),
@@ -367,7 +413,7 @@ class RecordsMixin:
     def _fill_rows(self, market: str | None, start: datetime, end: datetime) -> list[HistoryRow]:
         out: list[HistoryRow] = []
         for fill in trade_store.list_fills(
-            self._conn, Mode.PAPER, start=start, end=end, market=market
+            self._conn, self._records_mode(), start=start, end=end, market=market
         ):
             pnl = NO_VALUE if fill.realized_pnl is None else _signed_won(fill.realized_pnl)
             cells = (
@@ -384,7 +430,7 @@ class RecordsMixin:
 
     def _pause_rows_view(self, start: datetime, end: datetime) -> list[HistoryRow]:
         out: list[HistoryRow] = []
-        for row in trade_store.list_pauses(self._conn, Mode.PAPER, start=start, end=end):
+        for row in trade_store.list_pauses(self._conn, self._records_mode(), start=start, end=end):
             if row.kind is PauseKind.USER:
                 kind = "사용자"
             elif row.cause is ErrorPauseCause.EXCHANGE:
@@ -429,7 +475,7 @@ class RecordsMixin:
         end = self._clock.now() + _FAR
         if tab is HistoryTab.ROUNDS:
             rounds = reversed(
-                trade_store.list_round_rows(self._conn, Mode.PAPER, start=start, end=end)
+                trade_store.list_round_rows(self._conn, self._records_mode(), start=start, end=end)
             )
             return [
                 [
@@ -448,7 +494,9 @@ class RecordsMixin:
             ]
         if tab is HistoryTab.ORDERS:
             orders = reversed(
-                trade_store.list_orders(self._conn, Mode.PAPER, start=start, end=end, market=market)
+                trade_store.list_orders(
+                    self._conn, self._records_mode(), start=start, end=end, market=market
+                )
             )
             return [
                 [
@@ -467,7 +515,9 @@ class RecordsMixin:
             ]
         if tab is HistoryTab.FILLS:
             fills = reversed(
-                trade_store.list_fills(self._conn, Mode.PAPER, start=start, end=end, market=market)
+                trade_store.list_fills(
+                    self._conn, self._records_mode(), start=start, end=end, market=market
+                )
             )
             return [
                 [
@@ -481,7 +531,19 @@ class RecordsMixin:
                 ]
                 for fill in fills
             ]
-        pauses = reversed(trade_store.list_pauses(self._conn, Mode.PAPER, start=start, end=end))
+        if tab is HistoryTab.EXTERNAL:
+            changes = reversed(
+                trade_store.list_external_changes(
+                    self._conn, self._records_mode(), start=start, end=end, market=market
+                )
+            )
+            return [
+                [utc_text(change.utc), change.market, decimal_text(change.qty_delta)]
+                for change in changes
+            ]
+        pauses = reversed(
+            trade_store.list_pauses(self._conn, self._records_mode(), start=start, end=end)
+        )
         return [
             [
                 utc_text(row.started_utc),
@@ -533,7 +595,7 @@ class RecordsMixin:
                 return
             coins = self._trade_coins()
             judgments: dict[str, list[LastResult]] = {market: [] for market in coins}
-            for item in self._judgments(None, None, None):
+            for item in self._judgments(None, None, None, Mode.PAPER):
                 if item.result is not None and item.row.market in judgments:
                     judgments[item.row.market].append(item.result)
             prices: dict[str, Decimal | None] = {

@@ -2,7 +2,8 @@
 
 `PaperExchange`(거래)가 쓰는 가상 계정, 걸린 주문, 체결의 읽고 쓰기를 `storage/trading.py`의 함수로
 잇는다. 연결은 만든 쪽(자료 스레드)이 넘기고, 이 어댑터는 그 연결만 쓴다. 쓰기의 실패는
-`StorageError`다. 새 주문의 `judged_until_utc`는 건 때를 올림한 분이다(M3 명세 3.7.2).
+`StorageError`다. 새 주문의 `judged_until_utc`는 건 때를 올림한 분이고, 판정한 뒤에는
+`set_judged_until`로 고쳐 쓴다(M3 명세 3.7.2, 3.12).
 """
 
 import sqlite3
@@ -78,6 +79,12 @@ class SqlitePaperStore:
 
     def fills_of(self, order_id: int) -> tuple[FillRecord, ...]:
         return trade_store.fills_of(self._conn, order_id)
+
+    def read_judged_until(self, order_id: int) -> datetime | None:
+        return trade_store.read_judged_until(self._conn, order_id)
+
+    def set_judged_until(self, order_id: int, until: datetime) -> None:
+        trade_store.set_judged_until(self._conn, order_id, until)
 
     def __repr__(self) -> str:
         return "SqlitePaperStore()"

@@ -99,6 +99,7 @@ class SessionDone:
 @dataclass(frozen=True)
 class LoadReports:
     market: str
+    mode: Mode | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ class ReportRoundMixin:
     _trade: Callable[[], Any]
     _round_finished: Callable[[], None]
     _post_trade_views: Callable[[], None]
+    _mode: Mode
 
     def _init_reports(self, runner: AiRunner | None, sessions_root: Path) -> None:
         self._sessions_root = sessions_root
@@ -175,9 +177,8 @@ class ReportRoundMixin:
     # --- 주 스레드: 동작 -----------------------------------------------------------------------
 
     def load_reports(self, market: str, mode: Mode | None = None) -> None:
-        """`mode`는 받기만 한다(M5 명세 4절 3번. 지금 모드는 늘 모의매매다)."""
-        del mode
-        self._put(LoadReports(market))
+        """`mode`가 `None`이면 지금 모드의 보고서다(M5 명세 3.4)."""
+        self._put(LoadReports(market, None if mode is None else Mode(mode)))
 
     def load_report(self, report_id: int) -> None:
         self._put(LoadReport(report_id))
@@ -304,9 +305,10 @@ class ReportRoundMixin:
 
     # --- 읽기 동작 ----------------------------------------------------------------------------
 
-    def _post_report_list(self, market: str) -> None:
+    def _post_report_list(self, market: str, mode: Mode | None = None) -> None:
         try:
-            items = report_store.list_round_items(self._conn, market, Mode.PAPER)
+            chosen = self._mode if mode is None else mode
+            items = report_store.list_round_items(self._conn, market, chosen)
         except Exception as exc:
             self._emit_unexpected(STAGE_REPORT, market, exc)
             self._post(ReportListView(market, (), LoadState.FAILED))
@@ -365,11 +367,11 @@ class ReportRoundMixin:
         settings = self._settings
         unit, _ = self._chosen()
         now = self._clock.now()
-        number = report_store.max_round_number(self._conn, Mode.PAPER) + 1
+        number = report_store.max_round_number(self._conn, self._mode) + 1
         next_close = close + CANDLE_UNIT_LENGTHS[unit]
         round_id = report_store.insert_round(
             self._conn,
-            mode=Mode.PAPER,
+            mode=self._mode,
             number=number,
             trigger=RoundTrigger.BAR_CLOSE,
             unit=unit,
@@ -399,7 +401,7 @@ class ReportRoundMixin:
             report_id = report_store.insert_report(
                 self._conn,
                 round_id=current.round_id,
-                mode=Mode.PAPER,
+                mode=self._mode,
                 market=market,
                 created_at=self._clock.now(),
             )
@@ -420,7 +422,7 @@ class ReportRoundMixin:
         report_id = report_store.insert_report(
             self._conn,
             round_id=current.round_id,
-            mode=Mode.PAPER,
+            mode=self._mode,
             market=market,
             created_at=self._clock.now(),
         )
@@ -531,7 +533,7 @@ class ReportRoundMixin:
     ) -> "tuple[report_store.LastJudgment, LastResult] | None":
         """지난 판단과 그 결과(3.9). 실제 값은 저장된 완성된 봉에서만 읽는다."""
         last = report_store.read_last_judgment(
-            self._conn, market=market, mode=Mode.PAPER, before_close=current.close
+            self._conn, market=market, mode=self._mode, before_close=current.close
         )
         if last is None:
             return None

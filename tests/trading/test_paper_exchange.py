@@ -47,6 +47,8 @@ class MemoryStore:
         self.sent: dict[int, bool] = {}
         self.fills: list[FillRecord] = []
         self.writes: list[str] = []
+        self.judged: dict[int, datetime] = {}
+        """판정한 때(`orders.judged_until_utc`). 넣을 때는 비워 둔다(없으면 건 때를 올림한 분)."""
 
     def read_account(self, mode: Mode) -> PaperAccount | None:
         assert mode is Mode.PAPER
@@ -120,6 +122,12 @@ class MemoryStore:
 
     def fills_of(self, order_id: int) -> tuple[FillRecord, ...]:
         return tuple(f for f in self.fills if f.order_id == order_id)
+
+    def read_judged_until(self, order_id: int) -> datetime | None:
+        return self.judged.get(order_id)
+
+    def set_judged_until(self, order_id: int, until: datetime) -> None:
+        self.judged[order_id] = until
 
 
 def setup(
@@ -309,7 +317,7 @@ def test_query_before_a_complete_minute_does_not_ask_for_candles() -> None:
 
 
 def test_after_restart_the_judgment_starts_from_the_order_time() -> None:
-    # 판정한 자리는 메모리에만 있다. 새 객체(다시 켬)는 건 때를 올림한 분부터 소급해 본다(3.7.4).
+    # 판정한 적이 없으면 새 객체(다시 켬)는 건 때를 올림한 분부터 소급해 본다(3.7.4).
     exchange, store, quotes, clock = setup()
     place(exchange, store, clock, plan(OrderSide.BUY, "990", "10"), "u-8")
     quotes.put_minutes(candle(at(4), "995", "989"))
@@ -406,3 +414,71 @@ def test_open_orders_are_the_store_s_open_orders_and_all_ours() -> None:
     orders = exchange.open_orders(A)
     assert [(o.uid, o.state, o.program) for o in orders] == [("u-15", OrderState.OPEN, True)]
     assert exchange.open_orders("KRW-BBB") == ()
+
+
+# --- 판정한 때는 `PaperStore`에(M3 명세 3.12, 3.7.2), 주문 줄 앞의 최우선 호가 -----------------
+
+
+def test_the_judged_time_is_written_to_the_store_and_a_fill_leaves_it() -> None:
+    exchange, store, quotes, clock = setup()
+    place(exchange, store, clock, plan(OrderSide.BUY, "990", "10"), "u-17")
+    order = store.find_order("u-17")
+    assert order is not None
+    assert store.judged == {}  # 넣을 때는 쓰지 않는다(저장소가 건 때를 올림한 분으로 넣는다)
+    quotes.put_minutes(candle(at(4), "995", "990"))
+    clock.set_now(at(5, 30))
+    exchange.query("u-17")
+    assert store.judged == {order.order_id: at(5)}
+    quotes.put_minutes(candle(at(5), "995", "989"))
+    clock.set_now(at(6, 10))
+    filled = exchange.query("u-17")
+    assert filled is not None
+    assert filled.state is OrderState.FILLED
+    assert store.judged == {order.order_id: at(5)}  # 체결은 판정한 때를 고치지 않는다
+
+
+def test_a_new_object_goes_on_from_the_stored_judged_time() -> None:
+    # 다시 켬: 새 객체도 저장된 판정한 때(10:05) 뒤만 받는다(3.7.4).
+    exchange, store, quotes, clock = setup()
+    place(exchange, store, clock, plan(OrderSide.BUY, "990", "10"), "u-18")
+    quotes.put_minutes(candle(at(4), "995", "990"))
+    clock.set_now(at(5, 30))
+    exchange.query("u-18")
+    clock.set_now(at(8, 5))
+    fresh = PaperExchange(store, QuoteClient(quotes, clock), clock)
+    snapshot = fresh.query("u-18")
+    assert snapshot is not None
+    assert snapshot.state is OrderState.OPEN
+    assert [(r.to, r.count) for r in quotes.book_requests(MINUTES)] == [(at(5), 1), (at(8), 3)]
+    order = store.find_order("u-18")
+    assert order is not None
+    assert store.judged[order.order_id] == at(8)
+
+
+def test_a_cancel_after_a_judgment_in_the_same_minute_asks_for_no_more_candles() -> None:
+    exchange, store, quotes, clock = setup()
+    place(exchange, store, clock, plan(OrderSide.BUY, "990", "10"), "u-19")
+    quotes.put_minutes(candle(at(4), "995", "990"))
+    clock.set_now(at(5, 30))
+    exchange.query("u-19")
+    canceled = exchange.cancel("u-19")
+    assert canceled is not None
+    assert canceled.state is OrderState.CANCELED
+    assert len(quotes.book_requests(MINUTES)) == 1  # 취소 전 판정은 저장된 자리부터라 볼 봉이 없다
+
+
+def test_best_prices_read_before_the_row_are_used_without_reading_again() -> None:
+    exchange, store, quotes, clock = setup()
+    p = plan(OrderSide.BUY, "1010", "10")
+    store.insert_order(p, mode=Mode.PAPER, uid="u-20", round_id=1, created_utc=clock.now())
+    result = exchange.place(p, "u-20", best=(D(1005), D(1000)))
+    assert result.snapshot is not None
+    assert [t.price for t in result.snapshot.trades] == [D(1005)]  # 넘긴 최우선 매도 호가에
+    assert quotes.requests == []
+    store.insert_order(
+        plan(OrderSide.BUY, "990", "10"), mode=Mode.PAPER, uid="u-21", round_id=1, created_utc=T0
+    )
+    waiting = exchange.place(plan(OrderSide.BUY, "990", "10"), "u-21", best=(D(1005), D(1000)))
+    assert waiting.snapshot is not None
+    assert waiting.snapshot.state is OrderState.OPEN
+    assert quotes.requests == []

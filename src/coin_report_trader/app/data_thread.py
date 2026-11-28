@@ -55,10 +55,12 @@ from coin_report_trader.core import (
     QuoteError,
     QuoteSource,
     SaveResult,
+    SecretStore,
     SettingsView,
     StorageError,
     TradeSettings,
     UiUpdate,
+    UpbitTransport,
     coin_label,
     empty_bar_stats,
     redact,
@@ -83,6 +85,8 @@ from coin_report_trader.core.texts import (
     STAGE_BACKUP,
     STAGE_CANDLE_SAVE,
     STAGE_CANDLES,
+    STAGE_KEY_SAVE,
+    STAGE_LIVE_ON,
     STAGE_MARKETS,
     STAGE_ORDER,
     STAGE_RECONCILE,
@@ -122,6 +126,7 @@ from coin_report_trader.storage.states import DiscordState
 from coin_report_trader.trading.quote import HttpQuoteSource, QuoteClient
 
 from . import alert_rules, startup_errors
+from .account_screen import AccountMixin, AccountTask
 from .alert_rules import (
     ALERT_WRITE_INSERT,
     ALERT_WRITE_SEEN,
@@ -130,6 +135,8 @@ from .alert_rules import (
     RepeatRules,
 )
 from .autostart import WindowsAutostart, current_command
+from .live_engine import LiveEngineMixin
+from .live_flow import KeyTask, LiveMixin, LiveTask
 from .memory_alerts import MemoryAlert, MemoryAlerts
 from .pause_flow import TRADE_WRITE_STAGES, PauseMixin
 from .problem_report import (
@@ -220,6 +227,7 @@ class _SaveTask:
     ai_choices: tuple[AiChoice, ...] | None = None
     trade: TradeSettings | None = None
     accept_below_stop: tuple[str, ...] = ()
+    live: LiveSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +245,7 @@ class _HistoryTask:
     tab: HistoryTab
     market: str | None
     day: date
+    mode: Mode | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +295,9 @@ type _Task = (
     | SessionDone
     | LoadReports
     | LoadReport
+    | KeyTask
+    | LiveTask
+    | AccountTask
 )
 
 
@@ -335,7 +347,15 @@ class _WakeEvent(threading.Event):
         return super().wait(timeout)
 
 
-class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
+class DataWorker(
+    TradeMixin,
+    ReportRoundMixin,
+    PauseMixin,
+    RecordsMixin,
+    LiveMixin,
+    LiveEngineMixin,
+    AccountMixin,
+):
     """자료 스레드와 그 동작 큐. `UiActions`를 지킨다(주 스레드에서 부른다)."""
 
     def __init__(
@@ -352,9 +372,19 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         sessions_root: Path | None = None,
         book: BookSource | None = None,
         min_order: Decimal | None = None,
+        vault: SecretStore | None = None,
+        real_vault: bool = False,
+        exchange_transport: UpbitTransport | None = None,
     ) -> None:
+        """`vault`는 업비트 키의 보관소다(M5 명세 3.8). `None`이고 `real_vault`가 참이면(조립)
+        자료 스레드가 처음 쓸 때 진짜 보관소를 만들고, 거짓이면 키가 없는 것으로 본다(보관소를
+        부르지 않는다). `exchange_transport`가 `None`이면 키가 있을 때 진짜 `httpx` 운반을
+        만든다."""
         self._send = send
         self._book = book
+        self._init_live(vault, real_vault, exchange_transport)
+        self._init_live_engine()
+        self._init_account()
         self._init_trade(min_order)
         self._init_pause()
         self._init_records()
@@ -461,9 +491,9 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         `autostart`가 `None`이면 저장된 값을 그대로 둔다(M1 명세 3.16.3).
 
         `trade`가 `None`이면 저장된 매매 칸을 그대로 둔다(M3 명세 3.11.2). `accept_below_stop`은
-        손절선 아래인 보유를 확인한 코인이다(3.11.4). `live`는 받기만 한다(M5 명세 4절 3번).
+        손절선 아래인 보유를 확인한 코인이다(3.11.4). `live`가 `None`이면 저장된 실거래 설정을
+        그대로 둔다(M5 명세 3.7.5. 실거래 중에는 저장하지 않는다).
         """
-        del live
         self._put(
             _SaveTask(
                 tuple(coins),
@@ -475,6 +505,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
                 None if ai_choices is None else tuple(ai_choices),
                 trade,
                 tuple(accept_below_stop),
+                live,
             )
         )
 
@@ -495,36 +526,11 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
     def load_history(
         self, tab: HistoryTab, market: str | None, day: date, mode: Mode | None = None
     ) -> None:
-        """`mode`는 받기만 한다(M5 명세 4절 3번. 지금 모드는 늘 모의매매다)."""
-        del mode
-        self._put(_HistoryTask(HistoryTab(tab), market, day))
+        """`mode`가 `None`이면 지금 모드의 기록이다(M5 명세 3.4)."""
+        self._put(_HistoryTask(HistoryTab(tab), market, day, None if mode is None else Mode(mode)))
 
     def export_history(self, tab: HistoryTab, market: str | None, path: str) -> None:
         self._put(_ExportTask(HistoryTab(tab), market, path))
-
-    def save_upbit_key(self, access: str, secret: str, created: date) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번. 15번이 보관소에 쓴다). 값은 어디에도 남기지
-        않는다."""
-        del access, secret, created
-
-    def delete_upbit_key(self) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
-
-    def prepare_live_on(self) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
-
-    def turn_live_on(self) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
-
-    def turn_live_off(self) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
-
-    def account_visible(self, visible: bool) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번. 15번이 읽는다)."""
-        del visible
-
-    def refresh_account(self) -> None:
-        """받기만 하고 하지 않는다(M5 명세 4절 3번)."""
 
     def retry_candles(self) -> None:
         self._put("retry")
@@ -582,6 +588,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         self._client = QuoteClient(quote, self._clock)
 
     def _close(self) -> None:
+        self._close_live()
         if self._conn is not None:
             try:
                 self._conn.close()
@@ -702,6 +709,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         self._guard(self._post_start_reports, STAGE_REPORT)
         self._guard(self._load_directions, STAGE_RECONCILE)
         self._guard(self._trade_startup, STAGE_RECONCILE)  # 소급 판정과 손절 점검(M3 명세 2의 3)
+        self._guard(self._post_live_views, STAGE_STARTUP)  # 모드와 키(M5 명세 3.7, 3.8)
         self._guard(self._backup_check, STAGE_BACKUP)  # 하루 한 번의 DB 백업(3.13)
         if view.first_setup_done and view.coins and self._quotes_allowed():
             self._guard(self._fetch_round)
@@ -775,6 +783,13 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
                 continue
             action = self._due_action()
             if action is not None:
+                if action == self._minute_check:
+                    self._account_skip_for(self._stop_check_mono)  # 매매가 먼저(M5 명세 3.15.4)
+                elif action == self._scheduled_round:
+                    self._account_skip_for(self._next_round_mono)
+                if action == self._account_tick:
+                    action()
+                    continue
                 self._guard(
                     action, STAGE_STOP_LOSS if action == self._minute_check else STAGE_CANDLES
                 )
@@ -809,7 +824,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
             self._guard(lambda: self._on_session_done(task), STAGE_REPORT)
             return
         if isinstance(task, LoadReports):
-            self._guard(lambda: self._post_report_list(task.market), STAGE_REPORT)
+            self._guard(lambda: self._post_report_list(task.market, task.mode), STAGE_REPORT)
             return
         if isinstance(task, LoadReport):
             self._guard(lambda: self._do_load_report(task), STAGE_REPORT)
@@ -822,8 +837,15 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
                 lambda: self._do_export_history(task.tab, task.market, task.path), STAGE_REPORT
             )
             return
+        if isinstance(task, AccountTask):
+            self._account_task(task)
+            return
         if self._settings_failed or self._settings is None:
             return  # 설정을 읽지 못한 동안은 아무것도 하지 않는다.
+        if isinstance(task, KeyTask | LiveTask):
+            stage = STAGE_KEY_SAVE if isinstance(task, KeyTask) else STAGE_LIVE_ON
+            self._guard(lambda: self._run_live_task(task), stage)
+            return
         if isinstance(task, _SaveTask):
             self._guard(lambda: self._save_settings(task), STAGE_SETTINGS_SAVE)
         elif isinstance(task, _PauseTask):
@@ -836,9 +858,23 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         elif task == "retry":
             self._guard(self._retry_candles)
 
+    def _account_task(self, task: AccountTask) -> None:
+        """계정 화면의 읽기(M5 명세 3.15.4). 어떤 실패도 알림과 오류 멈춤을 만들지 않는다."""
+        try:
+            self._run_account_task(task)
+        except Exception as exc:
+            log.warning("계정 화면의 읽기가 실패했습니다: 예외 %s", type(exc).__name__)
+
+    def _account_tick(self) -> None:
+        try:
+            self._account_tick_read()
+        except Exception as exc:
+            log.warning("계정 화면의 읽기가 실패했습니다: 예외 %s", type(exc).__name__)
+
     def _load_history(self, task: _HistoryTask) -> None:
         """기록 화면의 줄(3.15.1). 읽지 못하면 `FAILED`를 보내고 A-30을 만든다."""
         try:
+            self._history_mode = task.mode  # `None`이면 그때의 모드(내보내기도 같은 기록이다)
             self._do_load_history(task.tab, task.market, task.day)
         except Exception as exc:
             self._post_history_failed(task.tab, task.market, task.day)
@@ -872,7 +908,9 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
                 due = self._next_round_mono
                 if due is not None and now >= due:
                     return self._scheduled_round
-        return self._minute_check if self._minute_due(now) else None
+        if self._minute_due(now):
+            return self._minute_check
+        return self._account_tick if self._account_due(now) else None
 
     def _seconds_until_due(self) -> float:
         now = self._clock.monotonic()
@@ -893,6 +931,9 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         minute = self._stop_check_mono
         if minute is not None and not self._settings_failed:
             due = minute if due is None else min(due, minute)
+        account = self._acct_next_mono if self._acct_visible else None
+        if account is not None and not self._settings_failed:
+            due = account if due is None else min(due, account)
         if due is None:
             return IDLE_SECONDS
         seconds = due - now
@@ -986,6 +1027,11 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
                 self._post(SaveResult(SAVE_TARGET_SETTINGS, False, SETTINGS_SAVE_FAILED))
                 self._emit_save_failed(STAGE_SETTINGS_SAVE, None, exc)
                 return
+        allowed, live = self._check_live_save(
+            current, task.coins, task.trade, task.candle_count, task.live
+        )
+        if not allowed:
+            return
         try:
             if not self._check_trade_save(current, task.coins, task.trade, task.accept_below_stop):
                 return
@@ -1008,6 +1054,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
             autostart_error=current.autostart_error,
             ai_choices=four or (),  # 빈 묶음은 저장된 칸을 그대로 둔다(M2 명세 3.10)
             trade=task.trade,  # `None`이면 저장된 매매 칸을 건드리지 않는다(M3 명세 3.11.2)
+            live=live,  # `None`이면 저장된 실거래 설정을 건드리지 않는다(M5 명세 3.7.5)
         )
         try:
             write_settings(
@@ -1034,6 +1081,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
             first_setup_done=done and stored.first_setup_done,
             ai_choices=stored_choices,
             trade=stored.trade,
+            live=stored.live,
         )
         first_trade = new.first_setup_done and not current.first_setup_done
         if task.autostart is not None and new.autostart_supported:
@@ -1053,6 +1101,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
             self._guard(self._trade_startup, STAGE_RECONCILE)
             self._guard(self._backup_check, STAGE_BACKUP)
         self._guard(lambda: self._after_trade_save(current, new, first_trade), STAGE_ORDER)
+        self._guard(self._post_live_views, STAGE_SETTINGS_SAVE)
         if four is not None:  # 네 칸을 저장한 때(저장이 성공한 뒤) `check()`(M2 명세 3.5.4)
             self._guard(self._after_ai_choices_saved, STAGE_REPORT)
         self._cleanup_old(always_post=True)  # 보관 기간을 저장한 직후(3.9)
@@ -1475,8 +1524,10 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         text: str,
         content: str | None,
         source: str,
-        mode: Mode = Mode.PAPER,
+        mode: Mode | None = None,
     ) -> None:
+        if mode is None:
+            mode = self._mode
         title = _PROBLEM_CATEGORIES.get(AlertCategory(category))
         if title is None:
             return  # 다른 분류(보고서 알림의 A-26 등)는 쓰지 않는다
@@ -1542,7 +1593,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
             alert_id = alert_store.insert_alert(
                 self._conn,
                 created_at=when,
-                mode=Mode.PAPER,
+                mode=self._mode,  # 그때의 모드(M5 명세 3.10)
                 category=spec.category,
                 code=spec.code,
                 coin=spec.coin,
@@ -1576,7 +1627,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
             return
         alert = self._memory.add(
             created_at=when,
-            mode=Mode.PAPER,
+            mode=self._mode,
             category=spec.category,
             code=spec.code,
             coin=spec.coin,
@@ -1595,7 +1646,7 @@ class DataWorker(TradeMixin, ReportRoundMixin, PauseMixin, RecordsMixin):
         if self._send is None or self._stop.is_set():
             return
         message = alert_message(
-            mode=Mode.PAPER,
+            mode=self._mode,
             category=spec.category,
             coin=spec.coin,
             text=spec.text,

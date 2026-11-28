@@ -214,7 +214,7 @@ class ExchangePort(Protocol):
 class PaperStore(Protocol):
     """`PaperExchange`가 쓰는 가상 계정, 걸린 주문, 체결의 읽고 쓰기(M5 명세 3.4). `app`이
     `storage`로 갖춘다(`SecretStore`와 같은 꼴). 메서드의 뜻은 M3 명세 3.12의 표와 3.7.2다.
-    이름은 3번이 정했다. 쓰기의 실패는 `StorageError`다."""
+    이름은 3번이 정했다(판정한 때의 둘은 15번이 더했다). 쓰기의 실패는 `StorageError`다."""
 
     def read_account(self, mode: Mode) -> PaperAccount | None:
         """그 모드의 가상 계정. 아직 만들지 않았으면 `None`."""
@@ -254,6 +254,15 @@ class PaperStore(Protocol):
         ...
 
     def fills_of(self, order_id: int) -> tuple[FillRecord, ...]: ...
+
+    def read_judged_until(self, order_id: int) -> datetime | None:
+        """모의 체결 판정에서 그 주문의 마지막으로 본 1분봉의 끝(`orders.judged_until_utc`. M3 명세
+        3.12, 3.7.2). 그 주문이 없으면 `None`."""
+        ...
+
+    def set_judged_until(self, order_id: int, until: datetime) -> None:
+        """판정한 뒤 체결되지 않은 주문의 `judged_until_utc`를 `until`로 쓴다(M3 명세 3.7.2)."""
+        ...
 
 
 @dataclass(frozen=True)
