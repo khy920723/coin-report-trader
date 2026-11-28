@@ -22,7 +22,7 @@ CORE_DIR = Path(core.__file__).parent
 
 
 def test_version() -> None:
-    assert coin_report_trader.__version__ == "0.1.4"
+    assert coin_report_trader.__version__ == "0.2.0"
 
 
 def test_constants() -> None:
